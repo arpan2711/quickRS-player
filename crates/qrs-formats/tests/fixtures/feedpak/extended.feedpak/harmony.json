@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "events": [
+    {"t": 0.0, "root": "E", "quality": "m",   "rn": "i"},
+    {"t": 1.5, "root": "C", "quality": "maj", "rn": "VI"},
+    {"t": 2.5, "root": "G", "quality": "maj", "rn": "I"},
+    {"t": 3.5, "root": "D", "quality": "7",   "rn": "V7", "bass": "F#"},
+    {"t": 4.0, "root": null}
+  ]
+}

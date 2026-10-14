@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "name": "Drums",
+  "kit": [
+    {"id": "kick", "name": "Kick"},
+    {"id": "snare", "name": "Snare"},
+    {"id": "hh_closed", "name": "Hi-hat (closed)"},
+    {"id": "crash_r", "name": "Crash (right)"}
+  ],
+  "hits": [
+    {"t": 0.5, "p": "kick", "v": 110},
+    {"t": 0.5, "p": "crash_r", "v": 120, "k": 0.08},
+    {"t": 1.0, "p": "hh_closed", "v": 70},
+    {"t": 1.5, "p": "snare", "v": 92},
+    {"t": 2.0, "p": "hh_closed", "v": 70, "g": true},
+    {"t": 2.5, "p": "kick", "v": 110},
+    {"t": 3.5, "p": "snare", "v": 100, "f": true}
+  ]
+}

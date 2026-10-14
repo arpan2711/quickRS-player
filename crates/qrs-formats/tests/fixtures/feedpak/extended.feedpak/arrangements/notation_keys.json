@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "instrument": "piano",
+  "staves": [
+    {"id": "rh", "clef": "G2", "label": "Right Hand"},
+    {"id": "lh", "clef": "F4", "label": "Left Hand"}
+  ],
+  "measures": [
+    {
+      "idx": 0,
+      "t": 0.0,
+      "ts": [4, 4],
+      "ks": 0,
+      "tempo": 120.0,
+      "pickup": true,
+      "staves": {
+        "rh": {"voices": [{"v": 1, "beats": [
+          {"t": 0.0, "dur": 4, "notes": [{"midi": 62}]}
+        ]}]}
+      }
+    },
+    {
+      "idx": 1,
+      "t": 0.5,
+      "staves": {
+        "rh": {"voices": [{"v": 1, "beats": [
+          {"t": 0.5, "dur": 4, "notes": [{"midi": 64}]},
+          {"t": 1.0, "dur": 4, "notes": [{"midi": 65}]},
+          {"t": 1.5, "dur": 4, "notes": [{"midi": 67}]},
+          {"t": 2.0, "dur": 4, "notes": [{"midi": 72}]}
+        ]}]},
+        "lh": {"voices": [{"v": 1, "beats": [
+          {"t": 0.5, "dur": 1, "notes": [{"midi": 40}, {"midi": 52}]}
+        ]}]}
+      }
+    },
+    {
+      "idx": 2,
+      "t": 2.5,
+      "staves": {
+        "rh": {"voices": [{"v": 1, "beats": [
+          {"t": 2.5, "dur": 2, "notes": [{"midi": 71}]},
+          {"t": 3.5, "dur": 2, "notes": [{"midi": 67}]}
+        ]}]},
+        "lh": {"voices": [{"v": 1, "beats": [
+          {"t": 2.5, "dur": 1, "notes": [{"midi": 43}, {"midi": 55}]}
+        ]}]}
+      }
+    }
+  ]
+}

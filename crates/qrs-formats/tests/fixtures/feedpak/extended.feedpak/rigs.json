@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "rigs": [
+    {
+      "id": "clean-rhythm",
+      "name": "Clean Rhythm",
+      "instrument": "guitar",
+      "channels": 1,
+      "blocks": [
+        {
+          "id": "amp",
+          "role": "amp",
+          "name": "American Clean",
+          "intent": { "kind": "amp", "family": "american-clean", "tags": ["clean", "sparkle"] },
+          "realizations": [
+            { "engine": "nam", "ref": "captures/american-clean.nam", "sha256": "0000000000000000000000000000000000000000000000000000000000000000" },
+            { "engine": "builtin", "id": "feedback.amp.tubestage.v1", "params": { "gain": 0.25 } }
+          ],
+          "params": { "gain": 0.25, "bass": 0.5, "mid": 0.55, "treble": 0.6, "master": 0.5 }
+        },
+        {
+          "id": "cab",
+          "role": "cab",
+          "intent": { "kind": "cab", "family": "2x12" },
+          "realizations": [
+            { "engine": "ir", "ref": "irs/2x12-american.wav", "channels": 1 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lead-drive",
+      "name": "Lead Drive",
+      "instrument": "guitar",
+      "channels": 1,
+      "blocks": [
+        {
+          "id": "boost",
+          "role": "drive",
+          "name": "Green Overdrive",
+          "bypassed": false,
+          "intent": { "kind": "drive", "family": "tube-screamer", "tags": ["mid-boost"] },
+          "realizations": [
+            { "engine": "plugin", "format": "clap", "id": "com.example.greenod", "name": "Green OD", "vendor": "Example", "state": "eyJnYWluIjowLjZ9", "params": { "drive": 0.6, "tone": 0.55, "level": 0.7 } },
+            { "engine": "builtin", "id": "feedback.drive.tubescreamer.v1", "params": { "drive": 0.6, "tone": 0.55, "level": 0.7 } }
+          ],
+          "params": { "drive": 0.6, "tone": 0.55, "level": 0.7 }
+        },
+        {
+          "id": "amp",
+          "role": "amp",
+          "name": "British Hi-Gain",
+          "intent": { "kind": "amp", "family": "british-hi-gain", "tags": ["crunch", "lead"] },
+          "realizations": [
+            { "engine": "nam", "ref": "captures/british-higain.nam", "sha256": "1111111111111111111111111111111111111111111111111111111111111111" }
+          ],
+          "params": { "gain": 0.72, "bass": 0.5, "mid": 0.62, "treble": 0.58, "presence": 0.6, "master": 0.5 },
+          "automation": [
+            { "param": "gain", "points": [ { "t": 48.0, "v": 0.72 }, { "t": 60.0, "v": 0.85 } ] }
+          ]
+        },
+        {
+          "id": "cab",
+          "role": "cab",
+          "intent": { "kind": "cab", "family": "4x12", "model": "greenback-style" },
+          "realizations": [
+            { "engine": "ir", "ref": "irs/4x12-greenback.wav", "channels": 1 }
+          ]
+        },
+        {
+          "id": "delay",
+          "role": "delay",
+          "name": "Slap Delay",
+          "mix": 0.2,
+          "intent": { "kind": "delay", "family": "digital" },
+          "realizations": [
+            { "engine": "builtin", "id": "feedback.delay.digital.v1", "params": { "time": { "value": 320, "unit": "ms" }, "feedback": 0.25, "mix": 0.2 } }
+          ]
+        }
+      ],
+      "graph": {
+        "nodes": ["input", "boost", "amp", "cab", "delay", "output"],
+        "edges": [["input", "boost"], ["boost", "amp"], ["amp", "cab"], ["cab", "delay"], ["delay", "output"]]
+      }
+    },
+    {
+      "id": "grand-piano",
+      "name": "Concert Grand",
+      "instrument": "keys",
+      "channels": 2,
+      "blocks": [
+        {
+          "role": "source",
+          "name": "Concert Grand",
+          "intent": { "kind": "instrument", "gm": { "program": 0 } },
+          "realizations": [
+            { "engine": "soundfont", "format": "sf2", "ref": "sf/concert-grand.sf2", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "bank": 0, "program": 0 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rock-kit",
+      "name": "Rock Kit",
+      "instrument": "drums",
+      "blocks": [
+        {
+          "role": "source",
+          "name": "Rock Kit",
+          "intent": { "kind": "instrument", "gm": { "percussion": true, "kit": 16 } },
+          "realizations": [
+            { "engine": "soundfont", "format": "sf2", "ref": "sf/rock-kit.sf2", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "bank": 128, "program": 16 }
+          ]
+        }
+      ]
+    }
+  ]
+}

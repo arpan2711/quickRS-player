@@ -1,0 +1,40 @@
+{
+  "name": "Lead",
+  "tuning": [0, 0, 0, 0, 0, 0],
+  "capo": 0,
+  "notes": [
+    {"t": 0.5, "s": 0, "f": 0, "sus": 0.25, "fg": -1, "sd": 0},
+    {"t": 1.0, "s": 1, "f": 2, "sus": 0.5, "bn": 1.0, "bt": 4,
+     "bnv": [{"t": 0, "v": 0}, {"t": 0.25, "v": 1.0}, {"t": 0.5, "v": 0}],
+     "fg": 3, "sd": 7},
+    {"t": 1.5, "s": 2, "f": 2, "sus": 0.25, "fg": 2, "sd": 0},
+    {"t": 2.0, "s": 2, "f": 2, "sus": 0.2, "fg": 2, "ch": 7, "sd": 0, "pkd": 0},
+    {"t": 2.02, "s": 3, "f": 0, "sus": 0.2, "fg": -1, "ch": 7, "sd": 3, "pkd": 0},
+    {"t": 2.04, "s": 4, "f": 0, "sus": 0.2, "fg": -1, "ch": 7, "sd": 7, "pkd": 0}
+  ],
+  "chords": [
+    {"t": 2.5, "id": 0, "notes": [
+      {"s": 1, "f": 2},
+      {"s": 2, "f": 2},
+      {"s": 3, "f": 0}
+    ], "fn": {"rn": "vi", "q": "m", "deg": 9}}
+  ],
+  "anchors": [
+    {"time": 0.0, "fret": 1, "width": 4}
+  ],
+  "handshapes": [
+    {"chord_id": 0, "start_time": 2.5, "end_time": 3.5, "arp": false}
+  ],
+  "templates": [
+    {"name": "Em", "displayName": "Em", "arp": false,
+     "fingers": [-1, 2, 1, -1, -1, -1], "frets": [0, 2, 2, 0, 0, 0],
+     "voicing": "open", "caged": "E", "guideTones": [3]}
+  ],
+  "tones": {
+    "base": "Clean Rhythm",
+    "base_rig": "clean-rhythm",
+    "changes": [
+      {"t": 48.0, "name": "Lead Drive", "rig": "lead-drive"}
+    ]
+  }
+}

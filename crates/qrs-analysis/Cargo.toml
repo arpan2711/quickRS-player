@@ -1,0 +1,17 @@
+[package]
+name = "qrs-analysis"
+description = "Pitch, onset and note detection, scoring and key guessing on audio buffers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+qrs-formats.workspace = true
+realfft.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

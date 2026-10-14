@@ -1,0 +1,17 @@
+{
+  "name": "Lead",
+  "tuning": [0, 0, 0, 0, 0, 0],
+  "capo": 0,
+  "notes": [
+    {"t": 0.0, "s": 0, "f": 0, "sus": 0.25},
+    {"t": 0.5, "s": 1, "f": 2, "sus": 0.25},
+    {"t": 1.0, "s": 2, "f": 2, "sus": 0.25, "ho": true},
+    {"t": 1.5, "s": 2, "f": 4, "sus": 0.5, "bn": 1.0}
+  ],
+  "chords": [],
+  "anchors": [
+    {"time": 0.0, "fret": 1, "width": 4}
+  ],
+  "handshapes": [],
+  "templates": []
+}

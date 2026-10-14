@@ -1,0 +1,27 @@
+[package]
+name = "qrs-cli"
+description = "quickRS command line"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+
+[dependencies]
+qrs-formats.workspace = true
+qrs-audio.workspace = true
+qrs-library.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+qrs-audio = { workspace = true, features = ["asio"] }
+
+[[bin]]
+name = "quickrs-cli"
+path = "src/main.rs"

@@ -1,0 +1,25 @@
+[package]
+name = "qrs-convert"
+description = "quickRS Converter: a window that converts a folder of .psarc songs to feedpaks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "quickrs-convert"
+path = "src/main.rs"
+
+[dependencies]
+qrs-formats.workspace = true
+qrs-library.workspace = true
+qrs-ui.workspace = true
+eframe.workspace = true
+image.workspace = true
+rfd = { version = "0.15", default-features = false }
+
+[build-dependencies]
+winresource = "0.1.34"

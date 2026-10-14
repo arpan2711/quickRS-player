@@ -1,0 +1,20 @@
+{
+  "name": "Bass",
+  "tuning": [0, 0, 0, 0],
+  "capo": 0,
+  "notes": [
+    {"t": 0.5, "s": 0, "f": 3, "sus": 0.5},
+    {"t": 1.5, "s": 1, "f": 2, "sus": 0.5},
+    {"t": 2.5, "s": 0, "f": 0, "sus": 0.5, "slp": true}
+  ],
+  "chords": [],
+  "anchors": [
+    {"time": 0.0, "fret": 1, "width": 4}
+  ],
+  "handshapes": [],
+  "templates": [],
+  "tempos": [
+    {"time": 0.0, "bpm": 60.0},
+    {"time": 2.5, "bpm": 120.0}
+  ]
+}

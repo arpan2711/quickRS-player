@@ -1,0 +1,19 @@
+[package]
+name = "qrs-library"
+description = "Song library scan, config and user data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+qrs-formats.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image.workspace = true
+directories.workspace = true
+zip.workspace = true
+chrono.workspace = true

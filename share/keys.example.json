@@ -1,0 +1,4 @@
+{
+  "psarc_key": "<64 hex characters: the PSARC table-of-contents AES key>",
+  "sng_key": "<64 hex characters: the PC SNG AES key>"
+}

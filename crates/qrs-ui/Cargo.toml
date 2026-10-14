@@ -1,0 +1,20 @@
+[package]
+name = "qrs-ui"
+description = "quickRS look: themes, fonts, neumorphic components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+egui.workspace = true
+tiny-skia.workspace = true
+# the same versions egui's text uses (pyfont: pygame's line layout)
+harfrust = "0.12.0"
+skrifa = "0.44.0"
+
+[dev-dependencies]
+serde_json.workspace = true

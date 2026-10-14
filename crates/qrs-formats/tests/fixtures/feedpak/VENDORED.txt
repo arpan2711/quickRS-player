@@ -1,0 +1,2 @@
+Vendored from https://github.com/got-feedback/feedpak-spec at commit 52548b742f64c2a35052a141976ea1b7889f4b1a (Thu Jul 23 00:59:01 2026 -0400), spec version 1.19.0.
+schemas/, examples/ and tools/validate.py are MIT (LICENSE-CODE); feedpak-v1.md is CC0 (LICENSE).

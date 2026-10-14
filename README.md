@@ -5,7 +5,7 @@
 **A free practice player for your own Rocksmith 2014 songs.**
 Plug in your guitar, pick a song, and play along to tab that scrolls with the music.
 
-[**⬇ Download for Windows**](https://github.com/arpan2711/quickRS-player/releases/latest) · [Get your songs in](#get-your-songs-in) · [Converter](#the-converter-psarc--feedpak) · [☕ Support it](https://ko-fi.com/arpanmitra)
+[**⬇ Download for Windows**](https://github.com/arpan2711/quickRS-player/releases/latest) · [Get your songs in](#get-your-songs-in) · [Converter](#the-converter-psarc--feedpak) · [Build it yourself](#build-it-yourself) · [☕ Support it](https://ko-fi.com/arpanmitra)
 
 ![quickRS: the player](screenshots/10_player-light.png)
 
@@ -15,8 +15,9 @@ Plug in your guitar, pick a song, and play along to tab that scrolls with the mu
 
 1. **Download** `quickRS-<version>-windows-x64.zip` from
    [Releases](https://github.com/arpan2711/quickRS-player/releases/latest) and unzip it anywhere. There's no
-   installer. (Everything that's in the zip is also in the [`quickRS`](quickRS) folder here: *Code → Download
-   ZIP* gets it too.)
+   installer. (Everything that's in the zip is also in the [`quickRS`](quickRS) folder here, ready to run:
+   *Code → Download ZIP* gets it too. The rest of this repo is the source: see
+   [Build it yourself](#build-it-yourself).)
 
    | File | What it's for |
    |---|---|
@@ -126,6 +127,43 @@ effects knobs, and save it. Three themes: Midnight and Graphite (dark) and Dayli
 - **A microphone**, for an acoustic guitar.
 
 It follows devices as you plug them in and out, and finds your guitar's channel from the first notes you play.
+
+---
+
+## Build it yourself
+
+The whole program is here as Rust source (MIT), the same code as the release.
+
+| Folder | What's in it |
+|---|---|
+| [`quickRS/`](quickRS) | the program, built and ready to run (the release zip's contents) |
+| `crates/qrs-app` | the player, `quickrs.exe` |
+| `crates/qrs-convert` | the converter window, `quickRS Converter.exe` |
+| `crates/qrs-cli` | the command-line tools, `quickrs-cli.exe` (converter, song info, tabs, devices) |
+| `crates/qrs-formats` | Rocksmith 2014 psarc / sng / xml and feedpak, the chart model, tab rendering |
+| `crates/qrs-audio` | the audio engine: WASAPI and ASIO devices, tones, decoding, slow-down, the synth |
+| `crates/qrs-analysis` | pitch, onset and note detection, scoring |
+| `crates/qrs-library` | the library scan, settings and user data, the feedpak exporter |
+| `crates/qrs-ui` | the look: themes, fonts, components |
+| `share/` | the release's readme, `Convert songs.bat`, and `package.ps1`, which makes the release zip |
+
+**You need** (Windows 10 or 11, 64-bit):
+- [Rust](https://rustup.rs) (stable) with the MSVC toolchain, and the *Visual Studio Build Tools* with
+  *Desktop development with C++*.
+- [LLVM](https://github.com/llvm/llvm-project/releases), for the ASIO support: set `LIBCLANG_PATH` to its `bin`
+  folder. The ASIO SDK is downloaded by the build.
+
+**Build and run:**
+
+```bat
+cargo build --release -p qrs-app -p qrs-cli -p qrs-convert
+cargo run --release -p qrs-app
+cargo test --workspace
+powershell -ExecutionPolicy Bypass -File share\package.ps1
+```
+
+The programs land in `target/release`; `package.ps1` makes the release zip in `dist\share`. For your songs,
+put `keys.json` in the folder you run from (it's in `.gitignore`), as in step 2 above.
 
 ---
 

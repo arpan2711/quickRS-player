@@ -1,0 +1,29 @@
+[package]
+name = "qrs-formats"
+description = "Rocksmith 2014 psarc/sng/xml and feedpak song formats, chart model, tab rendering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Synthetic test archives (psarc, sng, xml) for other crates' tests.
+testutil = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+aes.workspace = true
+flate2.workspace = true
+roxmltree.workspace = true
+zip.workspace = true
+serde_norway.workspace = true
+md-5.workspace = true
+
+[dev-dependencies]
+qrs-formats = { path = ".", features = ["testutil"] }
+tempfile = "3"
+zip = { workspace = true, features = ["deflate"] }

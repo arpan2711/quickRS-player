@@ -1,0 +1,20 @@
+/target/
+**/*.rs.bk
+# secrets and user data
+keys.json
+config.json
+userdata.json
+.quickrs-cache/
+.rsplay-cache/
+# copyrighted content: never commit real songs or anything extracted from them
+*.psarc
+*.wem
+*.bnk
+*.sng
+/tests/golden/real/
+/out/
+/screenshots/
+/dist/
+
+# Claude Code (agent worktrees, local settings)
+/.claude/

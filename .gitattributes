@@ -1,3 +1,10 @@
-quickRS/*.bat text eol=crlf
+* text=auto eol=lf
+*.bat text eol=crlf
 *.exe binary
 *.png binary
+*.ttf binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.bin binary
+*.ogg binary

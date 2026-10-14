@@ -1,0 +1,16 @@
+# Smallest valid feedpak. See spec/feedpak-v1.md §5.
+# SPDX-License-Identifier: MIT
+feedpak_version: "1.0.0"
+title: "Untitled Demo"
+artist: "Example Artist"
+duration: 2.0
+arrangements:
+  - id: lead
+    name: Lead
+    file: arrangements/lead.json
+    tuning: [0, 0, 0, 0, 0, 0]
+    capo: 0
+stems:
+  - id: full
+    file: stems/full.ogg
+    default: true

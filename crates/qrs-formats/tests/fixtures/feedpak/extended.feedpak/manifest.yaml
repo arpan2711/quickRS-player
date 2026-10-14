@@ -1,0 +1,128 @@
+# Extended feedpak exercising optional side-files: lyrics, vocal pitch,
+# song timeline, and drum tabs (incl. multiple drum-part arrangements).
+# See spec/feedpak-v1.md §5 and §7.
+# SPDX-License-Identifier: MIT
+feedpak_version: "1.19.0"
+title: "Extended Demo"
+artist: "Example Artist"
+album: "Spec Examples"
+album_artist: "Various Artists"   # groups a compilation under one album identity (§5.1)
+year: 2026
+track: 3                          # 1-based album track number, for album playback order (§5.1)
+disc: 1
+genres:                           # most specific first; genres[0] is the primary genre (§5.1)
+  - "Progressive Metal"
+  - "Metal"
+mbid: "0aa1a833-c4d6-4c99-8e5c-2d0e8b8a9f31"   # MusicBrainz Recording MBID — exact identity (§5.1; illustrative value)
+isrc: "USABC2400001"                           # International Standard Recording Code (§5.1; illustrative value)
+language: en           # BCP 47 — the song's primary sung language (§5.1)
+authors:
+  - name: Jane Smith
+    role: transcriber
+    email: jane@example.com
+    url: https://janesmith.example
+  - name: Bob Lee
+    role: editor
+duration: 4.5
+arrangements:
+  - id: lead
+    name: Lead
+    file: arrangements/lead.json
+    tuning: [0, 0, 0, 0, 0, 0]
+    capo: 0
+    centOffset: 0.0
+  - id: bass
+    name: Bass
+    file: arrangements/bass.json
+    tuning: [0, 0, 0, 0]
+    capo: 0
+  - id: keys
+    name: Keys
+    type: piano
+    notation: arrangements/notation_keys.json
+    tones:                       # manifest-level sound binding (§5.2) — a source rig in rigs.json
+      base: "Concert Grand"
+      base_rig: grand-piano
+  # Drum charts as first-class arrangements (§5.2, §7.5). A `type: drums`
+  # entry has neither `file` nor `notation`; its chart is a per-arrangement
+  # `drum_tab` pointer. The PRIMARY drum part points at the same file as the
+  # top-level `drum_tab` below — that key is its back-compat alias, so a Reader
+  # that predates this stays with one drum. A SECOND drum part (a live take,
+  # here) carries its own file — invisible to an old Reader, a distinct chart
+  # to a new one.
+  - id: drums_kit
+    name: Drums
+    type: drums
+    drum_tab: drum_tab.json
+    tones:                       # entry tones take precedence; drum_tones below mirrors this (§7.5)
+      base: "Rock Kit"
+      base_rig: rock-kit
+  - id: drums_live
+    name: Drums (Live)
+    type: drums
+    drum_tab: drum_tab_live.json
+stems:
+  # A separated pack: the RESERVED `full` mixdown is RETAINED alongside the
+  # per-instrument stems it was split into (§5.3). It is not an instrument
+  # layer — a Reader must never sum it with the stems below (that would double
+  # the whole song), hence `default: false`. It is kept because separation is
+  # lossy: re-summing guitar+drums+vocals does not reproduce this file.
+  - id: full
+    file: stems/full.ogg
+    codec: vorbis        # OPTIONAL disambiguation hint; inferred from .ogg when absent
+    language: en         # BCP 47 — the sung language carried in this stem (§5.3)
+    default: false
+  - id: guitar
+    file: stems/guitar.ogg
+    name: Guitar         # OPTIONAL display label; Readers fall back to `id` when absent (§5.3)
+    default: true
+  - id: drums
+    file: stems/drums.ogg
+    default: true
+  - id: vocals
+    file: stems/vocals.ogg
+    language: en
+    default: true
+  # An authored extra stem (not part of the separation above) carrying the
+  # OPTIONAL presentational fields `name` and `description` (§5.3).
+  - id: click
+    file: stems/click.ogg
+    name: Click
+    description: "Metronome click with 4-count lead-in."
+    default: false
+stem_separation:         # provenance for the per-instrument stems above (§5.3.1)
+  engine: demucs
+  model: htdemucs_6s
+  version: "1.0.0"
+lyrics: lyrics.json      # legacy single pointer — the primary (en) track, for pre-1.11.0 readers
+lyrics_source: authored
+lyric_tracks:            # multi-lingual lyric representations (§5.5)
+  - id: en
+    file: lyrics.json    # same file the `lyrics` pointer names — the sung original
+    language: en
+    kind: original
+    stem: full
+  - id: ja
+    file: lyrics_ja.json
+    language: ja
+    kind: translation
+    lyrics_source: transcribed
+    lyric_transcription:
+      engine: example-mt
+      model: demo-translate-1
+      version: "1.0.0"
+  - id: romaji
+    file: lyrics_romaji.json
+    language: ja-Latn
+    kind: transliteration
+vocal_pitch: vocal_pitch.json
+vocal_pitch_contour: vocal_pitch_contour.json
+song_timeline: song_timeline.json
+drum_tab: drum_tab.json
+drum_tones:                # primary drum part's sound alias (§5.1/§7.5) — mirrors drums_kit's entry tones
+  base: "Rock Kit"
+  base_rig: rock-kit
+keys: keys.json
+harmony: harmony.json
+rigs: rigs.json          # engine-agnostic rig library (spec §7.8)
+cover: cover.png
