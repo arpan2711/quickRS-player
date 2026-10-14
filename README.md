@@ -13,6 +13,19 @@ Plug in your guitar, pick a song, and play along to tab that scrolls with the mu
 
 ---
 
+## Get your songs in (5 minutes)
+
+1. **Download and unzip** [the latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
+2. **Add the keys:** copy `keys.example.json` to `keys.json` and paste in Rocksmith's two keys (see
+   [Install](#install)).
+3. **Run `quickrs.exe`.** Your songs in Rocksmith's `dlc` folder are listed straight away: nothing to convert,
+   nothing to set up. Songs somewhere else? Drag that folder onto the quickRS window.
+4. **Optional: convert them to feedpaks.** Double-click **`Convert songs.bat`** (it's in the zip) and press Enter
+   twice. Every song goes into a `feedpak` folder next to `dlc`, which quickRS picks up by itself.
+   [More on converting](#convert-your-songs-to-feedpaks).
+
+---
+
 ## What it does
 
 quickRS reads the songs you already have from Rocksmith's `dlc` folder and turns them into a fast, clean practice
