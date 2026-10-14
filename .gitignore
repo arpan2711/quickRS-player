@@ -13,7 +13,6 @@ userdata.json
 *.sng
 /tests/golden/real/
 /out/
-/screenshots/
 /dist/
 
 # Claude Code (agent worktrees, local settings)

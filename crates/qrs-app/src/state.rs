@@ -119,7 +119,7 @@ impl AppState {
                 let stand_in = qrs_audio::DevicePref {
                     backend: Backend::Null,
                     id: null::STAND_IN.into(),
-                    name: null::STAND_IN_NAME.into(),
+                    name: null::stand_in_name(),
                 };
                 AudioPrefs {
                     input: qrs_audio::Choice::Device(stand_in.clone()),

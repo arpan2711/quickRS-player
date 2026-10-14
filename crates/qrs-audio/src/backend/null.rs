@@ -26,7 +26,7 @@ pub fn enumerate() -> Vec<DeviceInfo> {
             },
             name: match *id {
                 "null" => "No sound (silent)".into(),
-                STAND_IN => STAND_IN_NAME.into(),
+                STAND_IN => stand_in_name(),
                 _ => "Test signal".into(),
             },
             input_channels: 2,
@@ -80,6 +80,11 @@ pub const STAND_IN: &str = "null:stand-in";
 pub const STAND_IN_NAME: &str = "NUX Audio (ASIO)";
 static STAND_IN_LISTED: AtomicBool = AtomicBool::new(false);
 
+/// The stand-in's name: STAND_IN_NAME, or QUICKRS_SHOT_DEVICE (the shared screenshots show a Real Tone Cable).
+pub fn stand_in_name() -> String {
+    std::env::var("QUICKRS_SHOT_DEVICE").unwrap_or_else(|_| STAND_IN_NAME.into())
+}
+
 pub fn enable_stand_in() {
     STAND_IN_LISTED.store(true, Ordering::Release);
 }
@@ -120,7 +125,7 @@ fn info(id: &DeviceId, rate: u32, block: usize, mode: &str) -> StreamInfo {
         device: id.clone(),
         device_name: match id.id.as_str() {
             "null" => "No sound".into(),
-            STAND_IN => STAND_IN_NAME.into(),
+            STAND_IN => stand_in_name(),
             _ => "Test signal".into(),
         },
         rate,

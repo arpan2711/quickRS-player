@@ -353,14 +353,17 @@ impl QuickRs {
     }
 
     /// The song the Python app's screenshots open: Here Without You (else the first playable one).
+    /// QUICKRS_SHOT_SONG picks another: the first song whose title contains it (any case).
     fn shot_song(&self) -> Option<usize> {
         let n = self.state.groups.len();
+        let want = std::env::var("QUICKRS_SHOT_SONG").ok().map(|s| s.to_lowercase());
         (0..n)
             .find(|&g| {
-                self.state
-                    .song(g)
-                    .display_title()
-                    .eq_ignore_ascii_case("Here Without You")
+                let title = self.state.song(g).display_title();
+                match &want {
+                    Some(w) => title.to_lowercase().contains(w.as_str()),
+                    None => title.eq_ignore_ascii_case("Here Without You"),
+                }
             })
             .or_else(|| (0..n).find(|&g| self.state.song(g).playable()))
     }

@@ -1871,7 +1871,11 @@ impl PlayerView {
     /// earlier runs the Python tool records (38,900 at 84%, 35,100 at 79%); then what the page adds.
     pub fn prepare_shot(&mut self, st: &mut AppState, page: Option<crate::shots::Page>) {
         use crate::shots::Page;
-        const AT: f64 = 61.0;
+        // (QUICKRS_SHOT_AT: another moment of the song, in seconds; the 10 s before it are judged as below)
+        let at: f64 = std::env::var("QUICKRS_SHOT_AT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(61.0);
         // what an earlier shot staged goes
         self.loop_a = None;
         self.loop_b = None;
@@ -1908,10 +1912,10 @@ impl PlayerView {
             return;
         }
         self.transport.play();
-        self.transport.seek(60.0);
-        self.transport.hold(Some(AT));
+        self.transport.seek(at - 1.0);
+        self.transport.hold(Some(at));
         for g in &mut self.scorer.groups {
-            if 50.0 < g.t && g.t < 60.0 {
+            if at - 11.0 < g.t && g.t < at - 1.0 {
                 g.state = Some(match (g.t * 7.0) as i64 % 5 {
                     3 => Judgement::Late,
                     4 => Judgement::Miss,
@@ -1927,7 +1931,7 @@ impl PlayerView {
                 .completed(&self.sid, &self.part_name, 35100, 0.79, 1.0);
         }
         self.update(st); // one frame at 61 s: the notes before it that weren't judged are missed
-        let now = AT - self.offset;
+        let now = at - self.offset;
         let bar_after = |p: &Self, dt: f64| p.tab.measure_at(now + dt).map(|m| (m.start, m.end));
         match page {
             Some(Page::PlayerSelection) | Some(Page::PlayerAt("sel_slow")) => {

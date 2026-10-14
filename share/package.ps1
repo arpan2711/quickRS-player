@@ -1,6 +1,7 @@
 # Builds the version to share (GitHub release, Reddit) and zips it: dist\share\quickRS-<version>-windows-x64.zip.
 # It differs from tools\package.ps1 (the owner's own zip) in three ways:
-#   - the NUX MG-300 support is left out (built without the "nux" feature, and assets\mg300 isn't included);
+#   - the NUX MG-300 support is left out (built without the "nux" feature, so the qrs-mg300 crate isn't in quickrs
+#     or quickrs-cli, and assets\mg300 isn't included);
 #   - there are no keys, only keys.example.json;
 #   - it includes the psarc-to-feedpak converter: "quickRS Converter.exe" (a window) and "Convert songs.bat".
 # It builds into target\share, so the owner's own target\release build is left alone (and can stay running).
@@ -31,6 +32,10 @@ try {
     # nothing private: no keys, no songs, no NUX pictures
     foreach ($bad in 'keys.json', 'assets', 'config.json', 'userdata.json') {
         if (Test-Path (Join-Path $out $bad)) { throw "$bad must not be in the shared zip" }
+    }
+    # and no NUX code in the programs (qrs-mg300 carries QuickTone's catalog)
+    foreach ($exe in Get-ChildItem $out -Filter *.exe) {
+        if (Select-String -Path $exe.FullName -Pattern 'QuickTone|BASSGUY' -SimpleMatch -Quiet) { throw "$($exe.Name) has the NUX code in it" }
     }
     $zip = Join-Path $dist "$name-windows-x64.zip"
     if (Test-Path $zip) { Remove-Item -Force $zip }
