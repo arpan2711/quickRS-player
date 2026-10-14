@@ -1,0 +1,3 @@
+quickRS/*.bat text eol=crlf
+*.exe binary
+*.png binary

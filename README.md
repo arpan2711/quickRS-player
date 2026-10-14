@@ -7,13 +7,26 @@ Plug in your guitar, pick a song, and play along to tab that scrolls with the mu
 
 [**⬇ Download for Windows**](https://github.com/arpan2711/quickRS-player/releases/latest) · [Get your songs in](#get-your-songs-in) · [Converter](#the-converter-psarc--feedpak) · [☕ Support it](https://ko-fi.com/arpanmitra)
 
+![quickRS: the player](screenshots/10_player-light.png)
+
 </div>
 
 ## Get your songs in
 
 1. **Download** `quickRS-<version>-windows-x64.zip` from
    [Releases](https://github.com/arpan2711/quickRS-player/releases/latest) and unzip it anywhere. There's no
-   installer.
+   installer. (Everything that's in the zip is also in the [`quickRS`](quickRS) folder here: *Code → Download
+   ZIP* gets it too.)
+
+   | File | What it's for |
+   |---|---|
+   | `quickrs.exe` | the player |
+   | `quickRS Converter.exe` | converts your .psarc songs to feedpaks, in a window |
+   | `Convert songs.bat` | the same, in a console |
+   | `quickrs-cli.exe` | command-line tools (the converter, song info, tabs) |
+   | `keys.example.json` | copy it to `keys.json` and fill in the keys |
+   | `make_shortcut.ps1` | puts a quickRS shortcut on your Desktop |
+   | `README.txt` | these instructions, offline |
 2. **Add the keys.** Rocksmith's .psarc files are encrypted, and the keys aren't included. They're published in
    open-source Rocksmith modding tools. Copy `keys.example.json` to `keys.json`, next to `quickrs.exe`, and paste
    in the two keys:
@@ -29,9 +42,7 @@ shortcut, right-click `make_shortcut.ps1` and choose *Run with PowerShell*.
 **Needs:** Windows 10 or 11 (64-bit), your guitar (a Real Tone Cable, an audio interface, or a mic), and your own
 Rocksmith 2014 songs. **No songs are included.**
 
-| Dark | Light |
-|---|---|
-| ![The player, dark](screenshots/10_player-dark.png) | ![The player, light](screenshots/10_player-light.png) |
+![The player in the dark theme](screenshots/10_player-dark.png)
 
 ## The converter: psarc → feedpak
 
@@ -76,44 +87,37 @@ The tab scrolls with the song and highlights the bar you're in, with the next no
 Bass parts are one click apart, and the rhythm notation is drawn under the staff. A **note and chord panel** shows
 what's coming on a piano or a guitar neck, next to the **lyrics** and a **tuner** set to the song's tuning.
 
-| Dark | Light |
-|---|---|
-| ![Guitar neck, dark](screenshots/11_player_guitar_neck-dark.png) | ![Guitar neck, light](screenshots/11_player_guitar_neck-light.png) |
+![The guitar neck](screenshots/11_player_guitar_neck-light.png)
 
 ### 🔁 Loop it, slow it down, level up
 Drag across the tab to select a few bars and loop them. Slow the loop down **without changing the pitch**. Turn
 on *Level up after a clean loop* and the difficulty steps up each time you nail it.
 
-| Dark | Light |
-|---|---|
-| ![A loop, dark](screenshots/13_selection_loop-dark.png) | ![A loop, light](screenshots/13_selection_loop-light.png) |
-| ![Practice controls, dark](screenshots/14_controls-dark.png) | ![Practice controls, light](screenshots/14_controls-light.png) |
+![A loop over a selection](screenshots/13_selection_loop-dark.png)
+
+![Practice controls](screenshots/14_controls-light.png)
 
 ### 🎯 Scored as you play
 Your guitar is listened to as you play. Every note counts as hit, late, early or missed, and your best runs are
 kept for each part.
 
-| Dark | Light |
-|---|---|
-| ![Results, dark](screenshots/30_results-dark.png) | ![Results, light](screenshots/30_results-light.png) |
+![Results](screenshots/30_results-dark.png)
 
 ### 📚 Your whole library, straight away
 Your songs are found by themselves, from every Steam library. You get covers, search, sorting, favourites,
 playlists, a tuning filter, and a preview of the song you've selected. Home picks up where you left off.
 
-| Dark | Light |
-|---|---|
-| ![Home, dark](screenshots/00_home-dark.png) | ![Home, light](screenshots/00_home-light.png) |
-| ![Library, dark](screenshots/02_library_selected-dark.png) | ![Library, light](screenshots/02_library_selected-light.png) |
-| ![Picking a part, dark](screenshots/03_picker-dark.png) | ![Picking a part, light](screenshots/03_picker-light.png) |
+![Home](screenshots/00_home-light.png)
+
+![The library](screenshots/02_library_selected-dark.png)
+
+![Picking a part](screenshots/03_picker-light.png)
 
 ### 🎛️ Your tone, your look
 Built-in guitar tones (As is, Clean, Crunch, Lead, Bass, Acoustic), or make your own with the drive, EQ and
 effects knobs, and save it. Three themes: Midnight and Graphite (dark) and Daylight (light). Four knob styles.
 
-| Dark | Light |
-|---|---|
-| ![Guitar tone, dark](screenshots/20_settings_tone-dark.png) | ![Guitar tone, light](screenshots/20_settings_tone-light.png) |
+![Guitar tone](screenshots/20_settings_tone-dark.png)
 
 ### 🔌 Your guitar, your way
 - **Rocksmith Real Tone Cable:** plug it in and it's picked, as in Rocksmith.
