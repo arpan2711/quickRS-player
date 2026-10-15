@@ -15,11 +15,27 @@ quickRS comes with no songs and no Rocksmith files. You need your own.
 
 1. Keys
 -------
-Rocksmith's .psarc files are encrypted. quickRS doesn't ship the keys, but they're published in open-source
-Rocksmith modding tools.
-Copy keys.example.json to keys.json (in this folder), then paste in the two keys, 64 hex characters each:
-    { "psarc_key": "...", "sng_key": "..." }
-With keys.json in place you can play .psarc files directly and convert them. Feedpaks don't need keys.
+Rocksmith's .psarc song files are locked (encrypted), and quickRS needs two keys to unlock them. Each key is a
+code 64 characters long, made of 0-9 and A-F. They're the same in every copy of Rocksmith, so they aren't a
+licence key and have nothing to do with your Steam account. quickRS can't ship them, but they're published in
+open-source Rocksmith modding tools: the "PSARC key" and the "SNG key for PC". When you have them:
+
+  1. Open keys.example.json (in this folder) in Notepad: right-click it, then Open with > Notepad. It has two
+     lines like this one:
+         "psarc_key": "<replace all of this, < and > too, with the PSARC key>",
+  2. On each line, delete the text between the two quotes, < and > included, and paste the key there. Leave the
+     quotes and the comma as they are, and keep the key on one line. A key written as 0x1A, 0x2B, ... works too.
+  3. Click File > Save as. Keep the same folder, type "keys.json" as the file name (with the quotes, so Windows
+     doesn't add .txt), and click Save.
+  4. To check, open "quickRS Converter.exe". Its top line says "Keys found", or says what's wrong with
+     keys.json.
+  5. If you've already run quickRS, press F5 in it (Rescan, on the library's bottom bar). quickRS remembers
+     which songs it couldn't read, and only checks them again on a rescan; until then they stay "needs keys"
+     even with the keys in place.
+
+With the keys in, quickRS plays your .psarc files straight from Rocksmith's folder and can convert them. Until
+then, they're listed with "needs keys" and don't play. Songs still say "needs keys" after you've added them?
+Press F5. Feedpaks (step 4) don't need keys.
 
 
 2. Plug in your guitar
@@ -46,7 +62,8 @@ Settings > Library lists your folders, and F5 reads them again.
 Feedpaks need no keys, and they're plain zip files you can look inside.
 
 The easy way: double-click "quickRS Converter.exe".
-  1. Check it says "Keys found". If it doesn't, add keys.json first (step 1) and press "Check again".
+  1. Check it says "Keys found". If it doesn't, it says what's wrong: add or fix keys.json (step 1), then press
+     "Check again".
   2. Your Rocksmith songs: it fills in Rocksmith's dlc folder if it finds it. If not, press Browse and pick the
      folder with your .psarc files.
   3. Where the feedpaks go: it fills in a "feedpak" folder next to "dlc". Leave it, and quickRS finds the
@@ -72,8 +89,8 @@ A song you have as both a .psarc and a feedpak shows once. Settings > Library pi
 Your .psarc files are only read, never changed, so Rocksmith keeps working as before.
 
 
-Keys in the app
----------------
+Keyboard shortcuts
+------------------
 F2 settings, F11 full screen, Space play / pause, Esc back. Every page shows its keys on its buttons.
 
 Your data

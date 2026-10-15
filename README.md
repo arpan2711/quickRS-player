@@ -25,15 +25,32 @@ Plug in your guitar, pick a song, and play along to tab that scrolls with the mu
    | `quickRS Converter.exe` | converts your .psarc songs to feedpaks, in a window |
    | `Convert songs.bat` | the same, in a console |
    | `quickrs-cli.exe` | command-line tools (the converter, song info, tabs) |
-   | `keys.example.json` | copy it to `keys.json` and fill in the keys |
+   | `keys.example.json` | where you paste Rocksmith's two keys (step 2) |
    | `make_shortcut.ps1` | puts a quickRS shortcut on your Desktop |
    | `README.txt` | these instructions, offline |
-2. **Add the keys.** Rocksmith's .psarc files are encrypted, and the keys aren't included. They're published in
-   open-source Rocksmith modding tools. Copy `keys.example.json` to `keys.json`, next to `quickrs.exe`, and paste
-   in the two keys:
-   ```json
-   { "psarc_key": "<64 hex characters>", "sng_key": "<64 hex characters>" }
-   ```
+2. **Add Rocksmith's two keys.** Rocksmith's .psarc song files are locked (encrypted), and quickRS needs two keys
+   to unlock them. Each key is a code 64 characters long, made of `0`-`9` and `A`-`F`. They're the same in every
+   copy of Rocksmith, so they aren't a licence key and have nothing to do with your Steam account. quickRS can't
+   ship them, but they're published in open-source Rocksmith modding tools: the *PSARC key* and the *SNG key for
+   PC*. When you have them:
+   1. Open `keys.example.json` in Notepad: right-click it, then *Open with* → *Notepad*. It has two lines like
+      this one:
+      ```
+      "psarc_key": "<replace all of this, < and > too, with the PSARC key>",
+      ```
+   2. On each line, delete the text between the two quotes, `<` and `>` included, and paste the key there. Leave
+      the quotes and the comma as they are, and keep the key on one line. A key written as `0x1A, 0x2B, …` works
+      too.
+   3. Click *File* → *Save as*. Keep the same folder, type `"keys.json"` as the file name (with the quotes, so
+      Windows doesn't add `.txt`), and click *Save*.
+   4. To check, open `quickRS Converter.exe`. Its top line says **Keys found**, or says what's wrong with
+      `keys.json`.
+   5. **If you've already run quickRS, press F5 in it** (*Rescan*, on the library's bottom bar). quickRS
+      remembers which songs it couldn't read, and only checks them again on a rescan; until then they stay
+      *needs keys* even with the keys in place.
+
+   Until the keys are in, your .psarc songs are listed with *needs keys* and don't play. Songs still say *needs
+   keys* after you've added them? Press **F5**. Feedpaks (below) don't need keys.
 3. **Run `quickrs.exe`.** Your songs in Rocksmith's `dlc` folder are listed straight away, with nothing to convert
    or set up. Songs somewhere else? Drag that folder onto the quickRS window and it stays in your library.
 4. **Optional: convert them to feedpaks** with **`quickRS Converter.exe`** (below).
@@ -56,8 +73,8 @@ never changed, so Rocksmith keeps working as before.
 **How to use it:**
 
 1. Double-click **`quickRS Converter.exe`** (it's in the zip, next to `quickrs.exe`).
-2. Check the top line says **Keys found**. If it says *keys.json is missing*, do step 2 above, then press
-   *Check again*.
+2. Check the top line says **Keys found**. If it doesn't, it says what's wrong: add or fix `keys.json` (step 2
+   above), then press *Check again*.
 3. **Your Rocksmith songs:** Rocksmith's `dlc` folder is filled in when it's found. If it isn't, press *Browse…*
    and pick the folder with your .psarc files.
 4. **Where the feedpaks go:** it fills in a `feedpak` folder next to `dlc`. **Leave it** and quickRS finds your
@@ -196,7 +213,7 @@ put `keys.json` in the folder you run from (it's in `.gitignore`), as in step 2 
 
 ---
 
-## Keys
+## Keyboard shortcuts
 
 | | |
 |---|---|

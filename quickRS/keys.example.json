@@ -1,4 +1,4 @@
 {
-  "psarc_key": "<64 hex characters: the PSARC table-of-contents AES key>",
-  "sng_key": "<64 hex characters: the PC SNG AES key>"
+  "psarc_key": "<replace all of this, < and > too, with the PSARC key>",
+  "sng_key": "<replace all of this, < and > too, with the SNG key for PC>"
 }
