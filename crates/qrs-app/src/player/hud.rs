@@ -194,6 +194,8 @@ pub(super) const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("[ ]", "Loop start, loop end"),
             ("\\", "Clear the loop"),
             ("Ctrl S", "Save the loop as a lick"),
+            ("E", "Review the run: spots to practise"),
+            ("O", "Continuous loop: every pass scored"),
             ("W", "Note for note"),
             ("Enter", "Skip the note it waits for"),
             ("H", "Ear mode (notes hidden)"),

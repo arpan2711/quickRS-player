@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample as _, SampleFormat};
@@ -33,8 +33,49 @@ pub fn host(id: Option<cpal::HostId>) -> Result<cpal::Host, String> {
     }
 }
 
+/// Which stream errors end a stream (P28.3). A buffer under- or overrun never does: a glitch, and cpal carries on
+/// past it (on Linux the sound server has them now and then). On Linux cpal's ALSA stream keeps running after any
+/// error but "device not available", so the rest end it only when they keep coming (more than `BURST` in
+/// `WINDOW`); elsewhere every other error ends it, as before.
+#[derive(Default)]
+struct Tally {
+    since: Option<Instant>,
+    count: u32,
+}
+
+impl Tally {
+    const BURST: u32 = 20;
+    const WINDOW: Duration = Duration::from_secs(2);
+
+    fn ends_stream(&mut self, kind: cpal::ErrorKind, now: Instant) -> bool {
+        use cpal::ErrorKind as K;
+        match kind {
+            K::Xrun | K::RealtimeDenied => false,
+            K::DeviceNotAvailable | K::StreamInvalidated => true,
+            _ if !cfg!(target_os = "linux") => true,
+            _ => {
+                if self.since.is_none_or(|t| now.duration_since(t) > Self::WINDOW) {
+                    self.since = Some(now);
+                    self.count = 0;
+                }
+                self.count += 1;
+                self.count > Self::BURST
+            }
+        }
+    }
+}
+
 fn device_name(d: &cpal::Device) -> String {
     d.description().map(|x| x.name().to_string()).unwrap_or_default()
+}
+
+/// Linux (P28.3): ALSA lists every plugin and pseudo-device (null, which records silence; jack, which reports at
+/// length that it isn't running; rate converters, up- and down-mixers, each card's front/surround/dmix/dsnoop...).
+/// Besides the system default (the desktop's sound server, PipeWire or PulseAudio), only one entry per real card is
+/// kept: its `plughw:` device (the card itself, with ALSA's format conversion), its ALSA name as the id.
+fn alsa_card(d: &cpal::Device) -> Option<String> {
+    let id = d.description().ok()?.driver()?.to_string();
+    id.starts_with("plughw:CARD=").then_some(id)
 }
 
 /// Devices of a host. With `defaults_only`, just the two "System default" entries.
@@ -78,7 +119,14 @@ pub fn enumerate(host_id: Option<cpal::HostId>, backend: Backend, defaults_only:
     }
     let Ok(devices) = h.devices() else { return out };
     for d in devices {
-        let name = device_name(&d);
+        let mut name = device_name(&d);
+        let mut id = name.clone();
+        if cfg!(target_os = "linux") {
+            // (a card straight, not through the desktop's sound server: "direct")
+            let Some(card) = alsa_card(&d) else { continue };
+            name = format!("{name} (direct)");
+            id = card;
+        }
         if name.is_empty() {
             continue;
         }
@@ -88,10 +136,7 @@ pub fn enumerate(host_id: Option<cpal::HostId>, backend: Backend, defaults_only:
             continue;
         }
         out.push(DeviceInfo {
-            id: DeviceId {
-                backend,
-                id: name.clone(),
-            },
+            id: DeviceId { backend, id },
             name,
             input_channels: inp.as_ref().map(|c| c.channels()).unwrap_or(0),
             output_channels: outp.as_ref().map(|c| c.channels()).unwrap_or(0),
@@ -120,7 +165,11 @@ fn find_device(h: &cpal::Host, id: &str, input: bool) -> Option<cpal::Device> {
                 h.default_output_device()
             }
         }
-        name => h.devices().ok()?.find(|d| device_name(d) == name),
+        // (by name; on Linux by its ALSA name)
+        name => h
+            .devices()
+            .ok()?
+            .find(|d| device_name(d) == name || alsa_card(d).as_deref() == Some(name)),
     }
 }
 
@@ -368,7 +417,14 @@ pub fn open(
             let Ok(side) = side_rx.recv() else { return };
             let f_in = fail2.clone();
             let f_out = fail2.clone();
-            let on_err = move |f: Failure| move |e: cpal::Error| f.fail(e.to_string());
+            let on_err = move |f: Failure| {
+                let mut tally = Tally::default();
+                move |e: cpal::Error| {
+                    if tally.ends_stream(e.kind(), Instant::now()) {
+                        f.fail(e.to_string());
+                    }
+                }
+            };
             let timeout = Some(Duration::from_secs(5));
             let mut streams = Vec::new();
             let result = (|| -> Result<Option<u32>, String> {
@@ -515,4 +571,43 @@ pub fn open(
         thread: Some(thread),
         failure,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_glitch_never_ends_a_stream_a_lost_device_always_does() {
+        use cpal::ErrorKind as K;
+        let mut t = Tally::default();
+        let now = Instant::now();
+        for _ in 0..100 {
+            assert!(!t.ends_stream(K::Xrun, now));
+        }
+        assert!(t.ends_stream(K::DeviceNotAvailable, now));
+        assert!(t.ends_stream(K::StreamInvalidated, now));
+    }
+
+    #[test]
+    fn other_errors_end_it_on_linux_only_when_they_keep_coming() {
+        use cpal::ErrorKind as K;
+        let mut t = Tally::default();
+        let t0 = Instant::now();
+        if !cfg!(target_os = "linux") {
+            assert!(t.ends_stream(K::BackendError, t0));
+            return;
+        }
+        // one now and then: carried on past
+        for k in 0..50 {
+            assert!(!t.ends_stream(K::BackendError, t0 + Duration::from_secs(3 * k)));
+        }
+        // a burst: the stream is gone
+        let t1 = t0 + Duration::from_secs(1000);
+        let ended = (0..=Tally::BURST)
+            .map(|_| t.ends_stream(K::BackendError, t1))
+            .collect::<Vec<_>>();
+        assert!(!ended[..Tally::BURST as usize].iter().any(|&e| e));
+        assert!(ended[Tally::BURST as usize]);
+    }
 }

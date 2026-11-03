@@ -115,6 +115,38 @@ fn midi_of(s: i32, f: i32) -> i32 {
     OPENS[s as usize] + f
 }
 
+/// A run of strums on the synth for the chord-name bench: each shape strummed twice (down, up; or `sloppy`, the
+/// strings a hurried strum catches) every `gap` seconds. The take and each first strum's time and (string, fret)s.
+pub(crate) fn strummed(
+    shapes: &[Vec<i32>],
+    gap: f64,
+    sloppy: bool,
+    seed: u64,
+) -> (Vec<f32>, Vec<(f64, Shape)>) {
+    let mut r = Rand(Rng::new(seed));
+    let mut strums = Vec::new();
+    let mut at = Vec::new();
+    for (i, frets) in shapes.iter().enumerate() {
+        let want = shape_wide(frets);
+        let t = 1.0 + i as f64 * gap;
+        for (k, dir) in [Dir::Down, Dir::Up].into_iter().enumerate() {
+            let keep = if sloppy {
+                partial_keep(want.len(), &mut r)
+            } else {
+                want.len()
+            };
+            let s = strum_of(&want, keep, t + k as f64 * gap / 2.0, dir, false, &mut r);
+            if k == 0 {
+                at.push((t, s.notes.clone()));
+            }
+            strums.push(s);
+        }
+        let _ = i;
+    }
+    let len = 1.0 + shapes.len() as f64 * gap + 1.0;
+    (render(&strums, len, &mut r, false), at)
+}
+
 /// How one strum is played.
 #[derive(Clone, Debug)]
 struct Strum {

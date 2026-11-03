@@ -44,6 +44,32 @@ pub struct DevStatus {
     dismissed: Vec<DeviceId>,
     /// A notice for pages that have no toast of their own (Home).
     notice: Option<(String, String, Instant)>,
+    /// The device message last written to the log, when, and how often it has come again since (P28.3: a device
+    /// that keeps dropping is logged once a minute, with a count, not every time).
+    logged: Option<(String, Instant, u32)>,
+}
+
+/// A device message repeated within this long is counted, not written again.
+const LOG_REPEAT: Duration = Duration::from_secs(60);
+
+impl DevStatus {
+    fn log(&mut self, msg: String) {
+        let now = Instant::now();
+        if let Some((last, at, n)) = &mut self.logged
+            && *last == msg
+            && now.duration_since(*at) < LOG_REPEAT
+        {
+            *n += 1;
+            return;
+        }
+        if let Some((_, _, n)) = self.logged.take()
+            && n > 0
+        {
+            crate::applog::write(&format!("sound devices: (the message before, {n} more times)"));
+        }
+        crate::applog::write(&msg);
+        self.logged = Some((msg, now, 0));
+    }
 }
 
 /// The first part of an error, short enough for a toast.
@@ -76,7 +102,7 @@ impl DevStatus {
                 ev,
                 AudioEvent::Engine(Event::InputLost(_) | Event::OutputLost(_)) | AudioEvent::Switched { .. }
             ) {
-                crate::applog::write(&format!("sound devices: {ev:?}"));
+                self.log(format!("sound devices: {ev:?}"));
             }
             match ev {
                 AudioEvent::Engine(Event::InputLost(m)) => out.push((

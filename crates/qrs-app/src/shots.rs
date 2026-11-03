@@ -4,7 +4,7 @@
 //! scratch folder (a config.json with library_dirs, and a copy of userdata.json) so nothing of yours changes; no
 //! sound device is opened. QUICKRS_SHOTS (comma-separated parts of names) takes only some of the shots.
 //!
-//! QUICKRS_SHOT_SEQ="t0:t1:fps" renders each shot as a frame sequence instead: the song held at t0, t0 + 1/fps, ...
+//! QUICKRS_SHOT_SEQ="t0:t1:fps" (or a list "t1,t2,...") renders each shot as a frame sequence instead: the song held at t0, t0 + 1/fps, ...
 //! t1 (`shotclock`, never the wall clock), one PNG a frame (`frame_00000.png` for a single shot, else
 //! `<name>_00000.png`). With it, a name in QUICKRS_SHOTS that matches a shot exactly takes only that shot, and
 //! QUICKRS_SHOT_JUDGE=hit|late|early|miss judges each note so as it reaches the now-line. `tools/hwclip.py` runs one
@@ -38,8 +38,9 @@ pub enum Page {
     /// The player with the Pedalboard tile first (on the pedalboard tone), and with its big view open (P14).
     PlayerBoard,
     BoardView,
-    /// Home with the note widget drawn on it (its own window otherwise).
+    /// Home with the note widget drawn on it (its own window otherwise); with its drawer out, naming Am7 (P24.3).
     NoteWidget,
+    NoteWidgetChords,
     /// Home with the first-time setup over it on a page (P23.14; `FirstSetup::staged`): "look", "guitar",
     /// "guitar_<step>" (a step of the guitar setup inside it), "latency", "widget", "folders", "done".
     Setup(&'static str),
@@ -116,8 +117,8 @@ pub struct Shots {
     frames: u32,
     waiting: bool,
     resize_tries: u32,
-    /// QUICKRS_SHOT_SEQ: (t0, t1, fps), and the frame being captured while one runs.
-    seq: Option<(f64, f64, f64)>,
+    /// QUICKRS_SHOT_SEQ: the frames' song times, and the frame being captured while one runs.
+    seq: Option<Vec<f64>>,
     seq_k: Option<u64>,
 }
 
@@ -173,7 +174,12 @@ impl Shots {
             ("31_results_practice", Page::PlayerAt("results_practice")),
             ("32_no_audio", Page::PlayerAt("no_audio")),
         ];
-        let own: [(&str, Page, ThemeName); 62] = [
+        let own: [(&str, Page, ThemeName); 67] = [
+            // the run's review (P29.1)
+            ("33_review", Page::PlayerAt("review"), mid),
+            ("34_review_spot", Page::PlayerAt("review_spot"), mid),
+            ("35_review_continuous", Page::PlayerAt("review_continuous"), mid),
+            ("36_review_history", Page::PlayerAt("review_history"), mid),
             // setup (P20.2): Settings > Library's folders and keys
             ("91_settings_library_folders", Page::Settings("library"), mid),
             ("91b_settings_library_keys", Page::Settings("library_keys"), mid),
@@ -240,6 +246,7 @@ impl Shots {
             ("12e_mg300_view", Page::Mg300View, mid),
             ("40_device_offer", Page::DeviceOffer, mid),
             ("41_note_widget", Page::NoteWidget, mid),
+            ("41b_note_widget_chords", Page::NoteWidgetChords, mid),
             ("00_home-daylight", Page::Home, ThemeName::Daylight),
             (
                 "02_library_selected-graphite",
@@ -516,8 +523,10 @@ impl Shots {
 
     /// Put the sequence's clock on frame k and ask for it to be captured (the next frame drawn, which reads it).
     fn seq_frame(&mut self, ctx: &egui::Context, k: u64) {
-        let Some((t0, _, fps)) = self.seq else { return };
-        crate::shotclock::set(Some(t0 + k as f64 / fps));
+        let Some(&t) = self.seq.as_ref().and_then(|s| s.get(k as usize)) else {
+            return;
+        };
+        crate::shotclock::set(Some(t));
         self.seq_k = Some(k);
         ctx.send_viewport_cmd(ViewportCommand::Screenshot(UserData::new(self.frame_name(k))));
         self.waiting = true;
@@ -569,8 +578,8 @@ impl Shots {
                     None => eprintln!("{}: bad image", path.display()),
                 }
                 // a sequence: on to its next frame until the last
-                if let (Some(k), Some((t0, t1, fps))) = (self.seq_k, self.seq)
-                    && k + 1 < crate::shotclock::frame_count(t0, t1, fps)
+                if let (Some(k), Some(seq)) = (self.seq_k, &self.seq)
+                    && ((k + 1) as usize) < seq.len()
                 {
                     self.seq_frame(ctx, k + 1);
                     continue;

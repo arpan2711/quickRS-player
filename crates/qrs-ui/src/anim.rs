@@ -15,12 +15,6 @@ thread_local! {
     static VALUES: RefCell<HashMap<u64, f32>> = RefCell::new(HashMap::new());
 }
 
-/// Cubic ease-out on 0..1.
-pub fn ease_out(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(3)
-}
-
 /// Move `key` toward `target` with time constant `tau` (about 95% of the way in 3 tau). The first call starts at
 /// `start` (or the target, so nothing animates on first sight).
 pub fn smooth(ctx: &egui::Context, key: impl Hash, target: f32, tau: f32, start: Option<f32>) -> f32 {

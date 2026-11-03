@@ -18,12 +18,6 @@ use crate::theme::{
     self, DANGER_ON_IVORY, IVORY_BOT, IVORY_EDGE, IVORY_INK, IVORY_KBD, IVORY_MID, IVORY_TOP, t,
 };
 
-/// The standard deviation pygame's `gaussian_blur(surface, radius)` comes close to (its kernel is a gaussian of
-/// sigma `radius` cut at twice that). Kept for callers that blur masks of their own.
-pub fn pg_sigma(radius: f32) -> f32 {
-    0.9 * radius
-}
-
 struct KeyPalette {
     top: Color32,
     mid: Color32,
@@ -467,19 +461,6 @@ fn make_mat_key(w: usize, h: usize, rr: i32, mat: Mat, pressed: bool, seed: u32,
     let (rc, ra) = mt.rim;
     l.over(f3(rc), &shape.minus(&shape.shift(0, 1)).scale(ra));
     l.image(None)
-}
-
-/// A key's body (no label) cut from a material. `seed` picks the part of the sheet it's cut from, so keys side by
-/// side don't match.
-pub fn mat_key(p: &Painter, rect: Rect, mat: Mat, r: Option<f32>, pressed: bool, seed: u32) {
-    mat_key_px(
-        p,
-        PxRect::of(rect, p.pixels_per_point()),
-        mat,
-        r.map(f64::from),
-        pressed,
-        seed,
-    );
 }
 
 /// `mat_key` on a rect in whole pixels.

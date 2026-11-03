@@ -26,6 +26,7 @@ use qrs_formats::{Keys, Package, ascii_tab, load_keys, package::Format, psarc::P
 mod audio_cmds;
 mod board_cmd;
 mod board_rigs;
+mod chordname_cmd;
 mod chords_cmd;
 mod jam_cmd;
 #[cfg(feature = "lessons")]
@@ -148,6 +149,8 @@ enum Cmd {
     Transcribe(take_cmd::TranscribeArgs),
     /// The chord-scoring bench: strummed chords on the synth (sloppy, partial, distorted, wrong) scored live
     Chords(chords_cmd::Args),
+    /// The note widget's chord names: the synth's strums (clean, sloppy, overdriven) or a take, named live
+    Chordname(chordname_cmd::Args),
     /// Scan the library folders like the app (psarc and feedpak), group duplicates, report
     Library(library_cmd::Args),
     /// Lessons: check every item against the library (song, part, stretch, phrase, scale shape)
@@ -562,6 +565,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             };
             chords_cmd::run_bench(song, &args)
         }
+        Cmd::Chordname(args) => chordname_cmd::run(&args),
         Cmd::VerifyLibrary(args) => verify::run(&keys, args),
         Cmd::Sums { .. } => Ok(()), // (done before the keys are read: a release machine has none)
     }

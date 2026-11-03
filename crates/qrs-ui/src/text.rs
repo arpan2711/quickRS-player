@@ -21,8 +21,6 @@ const SEMIBOLD: &[u8] = include_bytes!("../../../assets/fonts/Manrope-SemiBold.t
 const BOLD: &[u8] = include_bytes!("../../../assets/fonts/Manrope-Bold.ttf");
 const EXTRABOLD: &[u8] = include_bytes!("../../../assets/fonts/Manrope-ExtraBold.ttf");
 
-pub const WEIGHTS: [u16; 4] = [500, 600, 700, 800];
-
 /// Install Manrope as egui's fonts (call once at start). The proportional family is Manrope Medium.
 pub fn install(ctx: &egui::Context) {
     let mut defs = FontDefinitions::default();

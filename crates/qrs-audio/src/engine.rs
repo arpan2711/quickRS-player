@@ -319,7 +319,23 @@ struct Inner {
     opens_done: AtomicU64,
     events: Receiver<Event>,
     last_pos: Mutex<PosGuard>,
+    /// What the UI last read of `ctl` (P27.4), given back when the control thread holds `ctl` longer than
+    /// `READ_WAIT` (it holds it while a device opens: a driver can take seconds).
+    seen: Mutex<Seen>,
 }
+
+/// The last values the UI read of the control state (P27.4).
+#[derive(Default)]
+struct Seen {
+    status: Option<Status>,
+    rate: Option<u32>,
+    speed: Option<f64>,
+    tone: Option<ToneSpec>,
+}
+
+/// How long a UI read waits for the control state before it takes the last value seen (P27.4): far longer than the
+/// lock is ever held in the ordinary way (microseconds), far shorter than a device opening.
+const READ_WAIT: Duration = Duration::from_millis(3);
 
 /// What `Engine::position` remembers between reads.
 #[derive(Clone, Copy)]
@@ -391,6 +407,7 @@ impl Engine {
                 sent: 0,
                 sent_at: None,
             }),
+            seen: Mutex::new(Seen::default()),
         });
         let worker = inner.clone();
         let thread = std::thread::Builder::new()
@@ -429,13 +446,29 @@ impl Engine {
         false
     }
 
+    /// A value of the control state for the UI (P27.4): read live, and remembered in `slot`; if the control thread
+    /// is holding the state (opening a device) for longer than `READ_WAIT`, the value remembered (the first read of
+    /// all waits, as before). The UI reads several of these every frame.
+    fn read<T: Clone>(&self, get: impl Fn(&Ctl) -> T, slot: impl Fn(&mut Seen) -> &mut Option<T>) -> T {
+        if let Some(c) = self.inner.ctl.try_lock_for(READ_WAIT) {
+            let v = get(&c);
+            drop(c);
+            *slot(&mut self.inner.seen.lock()) = Some(v.clone());
+            return v;
+        }
+        if let Some(v) = slot(&mut self.inner.seen.lock()).clone() {
+            return v;
+        }
+        get(&self.inner.ctl.lock())
+    }
+
     pub fn status(&self) -> Status {
-        self.inner.ctl.lock().status.clone()
+        self.read(|c| c.status.clone(), |s| &mut s.status)
     }
 
     /// The rate songs and clips play at (the output stream's).
     pub fn rate(&self) -> u32 {
-        self.inner.ctl.lock().rate
+        self.read(|c| c.rate, |s| &mut s.rate)
     }
 
     pub fn events(&self) -> Vec<Event> {
@@ -518,10 +551,6 @@ impl Engine {
             .as_ref()
             .map(|s| s.duration())
             .unwrap_or(0.0)
-    }
-
-    pub fn has_song(&self) -> bool {
-        self.inner.ctl.lock().persist.song.is_some()
     }
 
     pub fn play(&self, from: Option<f64>) {
@@ -619,7 +648,7 @@ impl Engine {
     }
 
     pub fn speed(&self) -> f64 {
-        self.inner.ctl.lock().persist.speed
+        self.read(|c| c.persist.speed, |s| &mut s.speed)
     }
 
     // -- levels and the guitar -----------------------------------------------------------------------------
@@ -705,7 +734,7 @@ impl Engine {
     }
 
     pub fn tone(&self) -> ToneSpec {
-        self.inner.ctl.lock().persist.tone.clone()
+        self.read(|c| c.persist.tone.clone(), |s| &mut s.tone)
     }
 
     // -- preview clips -------------------------------------------------------------------------------------
@@ -773,8 +802,11 @@ impl Engine {
     // -- guitar capture ------------------------------------------------------------------------------------
     /// Plucks found since the last call.
     pub fn take_onsets(&self) -> Vec<Onset> {
-        let mut c = self.inner.ctl.lock();
         let mut out = Vec::new();
+        // (a device opening: they wait in their queue for the next frame, P27.4)
+        let Some(mut c) = self.inner.ctl.try_lock_for(READ_WAIT) else {
+            return out;
+        };
         if let Some(rx) = c.onsets_rx.as_mut() {
             while let Ok(o) = rx.pop() {
                 out.push(o);
@@ -1621,4 +1653,37 @@ fn open_output_fallback(inner: &Arc<Inner>, run: &mut Running, st: &mut Status) 
     run.route.output = real;
     run.silent = true;
     st.silent_output = true;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// P27.4: while the control thread holds the state (as it does opening a device), the UI's reads give the last
+    /// values seen at once instead of waiting.
+    #[test]
+    fn ui_reads_dont_wait_on_a_device_opening() {
+        let e = Engine::new();
+        let first = e.status();
+        let rate = e.rate();
+        let inner = e.inner.clone();
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _c = inner.ctl.lock();
+            held_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        held_rx.recv().unwrap();
+        let t0 = Instant::now();
+        let st = e.status();
+        let r = e.rate();
+        let onsets = e.take_onsets();
+        let waited = t0.elapsed();
+        assert!(waited < Duration::from_millis(100), "waited {waited:?}");
+        assert_eq!((st.route, r), (first.route, rate));
+        assert!(onsets.is_empty());
+        holder.join().unwrap();
+        // and live again once it's let go
+        assert_eq!(e.rate(), rate);
+    }
 }

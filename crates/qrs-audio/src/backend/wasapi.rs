@@ -620,7 +620,7 @@ fn info_of(id: &str, c: &Client) -> StreamInfo {
     }
 }
 
-/// Frames queued beyond one period in shared output (RSAUDIO_OUT_MARGIN overrides; 96 measured clean).
+/// Frames queued beyond one period in shared output (QRS_OUT_MARGIN overrides; 96 measured clean).
 fn out_margin() -> u32 {
     std::env::var("QRS_OUT_MARGIN")
         .ok()

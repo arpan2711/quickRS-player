@@ -327,21 +327,35 @@ pub fn default_takes_dir(data_root: &Path) -> PathBuf {
     data_root.join("takes")
 }
 
-/// Where Steam keeps its own library on this OS (macOS: `~/Library/Application Support/Steam`; Linux:
-/// `~/.local/share/Steam`).
-pub fn steam_root() -> PathBuf {
+/// Where Steam keeps its own library on this OS: `C:\Program Files (x86)\Steam`; macOS
+/// `~/Library/Application Support/Steam`; on Linux each of the usual installs (P28.3): `~/.local/share/Steam`,
+/// `~/.steam/steam` and `~/.steam/debian-installation` (Debian and Ubuntu's package), Flatpak's and Snap's.
+pub fn steam_roots() -> Vec<PathBuf> {
     #[cfg(unix)]
     if let Some(home) = directories::BaseDirs::new() {
-        return home.data_dir().join("Steam");
+        let mut out = vec![home.data_dir().join("Steam")];
+        if cfg!(target_os = "linux") {
+            let h = home.home_dir();
+            out.extend([
+                h.join(".steam/steam"),
+                h.join(".steam/debian-installation"),
+                h.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+                h.join("snap/steam/common/.local/share/Steam"),
+            ]);
+        }
+        return out;
     }
-    PathBuf::from(r"C:\Program Files (x86)\Steam")
+    vec![PathBuf::from(r"C:\Program Files (x86)\Steam")]
 }
 
 /// Rocksmith 2014's dlc folders in every Steam library (from steamapps/libraryfolders.vdf).
 pub fn steam_rocksmith_dlc() -> Vec<PathBuf> {
-    let mut roots = vec![steam_root()];
-    let vdf = roots[0].join("steamapps").join("libraryfolders.vdf");
-    if let Ok(text) = std::fs::read_to_string(vdf) {
+    let mut roots = steam_roots();
+    for root in roots.clone() {
+        let vdf = root.join("steamapps").join("libraryfolders.vdf");
+        let Ok(text) = std::fs::read_to_string(vdf) else {
+            continue;
+        };
         for line in text.lines() {
             let parts: Vec<&str> = line.split('"').collect();
             // 	"path"		"D:\\SteamLibrary"
@@ -357,6 +371,9 @@ pub fn steam_rocksmith_dlc() -> Vec<PathBuf> {
             .join("common")
             .join("Rocksmith2014")
             .join("dlc");
+        // (on Linux one install is often a link to another: the same folder once)
+        #[cfg(unix)]
+        let d = d.canonicalize().unwrap_or(d);
         if d.is_dir() && !out.contains(&d) {
             out.push(d);
         }

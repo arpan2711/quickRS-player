@@ -38,18 +38,19 @@ AI model, no upload, and the same take always gets the same answer. See
 
 ### Download
 
-* **Windows 10 or 11 (64-bit):** `quickRS-0.3.0-windows-x64.zip` from the
+* **Windows 10 or 11 (64-bit):** `quickRS-0.4.0-windows-x64.zip` from the
   [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
   There is no installer: unzip it and run `quickrs.exe`.
 * **macOS 11 or later (beta):** `quickRS-0.3.0-macos-universal.dmg` (or the
-  `.zip`) from the same page. One app for Apple silicon and Intel Macs. It is
-  tested on one Mac so far and not notarised by Apple, so the first start
-  takes an extra step. See [docs/INSTALL.md](docs/INSTALL.md#macos).
+  `.zip`) from the [0.3.0 release](https://github.com/arpan2711/quickRS-player/releases/tag/v0.3.0);
+  the Mac build of 0.4.0 will follow. One app for Apple silicon and Intel
+  Macs. It is tested on one Mac so far and not notarised by Apple, so the
+  first start takes an extra step. See [docs/INSTALL.md](docs/INSTALL.md#macos).
   On a Mac, the keys written Ctrl in these docs are Cmd (a take is `Cmd+R`).
 
 No songs and no Rocksmith keys are included.
 
-Have 0.1.0? It can't update itself, so download the 0.3.0 zip by hand this
+Have 0.1.0? It can't update itself, so download the latest zip by hand this
 once and unzip it over your old folder or beside it; your settings and scores
 carry over. From 0.3.0 on, quickRS updates itself. See
 [UPDATING](docs/UPDATING.md#from-010).
@@ -105,9 +106,27 @@ Easy to miss, and some of the best parts. `F1` in a song lists every key.
   guitar's timing.
 
 
+### What's new in 0.4.0
+
+* **Review a run** (experimental): after a song, *Review* (or `E`) lists the
+  parts you lost the most notes in, as whole riffs found by what repeats, each
+  with a small tab. Click one to loop it. The last 4 runs are kept.
+* **Continuous mode** (`O` on a loop): the loop plays on with no count-in and
+  every pass is scored, with your best three, a 1x-4x multiplier and confetti
+  for a perfect pass.
+* **The highway, rebuilt** through one camera, with Rocksmith-style chords.
+* **The note widget's drawer**: the chord you play named from the sound,
+  every shape of it, its number in the key, and a heat trail on the neck.
+* Automatic 65 / 80 / 90% playlists, double-click to open a song paused,
+  smoother lists, quicker resizing, and fixes. Full list in the
+  [0.4.0 release notes](https://github.com/arpan2711/quickRS-player/releases/tag/v0.4.0).
+
+![A run's review](screenshots/review.png)
+
+
 ### What's new since 0.1.0
 
-0.1.0 (14 October 2026) was the first release; 0.3.0 is the next one. In
+0.1.0 (14 October 2026) was the first release; 0.3.0 the next one. In
 short:
 
 Setting up
@@ -185,6 +204,14 @@ it.
 #### Highway
 
 A Rocksmith-style 3D note highway, in place of the tab (`V`).
+
+#### Review and continuous mode
+
+After a run, *Review* (`E`) lists the parts to practise, worst first. Click
+one to loop it, and `O` plays the loop over and over, scoring every pass. See
+[Reviewing a run](docs/PLAYING.md#reviewing-a-run).
+
+![Continuous mode on a review part](screenshots/continuous.png)
 
 ![The highway, labelled](screenshots/highway-labelled.png)
 
@@ -299,6 +326,8 @@ In the player:
 | `R` | Record what you hear; again: pause / resume |
 | `Shift+R` | Stop the recording and save it |
 | `G` | Synth / real guitar |
+| `E` | Review the run: the parts to practise |
+| `O` | Continuous loop: every pass scored |
 | `9` `0` / `7` `8` | Song volume / guitar volume |
 | `,` `.` | Audio / notes sync, 10 ms steps |
 | `Ctrl+,` `Ctrl+.` | Guitar timing |

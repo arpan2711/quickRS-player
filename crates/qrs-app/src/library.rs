@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use eframe::egui;
-use egui::{Align2, Color32, Event, Key, Painter, Pos2, Rect, Sense, Ui, Vec2, pos2, vec2};
+use egui::{Align2, Color32, Event, Key, Painter, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use qrs_ui::icons::{self, Icon};
 use qrs_ui::keys::{CapOn, keycap, keycap_width};
 use qrs_ui::paint::{self, Fill};
@@ -128,6 +128,35 @@ pub enum View {
     Unplayed,
     Tuning(String),
     Playlist(String),
+    /// An automatic playlist (owner request, 2026-11-02): every song with a run at full speed of at least this
+    /// accuracy (70, 80 or 90 percent), so 70% holds the 80% and 90% songs too.
+    Over(u8),
+}
+
+/// The automatic playlists' thresholds (percent), shown above your own playlists (65 / 80 / 90: owner, 2026-11-03).
+pub const OVER: [u8; 3] = [65, 80, 90];
+
+/// An automatic playlist's rank mark (`tier` 0, 1, 2 for `OVER`'s thresholds), centred at `c`: one bronze chevron,
+/// two silver, three gold.
+pub fn draw_rank(p: &Painter, c: Pos2, tier: usize) {
+    let col = [
+        Color32::from_rgb(0xcd, 0x86, 0x4e),
+        Color32::from_rgb(0xd4, 0xdb, 0xe3),
+        Color32::from_rgb(0xf5, 0xc5, 0x42),
+    ][tier.min(2)];
+    let n = tier.min(2) + 1;
+    let (w, h, gap) = (px(5.0), px(3.0), px(4.0));
+    let top = c.y - (n as f32 - 1.0) * gap / 2.0;
+    for i in 0..n {
+        let y = top + i as f32 * gap + h / 2.0;
+        let pts = vec![pos2(c.x - w, y), pos2(c.x, y - h), pos2(c.x + w, y)];
+        p.add(egui::Shape::line(pts, Stroke::new(px(1.8), col)));
+    }
+}
+
+/// Whether an accuracy (0 to 1) reaches a threshold in percent (as the results card rounds it: 69.6% shows 70%).
+pub fn reached(acc: f64, pc: u8) -> bool {
+    (acc * 100.0).round() >= pc as f64
 }
 
 impl View {
@@ -143,6 +172,7 @@ impl View {
             View::Unplayed => "Not played yet".into(),
             View::Tuning(t) => t.clone(),
             View::Playlist(n) => n.clone(),
+            View::Over(pc) => format!("{pc}% and up"),
         }
     }
 }
@@ -152,6 +182,12 @@ impl View {
 pub enum Req {
     /// Open the player on row g's part `part` (its key).
     Play {
+        g: usize,
+        part: String,
+    },
+    /// Open the player on row g's part paused, at the start, without counting in (a double-click on a song: owner
+    /// request, 2026-11-02); its first Play counts in as ever.
+    Open {
         g: usize,
         part: String,
     },
@@ -365,6 +401,13 @@ pub struct LibView {
     pub sel: usize,
     pub top: usize,
     pub picker: Option<usize>,
+    /// The library's row generation (`AppState::regroups`) the picker's row is of: it's followed from there, not from
+    /// `rows_of` (a picker opened on Home, before the library page ever drew, has rows of now, and following it from
+    /// the page's start lost it: the first click on a song after a start did nothing. Owner report, 2026-11-03).
+    picker_rows: u64,
+    /// With the preview switch off, the song a click opened (its id): its row opens as with the switch on, its
+    /// preview waiting for its key (owner request, 2026-11-03).
+    opened: Option<String>,
     pub picker_sel: usize,
     pub menu: Option<usize>,
     /// The `AppState::regroups` the row numbers here belong to.
@@ -376,6 +419,13 @@ pub struct LibView {
     quiet: Option<String>,
     pub side_scroll: f32,
     side_max: f32,
+    /// When the song list was last scrolled (its group bubble shows a moment after).
+    scroll_at: Option<Instant>,
+    /// Smooth scrolling (P27.2): where the list is drawn (rows, fractional), where it's going, and the `top` it
+    /// last saw (a `top` set elsewhere, by keys or a search, is a new target).
+    scroll: f32,
+    target: f32,
+    top_seen: usize,
     side_rect: Rect,
     list: Option<Rect>,
     counts: Option<(u64, Counts)>,
@@ -409,6 +459,8 @@ pub struct Counts {
     pub licks: usize,
     pub lessons: usize,
     pub playlists: Vec<(String, usize)>,
+    /// Songs in each automatic playlist (`OVER`).
+    pub over: [usize; 3],
 }
 
 impl Default for LibView {
@@ -423,6 +475,8 @@ impl Default for LibView {
             sel: 0,
             top: 0,
             picker: None,
+            picker_rows: 0,
+            opened: None,
             picker_sel: 0,
             menu: None,
             rows_of: 0,
@@ -433,6 +487,10 @@ impl Default for LibView {
             quiet: None,
             side_scroll: 0.0,
             side_max: 0.0,
+            scroll_at: None,
+            scroll: 0.0,
+            target: 0.0,
+            top_seen: 0,
             side_rect: Rect::NOTHING,
             list: None,
             counts: None,
@@ -509,6 +567,11 @@ impl LibView {
             if ud.best(&ids, None).is_some() {
                 c.played += 1;
             }
+            if let Some(acc) = ud.best_full_speed_acc(&ids) {
+                for (n, pc) in c.over.iter_mut().zip(OVER) {
+                    *n += reached(acc, pc) as usize;
+                }
+            }
             row_ids.push(ids);
         }
         for (name, members) in &ud.playlists {
@@ -525,11 +588,15 @@ impl LibView {
     pub fn refresh(&mut self, st: &AppState) {
         // the rows were rebuilt (the library read again): the songs held here, on their rows now
         let mut current = self.items.get(self.sel).copied();
+        if self.picker_rows != st.regroups {
+            let since = self.picker_rows;
+            self.picker = self.picker.and_then(|g| st.follow(g, since));
+            self.picker_rows = st.regroups;
+        }
         if self.rows_of != st.regroups {
             let since = self.rows_of;
             let follow = |g: Option<usize>| g.and_then(|g| st.follow(g, since));
             current = follow(current);
-            self.picker = follow(self.picker);
             self.menu = follow(self.menu);
             self.sel_song = follow(self.sel_song);
             self.rows_of = st.regroups;
@@ -567,6 +634,7 @@ impl LibView {
                         mt == *tn || (tn == "Other" && !top_tunings.contains(&mt))
                     }
                     View::Playlist(name) => ud.in_playlist(name, &ids),
+                    View::Over(pc) => ud.best_full_speed_acc(&ids).is_some_and(|a| reached(a, *pc)),
                     _ => true,
                 }
             })
@@ -660,11 +728,14 @@ impl LibView {
         trunc_px(EXPAND as f64 * scale() * (gr * gr * (3.0 - 2.0 * gr)))
     }
 
-    /// (index, y, height) of the rows on screen, starting at self.top; the selected row is taller.
+    /// (index, y, height) of the rows on screen, from the smooth scroll position (the first row may sit partly above
+    /// the list, under its clip); the selected row is taller.
     fn row_layout(&self, st: &AppState, r: Rect) -> Vec<(usize, f32, f32)> {
         let rh = px(ROW_H);
         let mut out = Vec::new();
-        let (mut y, mut i) = (r.min.y, self.top);
+        let first = (self.scroll.max(0.0).floor() as usize).min(self.items.len().saturating_sub(1));
+        let frac = (self.scroll - first as f32).clamp(0.0, 1.0);
+        let (mut y, mut i) = (snap(r.min.y - frac * rh), first);
         while i < self.items.len() && ipx(y) < ipx(r.max.y) {
             let h = rh + self.extra(st, self.items[i]);
             out.push((i, y, h));
@@ -674,8 +745,40 @@ impl LibView {
         out
     }
 
+    /// The list's smooth scroll (P27.2): a `top` set elsewhere becomes the target (a jump of more than 30 rows is
+    /// taken at once, not scrolled through), and the drawn position eases toward the target over about 60 ms.
+    fn ease_scroll(&mut self, st: &AppState) {
+        if self.top != self.top_seen {
+            let t = self.top as f32;
+            if (t - self.scroll).abs() > 30.0 {
+                self.scroll = t;
+            }
+            self.target = t;
+            self.top_seen = self.top;
+        }
+        let dt = st.ctx.input(|i| i.stable_dt).min(0.1);
+        self.scroll = eased(self.scroll, self.target, dt);
+        if self.scroll != self.target {
+            st.ctx.request_repaint();
+        }
+    }
+
+    /// Scroll the list to `t` rows (fractional) at once, or eased (`now` false).
+    fn scroll_to(&mut self, t: f32, now: bool) {
+        self.target = t;
+        self.top = t.round().max(0.0) as usize;
+        self.top_seen = self.top;
+        if now {
+            self.scroll = t;
+        }
+    }
+
     fn visible_rows(&self, st: &AppState, area: Rect) -> usize {
-        let extra = if Self::expanding(st) { ipx(px(EXPAND)) } else { 0.0 };
+        let extra = if Self::expanding(st) || self.opened.is_some() {
+            ipx(px(EXPAND))
+        } else {
+            0.0
+        };
         let n = ((ipx(self.list_rect(area).height()) - extra) / ipx(px(ROW_H))).floor();
         (n as i64).max(1) as usize
     }
@@ -694,6 +797,7 @@ impl LibView {
 
     pub fn open_picker(&mut self, st: &AppState, g: usize) {
         self.picker = Some(g);
+        self.picker_rows = st.regroups;
         let last = st.config.str("last_arrangement", "lead");
         self.picker_sel = st
             .song(g)
@@ -834,6 +938,7 @@ impl LibView {
                 let on = !Self::expanding(st);
                 st.config.set("select_preview", on);
                 st.save_config();
+                self.opened = None;
                 if !on {
                     st.previewer.stop();
                 }
@@ -977,8 +1082,14 @@ impl LibView {
                     } else {
                         self.items.len()
                     };
-                    let max_top = n.saturating_sub(self.visible_rows(st, area)) as i64;
-                    self.top = (self.top as i64 - (notches * 3.0) as i64).clamp(0, max_top.max(0)) as usize;
+                    // (every delta kept, fractions too: a touchpad's small ones were cut to nothing. P27.2)
+                    let max_top = n.saturating_sub(self.visible_rows(st, area)) as f32;
+                    if self.top != self.top_seen {
+                        self.target = self.top as f32;
+                    }
+                    let t = (self.target - notches * 3.0).clamp(0.0, max_top.max(0.0));
+                    self.scroll_to(t, false);
+                    self.scroll_at = Some(Instant::now());
                 }
                 true
             }
@@ -1075,11 +1186,13 @@ impl LibView {
     fn update_selection(&mut self, st: &mut AppState) {
         let on = Self::expanding(st);
         let dt = st.ctx.input(|i| i.stable_dt).min(0.1);
-        let song = if on && self.menu.is_none() && self.text_box.is_none() {
+        // (with the switch off, only a row a click opened opens; its preview waits for its key)
+        let song = if self.menu.is_none() && self.text_box.is_none() {
             self.selected()
         } else {
             None
-        };
+        }
+        .filter(|&g| on || self.opened.as_deref() == Some(st.song(g).id().as_str()));
         let target = song.map(|g| st.song(g).id());
         let mut keys: Vec<String> = self.grow.keys().cloned().collect();
         if let Some(tg) = &target
@@ -1121,7 +1234,8 @@ impl LibView {
             }
         } else if let Some(g) = song {
             let e = st.song(g).clone();
-            if self.sel_since.elapsed().as_secs_f32() >= PREVIEW_DELAY
+            if on
+                && self.sel_since.elapsed().as_secs_f32() >= PREVIEW_DELAY
                 && self.quiet.as_ref() != target.as_ref()
             {
                 st.previewer.request(&e);
@@ -1492,8 +1606,14 @@ impl LibView {
         caps(&p, "BEST", pos2(c_best, hy), 11.0, Align2::LEFT_CENTER, None);
         caps(&p, "LENGTH", pos2(c_len, hy), 11.0, Align2::RIGHT_CENTER, None);
         let rh = px(ROW_H);
-        let clip = inflate(r, px(8.0), 0.0).intersect(inflate(well, -px(6.0), -px(6.0)));
+        // (the rows stop 14 pt above the well's foot, clear of its shaded edge and round corners, and fade out into
+        // its screen there: cut off at the edge, the last row met the page's lighter grey. Owner report, 2026-11-03)
+        let clip = inflate(r, px(8.0), 0.0).intersect(Rect::from_min_max(
+            well.min + vec2(px(6.0), px(6.0)),
+            pos2(well.max.x - px(6.0), snap(well.max.y - px(14.0))),
+        ));
         let lp = p.with_clip_rect(clip);
+        self.ease_scroll(st);
         let layout = self.row_layout(st, r);
         let mut acts: Vec<String> = Vec::new();
         let mut clicked_row: Option<(usize, bool)> = None;
@@ -1514,8 +1634,16 @@ impl LibView {
                 clicked_row = Some((i, true));
             }
             if chosen && ipx(extra) > ipx(px(8.0)) {
+                // (its buttons drawn and clicked inside the list only: scrolled half out of it, they ran over the
+                // list's foot. Owner report, 2026-11-03)
+                let mut cui = egui::Ui::new(
+                    ui.ctx().clone(),
+                    ui.id().with(("lib-open-clip", g)),
+                    egui::UiBuilder::new().layer_id(ui.layer_id()).max_rect(clip),
+                );
+                cui.set_clip_rect(clip);
                 let a = self.draw_open_row(
-                    ui,
+                    &cui,
                     &lp,
                     st,
                     inflate(row, 0.0, -px(12.0)),
@@ -1695,6 +1823,9 @@ impl LibView {
                     }
                     View::Recent => "Nothing played yet.".into(),
                     View::Played => "No finished songs yet.".into(),
+                    View::Over(pc) => {
+                        format!("No song played to {pc}% or more at full speed yet: keep going!")
+                    }
                     _ => "No songs.".into(),
                 }
             };
@@ -1736,17 +1867,187 @@ impl LibView {
                 Some(r.width() - px(32.0)),
             );
         }
+        if layout
+            .last()
+            .is_some_and(|&(i, y, h)| i + 1 < self.items.len() || y + h > clip.max.y)
+        {
+            paint::fade_edges(
+                &p,
+                Rect::from_min_max(pos2(clip.min.x, clip.max.y - px(30.0)), clip.max),
+                false,
+                true,
+                30.0,
+                paint::FaceKind::Flat(th.screen),
+            );
+        }
+        self.draw_scrollbar(ui, st, area, r);
         if let Some(g) = star_hit {
             self.toggle_favorite(st, Some(g));
         } else if let Some((i, double)) = clicked_row {
             self.sel = i;
-            if double && let Some(g) = self.items.get(i).copied() {
-                self.open_picker(st, g);
+            if !Self::expanding(st) {
+                self.opened = self.items.get(i).map(|&g| st.song(g).id());
+            }
+            // a double-click opens the song's page (the part played last), paused: Play starts it
+            if double
+                && let Some(g) = self.items.get(i).copied()
+                && let Some(a) = last_part(st, st.song(g)).cloned()
+            {
+                st.config.set("last_arrangement", a.name.to_lowercase());
+                self.reqs.push(Req::Open { g, part: a.key });
             }
         }
         for a in acts {
             self.act(st, area, &a);
         }
+    }
+
+    /// The song list's scroll indicator (owner request, 2026-11-03): a thumb down the right of the well showing where
+    /// the rows on screen are in the list; drag it, or click the track, to go there. While it scrolls, a bubble beside
+    /// the thumb names the group the top row is in by the sort (`group_of`), fading a second after.
+    fn draw_scrollbar(&mut self, ui: &Ui, st: &AppState, area: Rect, r: Rect) {
+        let n = self.items.len();
+        let vis = self.visible_rows(st, area);
+        if n <= vis {
+            return;
+        }
+        let th = t();
+        let p = ui.painter();
+        let track = Rect::from_min_max(
+            pos2(r.max.x + px(2.0), r.min.y + px(4.0)),
+            pos2(r.max.x + px(7.0), r.max.y - px(4.0)),
+        );
+        let max_top = n - vis;
+        let th_h = (track.height() * vis as f32 / n as f32).max(px(28.0));
+        let span = (track.height() - th_h).max(1.0);
+        let resp = interact(
+            ui,
+            Rect::from_min_max(
+                pos2(track.min.x - px(4.0), track.min.y),
+                pos2(track.max.x + px(4.0), track.max.y),
+            ),
+            "lib-scroll",
+            Sense::click_and_drag(),
+        );
+        if (resp.dragged() || resp.clicked())
+            && let Some(at) = resp.interact_pointer_pos()
+        {
+            let f = ((at.y - track.min.y - th_h / 2.0) / span).clamp(0.0, 1.0);
+            self.scroll_to(f * max_top as f32, true);
+            self.scroll_at = Some(Instant::now());
+        }
+        let hot = resp.hovered() || resp.dragged();
+        if hot {
+            st.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let y = track.min.y + span * self.scroll.clamp(0.0, max_top as f32) / max_top as f32;
+        let thumb = Rect::from_min_size(pos2(track.min.x, y), vec2(track.width(), th_h));
+        paint::pill(p, thumb, if hot { th.text_2 } else { th.tick });
+        // the group bubble
+        let Some(at) = self.scroll_at else { return };
+        let age = at.elapsed().as_secs_f32();
+        let a = if resp.dragged() {
+            1.0
+        } else {
+            (1.0 - (age - 0.9).max(0.0) / 0.35).clamp(0.0, 1.0)
+        };
+        if a <= 0.0 {
+            self.scroll_at = None;
+            return;
+        }
+        st.ctx.request_repaint();
+        let Some(label) = self.items.get(self.top).and_then(|&g| self.group_of(st, g)) else {
+            return;
+        };
+        let style = text::Style::new(18.0, 800, th.text.gamma_multiply(a));
+        let w = text::width(&st.ctx, &label, style) + px(32.0);
+        let h = px(40.0);
+        let cy = thumb.center().y.clamp(r.min.y + h / 2.0, r.max.y - h / 2.0);
+        let bubble = Rect::from_min_size(pos2(track.min.x - px(14.0) - w, cy - h / 2.0), vec2(w, h));
+        p.rect_filled(
+            bubble.translate(vec2(0.0, px(3.0))),
+            px(14.0),
+            Color32::from_black_alpha((60.0 * a) as u8),
+        );
+        p.rect_filled(bubble, px(14.0), th.screen.gamma_multiply(a));
+        p.rect_stroke(
+            bubble,
+            px(14.0),
+            Stroke::new(1.0, th.rim.gamma_multiply(a)),
+            egui::StrokeKind::Inside,
+        );
+        text::draw(p, &label, bubble.center(), Align2::CENTER_CENTER, style, None);
+    }
+
+    /// The group a song is in by the list's order, for the scroll bubble: its first letter by artist or title (a
+    /// leading "The" skipped, digits as #), the month it was added, when it was last played, its best score's band,
+    /// how often it's been played. None in a playlist's own order.
+    fn group_of(&self, st: &AppState, g: usize) -> Option<String> {
+        if matches!(self.view, View::Playlist(_)) && self.query.is_empty() {
+            return None;
+        }
+        let ud = &st.userdata;
+        let s = st.song(g);
+        let ids = st.ids(g);
+        let letter = |t: &str| -> String {
+            let t = t.trim().to_lowercase();
+            let t = t.strip_prefix("the ").unwrap_or(&t);
+            match t.chars().find(|c| c.is_alphanumeric()) {
+                Some(c) if c.is_alphabetic() => c.to_uppercase().collect(),
+                _ => "#".into(),
+            }
+        };
+        let month = |secs: f64| {
+            use chrono::TimeZone;
+            chrono::Local
+                .timestamp_opt(secs as i64, 0)
+                .single()
+                .map(|d| d.format("%B %Y").to_string())
+        };
+        let mode = if self.view == View::Recent {
+            "recently played"
+        } else {
+            SORTS[self.sort]
+        };
+        Some(match mode {
+            "artist" => letter(&s.artist),
+            "title" => letter(&s.display_title()),
+            "recently added" => month(s.mtime)?,
+            "recently played" => match ud.last_played(&ids) {
+                None => "Not played yet".into(),
+                Some(t) => {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs_f64())
+                        .unwrap_or(t);
+                    let days = (now - t) / 86400.0;
+                    if days < 1.0 {
+                        "Today".into()
+                    } else if days < 7.0 {
+                        "This week".into()
+                    } else {
+                        month(t)?
+                    }
+                }
+            },
+            "best score" => match ud.best(&ids, None) {
+                None => "No score yet".into(),
+                Some((_, acc, _)) => match (acc * 100.0).round() as i64 {
+                    90.. => "90% and up".into(),
+                    80..=89 => "80 to 89%".into(),
+                    70..=79 => "70 to 79%".into(),
+                    50..=69 => "50 to 69%".into(),
+                    _ => "Under 50%".into(),
+                },
+            },
+            "most played" => match ud.plays(&ids) {
+                50.. => "50 plays and up".into(),
+                10..=49 => "10 to 49 plays".into(),
+                1..=9 => "1 to 9 plays".into(),
+                _ => "Never played".into(),
+            },
+            _ => return None,
+        })
     }
 
     /// The selected song opened up: raised out of the screen, a big cover, its details, the preview with a key to
@@ -1975,14 +2276,15 @@ impl LibView {
         let p = ui.painter().clone();
         let th = t();
         self.side_rect = rect;
-        paint::well(&p, rect, 26.0);
+        // the AMP ROOM button at the foot, on the page itself; the sidebar's well (the list, which scrolls) ends above
+        // it (owner request, 2026-11-03: two separate things)
+        let amp_h = px(62.0);
+        let amp = Rect::from_min_size(pos2(rect.min.x, rect.max.y - amp_h), vec2(rect.width(), amp_h));
+        let list = Rect::from_min_max(rect.min, pos2(rect.max.x, snap(amp.min.y - px(16.0))));
+        paint::well(&p, list, 26.0);
         let counts = self.counts(st);
         let tc = self.tuning_counts(st);
         let (x0, wd) = (rect.min.x + px(12.0), rect.width() - px(24.0));
-        // the AMP ROOM button stays at the foot; the list scrolls in the room above it
-        let amp_h = px(60.0);
-        let amp = Rect::from_min_size(pos2(x0, rect.max.y - px(12.0) - amp_h), vec2(wd, amp_h));
-        let list = Rect::from_min_max(rect.min, pos2(rect.max.x, amp.min.y - px(6.0)));
         let clip = inflate(list, -px(6.0), -px(6.0));
         let sp = p.with_clip_rect(clip);
         let mut y = rect.min.y + px(14.0) - snap(self.side_scroll);
@@ -2064,6 +2366,11 @@ impl LibView {
             };
             let rcy = centery(r);
             let mut x = r.min.x + px(14.0);
+            if let Some(View::Over(pc)) = &view {
+                let tier = OVER.iter().position(|o| o == pc).unwrap_or(0);
+                draw_rank(&sp, pos2(x + px(8.0), rcy), tier);
+                x += px(24.0);
+            }
             match icon {
                 Some(Icon::Star) => {
                     draw_star(&sp, pos2(x + px(7.0), rcy), 7.0, true);
@@ -2161,6 +2468,17 @@ impl LibView {
             36.0,
         );
         header(&mut y, "PLAYLISTS");
+        // the automatic ones first, your own under them
+        for (pc, n) in OVER.into_iter().zip(counts.over) {
+            item(
+                &mut y,
+                &format!("{pc}% and up"),
+                Some(View::Over(pc)),
+                Some(n),
+                None, // (its rank mark: `draw_rank`)
+                36.0,
+            );
+        }
         for (name, n) in &counts.playlists {
             item(
                 &mut y,
@@ -2192,13 +2510,19 @@ impl LibView {
         self.side_max = snap(content - list.height()).max(0.0);
         self.side_scroll = self.side_scroll.clamp(0.0, self.side_max);
         if self.side_max > 0.0 {
-            paint::fade_edges(
+            // (no fade at its edges: a rectangle, it showed past the well's round corners; the rows are cut at the
+            // well's inner edge. Owner report, 2026-11-03)
+            // where in the sidebar you are: a slim thumb down its right
+            let track = Rect::from_min_max(
+                pos2(list.max.x - px(9.0), list.min.y + px(18.0)),
+                pos2(list.max.x - px(5.0), list.max.y - px(18.0)),
+            );
+            let th_h = (track.height() * list.height() / (list.height() + self.side_max)).max(px(24.0));
+            let ty = track.min.y + (track.height() - th_h) * self.side_scroll / self.side_max;
+            paint::pill(
                 &p,
-                clip,
-                self.side_scroll > pixels(0.5),
-                self.side_scroll < self.side_max - pixels(0.5),
-                20.0,
-                paint::FaceKind::Base { rect, sunk: true },
+                Rect::from_min_size(pos2(track.min.x, ty), vec2(track.width(), th_h)),
+                th.tick,
             );
             // it scrolls: show which way there's more
             if self.side_scroll < self.side_max - pixels(1.0) {
@@ -2932,12 +3256,43 @@ fn draw_pick(p: &Painter, st: &AppState, rect: Rect) {
 
 /// The list's first row on screen once it holds `len` rows: a list that got shorter (a search, a rescan, a song taken
 /// out) while it was scrolled down would otherwise start past its end and draw no rows at all.
+/// One frame of the list's smooth scroll: `pos` eased toward `target` over `dt` seconds (63% of the way every
+/// 60 ms), there once within 0.002 rows (P27.2).
+fn eased(pos: f32, target: f32, dt: f32) -> f32 {
+    let d = target - pos;
+    if d.abs() < 0.002 {
+        target
+    } else {
+        pos + d * (1.0 - (-dt / 0.06).exp())
+    }
+}
+
 fn first_row(top: usize, len: usize) -> usize {
     top.min(len.saturating_sub(1))
 }
 
 #[cfg(test)]
 mod tests {
+
+    /// P27.2: the smooth scroll gets there without overshooting, and a touchpad's small deltas add up instead of
+    /// being cut to nothing.
+    #[test]
+    fn the_list_scrolls_smoothly() {
+        let (mut pos, target) = (0.0f32, 3.0f32);
+        let mut steps = 0;
+        while pos != target {
+            let next = super::eased(pos, target, 1.0 / 60.0);
+            assert!(next > pos && next <= target, "{pos} -> {next}");
+            pos = next;
+            steps += 1;
+            assert!(steps < 120, "settles within 2 s");
+        }
+        assert!(steps > 5, "eased, not a jump: {steps}");
+        // twenty touchpad nudges of a twentieth of a notch each: three rows, as one notch
+        let t = (0..20).fold(0.0f32, |t, _| t + 0.05 * 3.0);
+        assert!((t - 3.0).abs() < 1e-4);
+    }
+
     use super::first_row;
 
     #[test]

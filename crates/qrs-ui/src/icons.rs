@@ -269,16 +269,19 @@ pub fn icon_image(icon: Icon, size: u32, color: Color32) -> crate::raster::Image
             }
         }
         Icon::Restart => {
+            // the owner's pick (mock-up 1, 2026-11-03): a circle open at the top right, run clockwise, a solid head at
+            // the top pointing on round, the tail end rounded
             p.arc(
-                4.0,
-                4.0,
-                16.0,
-                16.0,
-                (-60.0f64).to_radians(),
-                200.0f64.to_radians(),
-                iu(2.4),
+                4.5,
+                4.5,
+                15.0,
+                15.0,
+                90.0f64.to_radians(),
+                390.0f64.to_radians(),
+                iu(2.6),
             );
-            p.polygon(&[(3.0, 5.0), (9.5, 5.5), (4.5, 11.0)], 0);
+            p.polygon(&[(17.2, 4.5), (11.2, 0.0), (11.2, 9.0)], 0);
+            p.circle(18.5, 8.25, 1.3, 0);
         }
         Icon::Expand => {
             p.stroke(&[(14.0, 4.0), (20.0, 4.0), (20.0, 10.0)], 2.4);

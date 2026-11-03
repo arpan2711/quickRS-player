@@ -15,6 +15,15 @@ use crate::theme::{self, t};
 
 // -- caches -------------------------------------------------------------------------------------------------------
 
+/// Textures made since the last `take_made` (how many, and microseconds spent making them): the frame probe's.
+static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MADE_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn take_made() -> (u64, f64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (MADE.swap(0, Relaxed), MADE_US.swap(0, Relaxed) as f64 / 1000.0)
+}
+
 struct Entry {
     tex: TextureHandle,
     size: [usize; 2],
@@ -55,7 +64,13 @@ impl Cache {
             e.used = frame;
             return (e.tex.id(), e.size);
         }
+        let t0 = std::time::Instant::now();
         let img = make();
+        MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        MADE_US.fetch_add(
+            t0.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let size = [img.w.max(1), img.h.max(1)];
         let img = if img.w == 0 || img.h == 0 {
             Image::new(1, 1)
@@ -163,18 +178,6 @@ pub fn texture(
             Store::Face => k.faces.get_or(ctx, key, frame, make),
         }
     })
-}
-
-/// Drop every cached texture (e.g. after the fonts or the scale changed outside the usual checks).
-pub fn clear_caches() {
-    KIT.with(|k| {
-        let mut k = k.borrow_mut();
-        k.patches.clear();
-        k.small.clear();
-        k.bodies.clear();
-        k.faces.clear();
-    });
-    CPU_PATCHES.with(|c| c.borrow_mut().clear());
 }
 
 thread_local! {
@@ -1356,41 +1359,22 @@ pub fn pill(p: &Painter, rect: Rect, color: Color32) {
     pill_px(p, PxRect::of(rect, p.pixels_per_point()), color);
 }
 
-/// `pill` on a rect in whole pixels.
+/// `pill` on a rect in whole pixels: an anti-aliased rounded rect exactly `w` x `h` with half its short side for the
+/// radius. (It was the Python app's pygame rect and two aacircles, whose whole-pixel circles are 2r + 1 pixels across:
+/// on an even height the round ends stood a pixel below the flat middle, a step on the bar's underside. Owner
+/// report, 2026-11-03.)
 pub(crate) fn pill_px(p: &Painter, r: PxRect, color: Color32) {
-    use crate::raster::pg;
     if r.w < 1 || r.h < 1 {
         return;
     }
-    let c = pg::rgb(color);
     let key = key_of(("pill", r.w, r.h, ck(color)));
-    cover(
-        p,
-        key,
-        PxRect {
-            x: r.x - 2,
-            y: r.y - 2,
-            w: r.w + 4,
-            h: r.h + 4,
-        },
-        |cv| {
-            let rad = r.w.min(r.h) as f64 / 2.0;
-            let (x, y, w, h) = (r.x as f64, r.y as f64, r.w as f64, r.h as f64);
-            let ir = rad as i32 as f64;
-            if r.w == r.h {
-                let (cx, cy) = (r.x + r.w / 2, r.y + r.h / 2);
-                pg::aacircle(cv, c, (cx as f64, cy as f64), rad, 0, None);
-            } else if r.w > r.h {
-                pg::rect(cv, c, (x + ir, y, w - 2.0 * ir, h), 0, 0);
-                pg::aacircle(cv, c, (x + rad, y + rad), rad, 0, None);
-                pg::aacircle(cv, c, (x + w - rad, y + rad), rad, 0, None);
-            } else {
-                pg::rect(cv, c, (x, y + ir, w, h - 2.0 * ir), 0, 0);
-                pg::aacircle(cv, c, (x + rad, y + rad), rad, 0, None);
-                pg::aacircle(cv, c, (x + rad, y + h - rad), rad, 0, None);
-            }
-        },
-    );
+    let (tex, size) = texture(p.ctx(), Store::Small, key, || {
+        let (w, h) = (r.w as usize, r.h as usize);
+        let mut l = Layers::new(w, h);
+        l.over_c(color, &Mask::rrect_full(w, h, r.w.min(r.h) as f32 / 2.0));
+        l.image(None)
+    });
+    blit(p, tex, size, r.x as f32, r.y as f32, Color32::WHITE);
 }
 
 /// A flat rounded rect (`pygame.draw.rect(screen, color, rect, border_radius=r)`, r in points made whole pixels

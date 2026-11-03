@@ -33,6 +33,9 @@ pub struct Args {
     pub play: Option<String>,
     /// Started by the updater (P20.1): the old app's process id, waited for.
     pub after_update: Option<u32>,
+    /// A new dev build swapped in (D67): the file saying where the old one was, and what it said (main reads it).
+    pub resume: Option<PathBuf>,
+    pub resumed: Option<crate::devswap::Resume>,
 }
 
 impl Args {
@@ -58,6 +61,7 @@ impl Args {
                 "--silent" => a.silent = true,
                 "--play" => a.play = it.next(),
                 "--after-update" => a.after_update = it.next().and_then(|p| p.parse().ok()),
+                "--resume" => a.resume = it.next().map(PathBuf::from),
                 "-h" | "--help" => {
                     println!(
                         "quickrs [--silent] [--play TITLE] [--gallery] [--screenshots DIR [--size WxH]] [--theme midnight|graphite|daylight] [--knobs amp|pedal|chrome|vintage]"
@@ -72,6 +76,62 @@ impl Args {
 }
 
 /// The Python app's scale: the window's physical size against a 1400 x 820 layout.
+/// QUICKRS_FRAMES=1: frames over 12 ms written to the log, with whether the scale changed in them (a probe for
+/// how resizing feels).
+struct FrameTimer {
+    at: std::time::Instant,
+    zoom: f32,
+    ctx: egui::Context,
+}
+
+impl FrameTimer {
+    fn new(ctx: &egui::Context) -> Option<FrameTimer> {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        ON.get_or_init(|| std::env::var("QUICKRS_FRAMES").is_ok_and(|v| v == "1"))
+            .then(|| FrameTimer {
+                at: std::time::Instant::now(),
+                zoom: ctx.zoom_factor(),
+                ctx: ctx.clone(),
+            })
+    }
+}
+
+impl Drop for FrameTimer {
+    fn drop(&mut self) {
+        let ms = self.at.elapsed().as_secs_f64() * 1000.0;
+        let (made, made_ms) = qrs_ui::paint::take_made();
+        if ms > 12.0 {
+            let z = self.ctx.zoom_factor();
+            let px = self.ctx.content_rect().size() * self.ctx.pixels_per_point();
+            crate::applog::write(&format!(
+                "frame: {ms:.1} ms, {:.0} x {:.0}, {made} textures made in {made_ms:.1} ms{}",
+                px.x,
+                px.y,
+                if (z - self.zoom).abs() > 1e-4 {
+                    ", scale changed"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
+}
+
+/// The window's inside, in pixels (Windows: its client rect; elsewhere unknown here).
+#[cfg(windows)]
+fn client_pixels(hwnd: isize) -> Option<egui::Vec2> {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+    let mut r = RECT::default();
+    unsafe { GetClientRect(HWND(hwnd as *mut _), &mut r) }.ok()?;
+    Some(egui::vec2((r.right - r.left) as f32, (r.bottom - r.top) as f32))
+}
+
+#[cfg(not(windows))]
+fn client_pixels(_hwnd: isize) -> Option<egui::Vec2> {
+    None
+}
+
 pub fn scale_for(physical: egui::Vec2) -> f32 {
     (physical.x / 1400.0).min(physical.y / 820.0).clamp(0.7, 2.2)
 }
@@ -85,6 +145,10 @@ pub enum Screen {
 
 pub struct QuickRs {
     hwnd: Option<isize>,
+    /// A dialog's frosted backdrop wasn't captured in time: the dialog goes over the page as it is until it closes.
+    dlg_gave_up: bool,
+    /// The song being loaded opens paused (a double-click in the library).
+    open_paused: bool,
     styled: Option<ThemeName>,
     pub screen: Screen,
     gallery: gallery::Gallery,
@@ -115,6 +179,14 @@ pub struct QuickRs {
     /// --play: the song to open once the library is read, then start (`play_pending` until it's open).
     play: Option<String>,
     play_pending: bool,
+    /// Dev builds (D67): the watch for a new build at the exe's path, whether its "waiting for a pause" notice was
+    /// given; after a swap, the song to open again and then where to seek to (and play on or not).
+    devswap: Option<crate::devswap::DevSwap>,
+    swap_said: bool,
+    /// When this app, a new build started, began closing for it.
+    swap_closing: Option<std::time::Instant>,
+    resume_song: Option<crate::devswap::ResumeSong>,
+    resume_at: Option<(f64, bool)>,
     /// A saved lick being opened: its loop (start, end) and name, set on the player once the song is open.
     lick: Option<(f64, f64, String)>,
     /// A lesson's riff being opened (the lesson and the riff's id), handed to the player once the song is open.
@@ -158,6 +230,8 @@ impl QuickRs {
         }
         QuickRs {
             hwnd,
+            dlg_gave_up: false,
+            open_paused: false,
             styled: None,
             screen: if args.gallery {
                 Screen::Gallery
@@ -184,6 +258,13 @@ impl QuickRs {
             timed: (false, false),
             play: args.play.clone(),
             play_pending: false,
+            devswap: (args.screenshots.is_none() && !args.gallery)
+                .then(crate::devswap::DevSwap::this)
+                .flatten(),
+            swap_said: false,
+            swap_closing: None,
+            resume_song: args.resumed.as_ref().and_then(|r| r.song.clone()),
+            resume_at: None,
             lick: None,
             lesson: None,
             setup: None,
@@ -192,7 +273,12 @@ impl QuickRs {
     }
 
     fn update_scale(&self, ctx: &egui::Context) {
-        let physical = ctx.content_rect().size() * ctx.pixels_per_point();
+        // (the window's pixels as `raw_input_hook` reads them, where it can: it sets the zoom, D70)
+        let own = self
+            .hwnd
+            .and_then(client_pixels)
+            .filter(|p| p.x >= 1.0 && p.y >= 1.0);
+        let physical = own.unwrap_or_else(|| ctx.content_rect().size() * ctx.pixels_per_point());
         // text sizes round as the Python app's do, from its scale of the window's whole-pixel size
         let (w, h) = (physical.x.round() as f64, physical.y.round() as f64);
         qrs_ui::units::set_scale((w / 1400.0).min(h / 820.0).clamp(0.7, 2.2));
@@ -211,6 +297,10 @@ impl QuickRs {
             match r {
                 Req::Fullscreen => toggle_fullscreen(ctx),
                 Req::Play { g, part } => self.open_song(g, &part),
+                Req::Open { g, part } => {
+                    self.open_song(g, &part);
+                    self.open_paused = true;
+                }
                 Req::Lick {
                     g,
                     part,
@@ -312,6 +402,7 @@ impl QuickRs {
         let rate = self.state.audio.as_ref().map(|a| a.engine.rate());
         self.lick = None;
         self.lesson = None;
+        self.open_paused = false;
         self.loading = Some(Loading::start(g, &e, part, &self.state.keys, rate));
     }
 
@@ -579,26 +670,52 @@ impl QuickRs {
                 self.lib.handle(&mut self.state, area, ev);
             }
         }
-        if self.lib.view == View::Home && self.lib.picker.is_none() && self.lib.text_box.is_none() {
+        // Home with a song's picker (or a name box) open over it (owner request, 2026-11-02: a click on a song
+        // there opens its picker where you are)
+        let home = self.lib.view == View::Home;
+        if home && self.lib.picker.is_none() && self.lib.text_box.is_none() {
             self.home.ui(ui, &mut self.lib, &mut self.state, area);
             if self.lib.view != View::Home || self.lib.picker.is_some() || self.lib.text_box.is_some() {
-                ctx.request_repaint(); // the sidebar or a card went to the library: draw it next frame
+                ctx.request_repaint(); // the sidebar went to the library or a card opened a picker: draw it next frame
             }
         } else {
             // glass dialogs: the page drawn alone until a capture of it is in (two frames), then its frosted copy
-            // under them (as the settings panel's backdrop)
+            // under them (as the settings panel's backdrop). A capture that hasn't come in 250 ms isn't waited for:
+            // the dialog goes over the page as it is (it once never came, and the page sat there without its picker)
             let frost = input && self.lib.has_dialog() && theme::is_dark() && !theme::classic();
-            if !frost {
-                self.dlg_backdrop.clear();
-                self.lib.ui(ui, &mut self.state, area);
+            self.dlg_gave_up |= self
+                .dlg_backdrop
+                .waiting()
+                .is_some_and(|w| w > std::time::Duration::from_millis(250));
+            let waited = frost && self.dlg_gave_up;
+            if !frost || waited {
+                if !frost {
+                    self.dlg_backdrop.clear();
+                    self.dlg_gave_up = false;
+                }
+                if home {
+                    self.home.ui(ui, &mut self.lib, &mut self.state, area);
+                    self.lib.ui_part(ui, &mut self.state, area, Part::Dialogs);
+                } else {
+                    self.lib.ui(ui, &mut self.state, area);
+                }
+                if waited && self.dlg_backdrop.ready(&ctx) {
+                    self.dlg_gave_up = false;
+                    ctx.request_repaint(); // (it came after all: frosted from the next frame)
+                }
             } else if self.dlg_backdrop.ready(&ctx) {
                 self.dlg_backdrop.draw_page(ui.painter(), ctx.content_rect());
                 self.lib.ui_part(ui, &mut self.state, area, Part::Dialogs);
             } else {
-                self.lib.ui_part(ui, &mut self.state, area, Part::Page);
+                if home {
+                    self.home.ui(ui, &mut self.lib, &mut self.state, area);
+                } else {
+                    self.lib.ui_part(ui, &mut self.state, area, Part::Page);
+                }
                 if !self.dlg_backdrop.capturing() {
                     self.dlg_backdrop.capture(&ctx);
                 }
+                ctx.request_repaint_after(std::time::Duration::from_millis(30)); // (until it's in, or given up)
             }
         }
         self.requests(&ctx);
@@ -754,12 +871,15 @@ impl QuickRs {
             } else if self.loading.is_none()
                 && let Some(g) = self.shot_song()
             {
-                // the song the Python app's screenshots use, in its first part (as they open it)
-                let part = self
-                    .state
-                    .song(g)
-                    .arrangements
-                    .first()
+                // the song the Python app's screenshots use, in its first part (as they open it);
+                // QUICKRS_SHOT_PART picks another by its key ("rhythm", "lead2", "combo": the highway compare harness)
+                let arrs = &self.state.song(g).arrangements;
+                let want = std::env::var("QUICKRS_SHOT_PART")
+                    .ok()
+                    .map(|s| s.trim().to_lowercase());
+                let part = want
+                    .and_then(|w| arrs.iter().find(|a| a.key == w))
+                    .or_else(|| arrs.first())
                     .map(|a| a.key.clone())
                     .unwrap_or_default();
                 self.open_song(g, &part);
@@ -793,7 +913,7 @@ impl QuickRs {
                 self.stage_room(what);
             }
             shots::Page::Setup(_) => self.lib.view = View::Home,
-            shots::Page::NoteWidget => self.lib.view = View::Home,
+            shots::Page::NoteWidget | shots::Page::NoteWidgetChords => self.lib.view = View::Home,
             shots::Page::DeviceOffer => {
                 self.lib.view = View::Home;
                 self.devstatus.stage("NUX Audio", "audio interface (ASIO driver)");
@@ -1008,7 +1128,31 @@ pub fn toggle_fullscreen(ctx: &egui::Context) {
 impl eframe::App for QuickRs {
     /// Screenshot mode: the real mouse and keyboard don't reach the app (a shot shows only what it stages, like the
     /// Python tool's off-screen window); the shots of something under the pointer get a pointer there.
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // the window's scale set before the frame starts, so a resize lays the page out once, at the new scale (it
+        // took two frames, the first redrawing the panels at the old one: D70). The size is the window's own, in
+        // pixels: egui's rect here is in points of the scale being replaced.
+        // (not before the first frame: egui has no screen for it yet, and changing the scale there left it at its
+        // 10000-point stand-in; `update_scale` sets the first frame's, from the same pixels)
+        if let Some(physical) = self.hwnd.filter(|_| self.timed.0).and_then(client_pixels) {
+            let native = raw_input
+                .viewports
+                .get(&raw_input.viewport_id)
+                .and_then(|v| v.native_pixels_per_point)
+                .or(ctx.native_pixels_per_point())
+                .unwrap_or(1.0);
+            let zoom = scale_for(physical) / native;
+            if physical.x >= 1.0 && physical.y >= 1.0 && (ctx.zoom_factor() - zoom).abs() > 1e-3 {
+                ctx.set_zoom_factor(zoom);
+                qrs_ui::material::warm(scale_for(physical));
+                // and the frame's screen in the new scale's points: egui's is in the old one's, and laid out on it
+                // the frame came out 12500 pixels wide (the first frame of every start, and of each resize step)
+                raw_input.screen_rect = Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    physical / (native * zoom),
+                ));
+            }
+        }
         let Some((page, pointer)) = self
             .shots
             .as_ref()
@@ -1067,6 +1211,7 @@ impl eframe::App for QuickRs {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let _timer = FrameTimer::new(&ctx);
         if !self.timed.0 {
             self.timed.0 = true;
             crate::gpu::drawn();
@@ -1123,6 +1268,37 @@ impl eframe::App for QuickRs {
             self.play_pending = false;
             p.start_now();
         }
+        // a new dev build swapped in (D67): the song that was open, at the time it was at
+        if let Some(song) = self.resume_song.clone()
+            && !self.state.scanning()
+            && !self.state.groups.is_empty()
+        {
+            self.resume_song = None;
+            let songs = self.state.songs.clone();
+            match (0..self.state.groups.len()).find(|&g| {
+                self.state.groups[g]
+                    .members
+                    .iter()
+                    .any(|&i| songs[i].path == song.path)
+            }) {
+                Some(g) => {
+                    self.open_song(g, &song.part);
+                    self.resume_at = Some((song.at, song.playing));
+                }
+                None => self
+                    .state
+                    .say("New build in: couldn't find the song you had open"),
+            }
+        }
+        if let Some((at, playing)) = self.resume_at
+            && let Some(p) = &mut self.player
+        {
+            self.resume_at = None;
+            p.seek(at);
+            if playing {
+                p.start_now();
+            }
+        }
         // a song file dropped on the window opens its part picker
         let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
             i.raw
@@ -1131,7 +1307,16 @@ impl eframe::App for QuickRs {
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
-        if self.shots.is_none() && self.loading.is_none() && self.setup.is_none() {
+        // (the first-time setup: a folder dropped joins its list, the way to add one on a desktop with no file
+        // picker, P28.3)
+        if self.shots.is_none() && self.setup.is_some() {
+            for path in dropped.iter().filter(|p| p.is_dir()) {
+                match self.state.add_folder(path) {
+                    Ok(msg) => self.state.say(msg),
+                    Err(e) => self.state.say_error(e),
+                }
+            }
+        } else if self.shots.is_none() && self.loading.is_none() {
             for path in dropped {
                 let ext = path
                     .extension()
@@ -1160,6 +1345,67 @@ impl eframe::App for QuickRs {
         }
         self.state.refresh();
         self.check_setup();
+        // a new dev build at the exe's path (D67): swap it in, unless a song is playing or a recording running
+        if let Some(ds) = &mut self.devswap
+            && ds.poll()
+        {
+            let playing = self.player.as_ref().is_some_and(|p| p.transport.playing());
+            if playing || self.state.rec.status().is_some() {
+                if !self.swap_said {
+                    self.swap_said = true;
+                    self.state.say(if playing {
+                        "New build ready: it comes in when you pause"
+                    } else {
+                        "New build ready: it comes in when the recording stops"
+                    });
+                }
+            } else {
+                let z = ctx.zoom_factor();
+                let (outer, inner, maximized, fullscreen) = ctx.input(|i| {
+                    let v = i.viewport();
+                    (v.outer_rect, v.inner_rect, v.maximized, v.fullscreen)
+                });
+                let resume = crate::devswap::Resume {
+                    song: self.player.as_ref().map(|p| crate::devswap::ResumeSong {
+                        path: p.entry.path.clone(),
+                        part: p.part_key.clone(),
+                        at: p.transport.position(),
+                        playing: false,
+                    }),
+                    window: outer
+                        .zip(inner)
+                        .map(|(o, i)| [o.min.x * z, o.min.y * z, i.width() * z, i.height() * z]),
+                    maximized: maximized.unwrap_or(false),
+                    fullscreen: fullscreen.unwrap_or(false),
+                };
+                let file = crate::devswap::resume_file(&self.state.data.cache());
+                let exe = ds.exe().to_path_buf();
+                self.devswap = None; // (once)
+                match crate::devswap::write_resume(&file, &resume)
+                    .and_then(|()| crate::devswap::relaunch(&exe, &file))
+                {
+                    Ok(()) => {
+                        crate::applog::write("devswap: new build started, closing this one");
+                        self.swap_closing = Some(std::time::Instant::now());
+                    }
+                    Err(e) => self
+                        .state
+                        .say_error(format!("New build ready, but it couldn't start ({e})")),
+                }
+            }
+        }
+        // the new build is starting and waits for this one to go: ask to close every frame (one request was once
+        // lost, 2026-11-02: the old window stayed and the new one gave up), and after 3 s save what closing saves
+        // and exit
+        if let Some(since) = self.swap_closing {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            ctx.request_repaint();
+            if since.elapsed() > std::time::Duration::from_secs(3) {
+                crate::applog::write("devswap: still open 3 s after closing; saving and exiting");
+                eframe::App::on_exit(self);
+                std::process::exit(0);
+            }
+        }
         // an update is in place: start it, and close this one
         if self.state.updater.take_restart() {
             match crate::update::relaunch() {
@@ -1217,6 +1463,9 @@ impl eframe::App for QuickRs {
             }) {
                 Ok(loaded) => {
                     let mut p = PlayerView::new(&mut self.state, loaded);
+                    if std::mem::take(&mut self.open_paused) {
+                        p.open_paused();
+                    }
                     if let Some((a, b, name)) = self.lick.take() {
                         p.set_lick_loop(a, b, &name);
                     }
@@ -1290,14 +1539,20 @@ impl eframe::App for QuickRs {
             .as_ref()
             .is_some_and(|s| s.page() != crate::setup::Page::Widget);
         if self.shots.is_none() && !setup_hides {
-            let arr = self.player.as_ref().map(|p| &p.chart.arr);
-            self.notewidget.ui(&ctx, &mut self.state, arr);
-        } else if self.shots.as_ref().and_then(|s| s.current()).map(|s| s.page)
-            == Some(shots::Page::NoteWidget)
+            let song = self
+                .player
+                .as_ref()
+                .map(|p| (&p.chart.arr, p.now(), p.transport.playing()));
+            self.notewidget.ui(&ctx, &mut self.state, song);
+        } else if let Some(page @ (shots::Page::NoteWidget | shots::Page::NoteWidgetChords)) =
+            self.shots.as_ref().and_then(|s| s.current()).map(|s| s.page)
         {
             let at = egui::pos2(rect.max.x - 272.0 - 40.0, rect.min.y + 110.0);
-            self.notewidget
-                .preview(ui, egui::Rect::from_min_size(at, egui::vec2(272.0, 196.0)));
+            self.notewidget.preview(
+                ui,
+                egui::Rect::from_min_size(at, egui::vec2(272.0, 196.0)),
+                page == shots::Page::NoteWidgetChords,
+            );
         }
         if let Some(sh) = &mut self.shots {
             // pages wait for the library (and the player for its song)

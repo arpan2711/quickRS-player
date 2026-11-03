@@ -244,6 +244,10 @@ impl SettingsView {
                     st.config.set_folder(key, Some(&dir));
                     st.save_config();
                     self.say(format!("{what} go to {}", dir.display()));
+                } else if crate::dialogs::unavailable() {
+                    self.say(format!(
+                        "No file picker on this desktop: set it by hand in config.json ({key}), or install                          xdg-desktop-portal-gtk"
+                    ));
                 }
             }
             "recdir_open" => crate::recording::open_dir(&now),
@@ -699,6 +703,12 @@ impl SettingsView {
     /// Load a keys file picked in the system's dialog (keys.json, keys.json.txt...) and save it as keys.json.
     pub(super) fn load_keys_file(&mut self, st: &mut AppState) {
         let Some(path) = crate::dialogs::pick_keys_file() else {
+            if crate::dialogs::unavailable() {
+                self.key_note = Some((
+                    "No file picker on this desktop: paste the two keys into the boxes instead".into(),
+                    false,
+                ));
+            }
             return;
         };
         let text = std::fs::read_to_string(&path).unwrap_or_default();

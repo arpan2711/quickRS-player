@@ -240,12 +240,7 @@ pub struct StretchCompare {
     pub pairs: Vec<(Option<usize>, Option<usize>, f64)>,
 }
 
-impl StretchCompare {
-    /// The pairs that aren't the same (likeness below `SAME`, or a bar on one side only).
-    pub fn differing(&self) -> Vec<(Option<usize>, Option<usize>, f64)> {
-        self.pairs.iter().filter(|p| p.2 < SAME).copied().collect()
-    }
-}
+impl StretchCompare {}
 
 impl Bars {
     pub fn new(arr: &Arrangement) -> Bars {

@@ -350,11 +350,39 @@ pub fn sheet64(mat: Mat, scale: f64) -> Arc<Sheet> {
     s
 }
 
-/// Build every material's sheet at `scale` in the background, so no key waits for one (at start, on a resize).
+/// Build every material's sheet at `scale` in the background, so no key waits for one (at start, on a resize). One
+/// thread at a time builds the latest scale asked for (a resize asks at every step: D70), and sheets of other scales
+/// beyond the last few are let go.
 pub fn warm(scale: f32) {
-    std::thread::spawn(move || {
-        for m in [Mat::Tortoise, Mat::Abalone, Mat::Aluminium] {
-            sheet(m, scale);
+    static WANT: Mutex<Option<f32>> = Mutex::new(None);
+    static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering;
+    if let Ok(mut w) = WANT.lock() {
+        *w = Some(scale);
+    }
+    if BUSY.swap(true, Ordering::AcqRel) {
+        return; // (the running thread picks this scale up next)
+    }
+    std::thread::spawn(|| {
+        loop {
+            let next = WANT.lock().ok().and_then(|mut w| w.take());
+            let Some(scale) = next else {
+                BUSY.store(false, Ordering::Release);
+                // (asked for again between the take and the store: go on)
+                if WANT.lock().is_ok_and(|w| w.is_some()) && !BUSY.swap(true, Ordering::AcqRel) {
+                    continue;
+                }
+                return;
+            };
+            for m in [Mat::Tortoise, Mat::Abalone, Mat::Aluminium] {
+                sheet(m, scale);
+            }
+            let keep = (crate::paint::sc(scale) * 1000.0).round_ties_even() as i64;
+            if let Ok(mut map) = sheets().lock()
+                && map.len() > 9
+            {
+                map.retain(|k, _| k.1 == keep);
+            }
         }
     });
 }

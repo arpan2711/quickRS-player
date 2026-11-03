@@ -1,4 +1,4 @@
-quickRS 0.3.0
+quickRS 0.4.0
 =============
 
 A practice player for your own Rocksmith 2014 songs, played with your real guitar: scrolling tab or a 3D
@@ -12,7 +12,12 @@ There's no installer: this folder, the one with quickrs.exe in it, is quickRS ("
 somewhere you can write to (Documents, Desktop, another drive), not in C:\Program Files, so it can update itself.
 
 The full guide, with pictures, is at https://github.com/arpan2711/quickRS-player (the docs folder there).
-The Mac version (beta) is on the same page: see docs/INSTALL.md.
+The Mac version (beta) is on the same page (0.3.0 for now; its 0.4.0 follows): see docs/INSTALL.md.
+
+Coming from 0.1.0: 0.1.0 can't update itself, so this zip is the one you download by hand. Close quickRS, then
+copy these files over your old quickRS folder, or use this folder and copy keys.json across from the old one (or
+paste the keys in Settings > Directories). Your settings, song folders and scores carry over. From now on quickRS
+updates itself (see Updates below). Settings > Audio is now "Audio input / output", Library is "Directories".
 
 
 1. Start quickRS
@@ -20,11 +25,18 @@ The Mac version (beta) is on the same page: see docs/INSTALL.md.
   1. Double-click quickrs.exe.
   2. Windows may warn about an unknown app, because the programs aren't signed. Click "More info", then
      "Run anyway".
-  3. A short welcome shows three steps: your song folder, the keys, your guitar input. quickRS has already
-     looked for Rocksmith's dlc folder in your Steam libraries. Got it (Esc) closes the welcome; Settings (F2) >
-     Directories > Welcome guide opens it again.
-  4. A small card then offers "Set up your guitar?" once: it walks you through your input, output, level and
-     calibration in a couple of minutes (see section 4).
+  3. The first-time setup opens over the app, one page at a time (Next, Back, Skip):
+       - Look: pick a theme (Midnight, Graphite, Daylight).
+       - Your guitar: input and channel, output, a level check, what's plugged in, calibration and an
+         open-string check. About two minutes; have your guitar plugged in and tuned (see section 4).
+       - Low latency: Windows' exclusive mode, so what you play comes back sooner (other programs go quiet
+         while quickRS plays).
+       - Note widget: a small always-on-top window with the note you play and the key's scale.
+       - Keys and folders: your song folders, Rocksmith's keys (only for .psarc files) and where recordings go.
+         quickRS has already looked for Rocksmith's dlc folder in your Steam libraries.
+       - Done: what's set.
+     Each page says where to change it later. "Run the first-time setup again" at the top of Settings (F2)
+     opens it any time. If you used 0.1.0 it may not open by itself, since your settings are already there.
 
 For a Desktop shortcut: right-click make_shortcut.ps1 and choose "Run with PowerShell".
 
@@ -89,20 +101,30 @@ quickRS looks for a new version at most once a day and offers it; nothing is dow
 only: your keys, settings, scores and sounds stay.
 
 
+Report a bug
+------------
+Settings (F2) > Updates > "Report a bug" opens a new issue on quickRS's GitHub page in your browser, with your
+quickRS version and system filled in: say what happened and what you did just before. If quickRS crashed or
+showed an error, "Show the log file" finds the log to attach. You need a GitHub account. Or go to
+https://github.com/arpan2711/quickRS-player/issues yourself.
+
+
 Your data
 ---------
 Settings, scores, favourites, playlists, saved licks, saved sounds, keys saved in Settings and your takes are
 in %APPDATA%\quickRS\data (paste that into File Explorer's address bar). If a config.json or userdata.json is in
 the quickRS folder (or in a "quickRS Data" folder inside it), that folder is used instead: a portable install.
-Recordings (R) go to "quickRS Recordings" in your Music folder. Settings (F2) > Directories > RECORDINGS changes
-where recordings and takes go.
+Recordings (R) go to "quickRS Recordings" in your Music folder, named after the song ("<song> - quickRS <date>
+<time>.wav"). A recording appears there when you stop it (Shift+R), complete and ready to open. Settings (F2) >
+Directories > RECORDINGS changes where recordings and takes go.
 
 
 Keyboard
 --------
 F2 settings, F11 full screen, Space play / pause, Esc back. Every button shows its key; in a song, F1 (or ?)
 shows them all. R records what you hear (R again pauses, Shift+R stops and saves); Ctrl+R records a take of the
-loop and checks it; G swaps the recording's guitar for the synth; V shows the RS Highway.
+loop and checks it; G swaps the recording's guitar for the synth; V shows the RS Highway; E reviews the run (the parts to practise);
+O on a loop plays it over and over, scoring every pass.
 
 
 Command-line tools: quickrs-cli.exe --help (song info, tabs, audio, feedpak conversion, devices).

@@ -95,6 +95,11 @@ impl Backdrop {
         self.pending.is_some()
     }
 
+    /// How long the capture asked for has been awaited.
+    pub fn waiting(&self) -> Option<Duration> {
+        self.pending.map(|(_, at)| at.elapsed())
+    }
+
     /// Capture this frame (draw the page, not the panel).
     pub fn capture(&mut self, ctx: &egui::Context) {
         self.pending = Some((Self::key_now(ctx), Instant::now()));

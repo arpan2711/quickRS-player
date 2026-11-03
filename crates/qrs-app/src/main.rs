@@ -6,6 +6,7 @@
 //!   quickrs --screenshots DIR    render the screens in every theme to PNGs in DIR, then quit
 //!           [--size 1440x900]    (physical pixels)
 //!   quickrs --after-update PID   (the updater's restart: waits for the old app to close, P20.1)
+//!   quickrs --resume FILE        (a new dev build swapped in: opens where the old one was, D67)
 
 // release builds are a windowed app (no console window); messages for the command line reach the terminal it
 // was started from (see `attach_console`)
@@ -21,6 +22,7 @@ mod calibrate;
 mod chrome;
 mod covers;
 mod devstatus;
+mod devswap;
 mod dialogs;
 mod gallery;
 mod gearindex;
@@ -109,10 +111,14 @@ fn attach_console() {
 
 fn main() -> anyhow::Result<()> {
     applog::mark_start();
+    // the log from the start, so a window that never opens still leaves a reason (P28.3)
+    applog::init(qrs_library::paths::DataDir::locate().cache());
     if std::env::args().len() > 1 {
         attach_console();
     }
-    let args = app::Args::parse(std::env::args().skip(1))?;
+    let mut args = app::Args::parse(std::env::args().skip(1))?;
+    // a new dev build swapped in (D67): where the old one was
+    args.resumed = args.resume.as_deref().and_then(devswap::take_resume);
     // started again by the updater: once the old app has closed, its leftovers go (P20.1)
     if let Some(pid) = args.after_update {
         update::wait_for_exit(pid);
@@ -127,12 +133,21 @@ fn main() -> anyhow::Result<()> {
         Some((w, h)) => [w as f32, h as f32],
         None => first_size(),
     };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("quickRS Bristol 2026")
+        // (Linux: the desktop matches the window to quickrs.desktop, its name and icon, by this)
+        .with_app_id("quickrs")
+        .with_inner_size(size)
+        .with_min_inner_size([980.0, 574.0])
+        .with_icon(icon());
+    if let Some(r) = &args.resumed {
+        if let Some([x, y, w, h]) = r.window {
+            viewport = viewport.with_position([x, y]).with_inner_size([w, h]);
+        }
+        viewport = viewport.with_maximized(r.maximized).with_fullscreen(r.fullscreen);
+    }
     let mut opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("quickRS Bristol 2026")
-            .with_inner_size(size)
-            .with_min_inner_size([980.0, 574.0])
-            .with_icon(icon()),
+        viewport,
         ..Default::default()
     };
     gpu::choose(&mut opts);
@@ -145,5 +160,9 @@ fn main() -> anyhow::Result<()> {
         opts,
         Box::new(move |cc| Ok(Box::new(app::QuickRs::new(cc, args)))),
     )
-    .map_err(|e| anyhow::anyhow!("{e}"))
+    .map_err(|e| {
+        // (no window: started from a desktop, the log is the only place this shows. P28.3)
+        applog::write(&format!("couldn't open the window: {e}"));
+        anyhow::anyhow!("{e}")
+    })
 }

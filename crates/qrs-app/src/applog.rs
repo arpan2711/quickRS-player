@@ -21,6 +21,10 @@ pub fn since_start_ms() -> u128 {
 
 /// Log to `<cache>/quickrs.log` from now on, panics included.
 pub fn init(cache: PathBuf) {
+    // (once: main starts it, and AppState again)
+    if PATH.get().is_some() {
+        return;
+    }
     let path = cache.join("quickrs.log");
     let _ = std::fs::create_dir_all(&cache);
     // keep it small: start afresh when it has grown past 1 MB
@@ -34,6 +38,33 @@ pub fn init(cache: PathBuf) {
         write(&format!("panic: {info}\n{bt}"));
         default(info);
     }));
+    write(&format!(
+        "quickRS {} started on {}",
+        env!("CARGO_PKG_VERSION"),
+        system()
+    ));
+}
+
+/// The system, for a tester's report (P28.3): the OS and, on Linux, the distro, the desktop and Wayland or X11.
+fn system() -> String {
+    let mut s = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
+    if cfg!(target_os = "linux") {
+        let distro = std::fs::read_to_string("/etc/os-release")
+            .ok()
+            .and_then(|t| {
+                t.lines()
+                    .find_map(|l| l.strip_prefix("PRETTY_NAME="))
+                    .map(|v| v.trim_matches('"').to_string())
+            })
+            .unwrap_or_else(|| "unknown distro".into());
+        let var = |k: &str| std::env::var(k).unwrap_or_else(|_| "?".into());
+        s += &format!(
+            " ({distro}; desktop {}, session {})",
+            var("XDG_CURRENT_DESKTOP"),
+            var("XDG_SESSION_TYPE")
+        );
+    }
+    s
 }
 
 /// Where the log is (none before `init`).

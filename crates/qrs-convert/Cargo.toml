@@ -9,6 +9,10 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux: the desktop's own file picker, through its xdg portal (GNOME, KDE, ...); no GTK to build against (P28.1)
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+
 [[bin]]
 name = "quickrs-convert"
 path = "src/main.rs"

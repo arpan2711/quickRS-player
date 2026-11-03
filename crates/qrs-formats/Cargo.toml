@@ -14,7 +14,6 @@ workspace = true
 testutil = []
 
 [dependencies]
-serde.workspace = true
 serde_json.workspace = true
 aes.workspace = true
 flate2.workspace = true

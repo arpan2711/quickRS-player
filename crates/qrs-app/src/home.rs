@@ -192,10 +192,7 @@ impl HomeView {
                     Key::Enter => lv.go(st, View::All),
                     Key::F if modifiers.command => lv.go(st, View::All),
                     Key::A if !modifiers.command => self.reqs.push(Req::Room),
-                    Key::P if !recent.is_empty() => {
-                        lv.go(st, View::All);
-                        lv.open_picker(st, recent[0]);
-                    }
+                    Key::P if !recent.is_empty() => lv.open_picker(st, recent[0]),
                     _ => return false,
                 }
                 true
@@ -727,8 +724,7 @@ impl HomeView {
             }
         }
         if let Some(g) = open {
-            lv.go(st, View::All);
-            lv.open_picker(st, g);
+            lv.open_picker(st, g); // (over Home: owner request, 2026-11-02)
         }
     }
 

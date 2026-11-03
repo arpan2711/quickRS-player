@@ -1,4 +1,4 @@
-quickRS 0.3.0
+quickRS 0.4.0
 =============
 
 A practice player for your own Rocksmith 2014 songs, played with your real guitar: scrolling tab or a 3D
@@ -12,7 +12,7 @@ There's no installer: this folder, the one with quickrs.exe in it, is quickRS ("
 somewhere you can write to (Documents, Desktop, another drive), not in C:\Program Files, so it can update itself.
 
 The full guide, with pictures, is at https://github.com/arpan2711/quickRS-player (the docs folder there).
-The Mac version (beta) is on the same page: see docs/INSTALL.md.
+The Mac version (beta) is on the same page (0.3.0 for now; its 0.4.0 follows): see docs/INSTALL.md.
 
 Coming from 0.1.0: 0.1.0 can't update itself, so this zip is the one you download by hand. Close quickRS, then
 copy these files over your old quickRS folder, or use this folder and copy keys.json across from the old one (or
@@ -123,7 +123,8 @@ Keyboard
 --------
 F2 settings, F11 full screen, Space play / pause, Esc back. Every button shows its key; in a song, F1 (or ?)
 shows them all. R records what you hear (R again pauses, Shift+R stops and saves); Ctrl+R records a take of the
-loop and checks it; G swaps the recording's guitar for the synth; V shows the RS Highway.
+loop and checks it; G swaps the recording's guitar for the synth; V shows the RS Highway; E reviews the run (the parts to practise);
+O on a loop plays it over and over, scoring every pass.
 
 
 Command-line tools: quickrs-cli.exe --help (song info, tabs, audio, feedpak conversion, devices).

@@ -69,14 +69,19 @@ impl Default for KeyGuess {
 impl KeyGuess {
     /// The pitch class being played now (None when quiet), at time `now` (seconds).
     pub fn add(&mut self, pc: Option<u8>, now: f64) {
+        self.add_all(pc.as_slice(), now);
+    }
+
+    /// The pitch classes sounding now (a chord's; none when quiet), sharing the time between them (P25).
+    pub fn add_all(&mut self, pcs: &[u8], now: f64) {
         let dt = self.last.map(|l| (now - l).max(0.0)).unwrap_or(0.0);
         self.last = Some(now);
         let fade = 0.5f64.powf(dt / FADE_HALF_LIFE);
         for h in &mut self.hist {
             *h *= fade;
         }
-        if let Some(pc) = pc {
-            self.hist[(pc % 12) as usize] += dt;
+        for &pc in pcs {
+            self.hist[(pc % 12) as usize] += dt / pcs.len() as f64;
         }
         if self.hist.iter().sum::<f64>() < MIN_WEIGHT {
             return;

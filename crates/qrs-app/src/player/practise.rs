@@ -54,7 +54,6 @@ pub enum Take {
     /// Counting in, then playing the stretch once (since when).
     Recording(Instant),
     /// The take is being analysed (Phase 18's recorder sets it; the placeholder's scorer is done at once).
-    #[allow(dead_code)]
     Analysing,
     /// Its result.
     Done(TakeOutcome),

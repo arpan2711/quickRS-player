@@ -10,7 +10,14 @@
 //! when no song is open), each note a dot in its degree's colour and the note you're playing ringed; the menu
 //! hides or shows it (config "note_widget_scale"). A click on the scale box pops it up large (the window shows
 //! just the scale, 2.4 times the size); a click on it there puts it back (P11.3). Drag it to move it (it remembers
-//! where); right-click for its menu. Settings > Audio switches it on or off (config "note_widget").
+//! where); right-click for its menu. Settings > Audio switches it on or off (config "note_widget"). The arrow at
+//! the top right rolls out a drawer under it (P24.3, chords.rs): the chord you're playing, named, on a neck; and
+//! under that (P25, heat.rs; D68) the notes just played on two necks, the tab's and yours, each fading away. The FAST / NORMAL
+//! pill by the title switches low-latency output (WASAPI exclusive, Settings > Audio's switch) on and off (D66).
+//! ALL / ROOT / OFF by the SCALE caption picks what the neck marks (D69, config "note_widget_scale_marks"): every note
+//! of the key in its degree's colour, only the roots in colour (the rest grey), or nothing but what you play (in its
+//! note's colour, named). The grip at the bottom right resizes the whole widget (config "note_widget_size", 0.6 to
+//! 2 times).
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -27,7 +34,12 @@ use qrs_ui::keys::hls_to_rgb;
 use qrs_ui::raster::{Layers, Mask, mix};
 use qrs_ui::text::{self, Style};
 
-use crate::state::AppState;
+use crate::state::{AppState, AudioMode};
+
+mod chords;
+mod heat;
+use chords::{ChordStrip, DRAWER_H};
+use heat::{HEAT_H, HeatStrip};
 
 const W: f32 = 272.0;
 const H: f32 = 196.0;
@@ -43,13 +55,22 @@ const SPOT: f32 = 5.5;
 const NUT_W: f32 = 18.0;
 /// The frets numbered under the neck (and inlaid; 12 and 24 twice), as the player's neck tile.
 const FRET_NUMBERS: [i32; 10] = [3, 5, 7, 9, 12, 15, 17, 19, 21, 24];
+/// The widget's size range (times its own).
+const ZOOM: (f32, f32) = (0.6, 2.0);
 /// How much bigger the scale box is when it's popped up.
 const BIG: f32 = 2.4;
 const EVERY: Duration = Duration::from_millis(50);
+/// A background drawn for (which discs are live, the scale box and the drawer, its pixel scale x 256).
+type BgKey = ((bool, bool), (bool, bool), u32);
+/// How many backgrounds are kept (P27.3): both disc states at the size it's at, and a size or two before.
+const BG_KEEP: usize = 4;
+/// Idle (no sound for `QUIET_AFTER`, nothing moving), how often it looks for sound (P27.1).
+const IDLE_POLL: Duration = Duration::from_millis(250);
+const QUIET_AFTER: Duration = Duration::from_secs(3);
 /// Keep showing a note this long after the guitar goes quiet.
 const HOLD: f32 = 1.0;
 
-const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+use qrs_formats::model::NOTE_NAMES;
 /// The scale degree of each semitone above the tonic; the ones outside the key named as raised / lowered degrees.
 const DEG_MAJOR: [&str; 12] = ["1", "♭2", "2", "♭3", "3", "4", "♯4", "5", "♭6", "6", "♭7", "7"];
 const DEG_MINOR: [&str; 12] = ["1", "♭2", "2", "3", "♯3", "4", "♯4", "5", "6", "♯6", "7", "♯7"];
@@ -81,10 +102,96 @@ fn scale_degree((tonic, mode): Key, midi: i32) -> Option<&'static str> {
     inside.then_some(degs[rel])
 }
 
-/// The window's width: the two boxes, or three with the scale.
-fn width(scale: bool) -> f32 {
-    if scale { W + GAP + NECK_W } else { W }
+/// The window's width: the two boxes, or three with the scale (or the drawer, which is as wide).
+fn width(scale: bool, more: bool) -> f32 {
+    if scale || more { W + GAP + NECK_W } else { W }
 }
+
+/// The window's height: with the drawer (the chord and heat strips), the drawer's more.
+fn height(more: bool) -> f32 {
+    if more { H + DRAWER_H + HEAT_H } else { H }
+}
+
+/// A key as the config keeps it ("9 minor"), and back; "auto" (or anything else) is None.
+fn key_to_config(key: Option<Key>) -> String {
+    match key {
+        Some((t, m)) => format!("{t} {}", if m == Mode::Major { "major" } else { "minor" }),
+        None => "auto".into(),
+    }
+}
+
+fn key_from_config(s: &str) -> Option<Key> {
+    let (t, m) = s.split_once(' ')?;
+    let t: u8 = t.parse().ok().filter(|&t| t < 12)?;
+    match m {
+        "major" => Some((t, Mode::Major)),
+        "minor" => Some((t, Mode::Minor)),
+        _ => None,
+    }
+}
+
+/// What the scale box's neck marks: the key's notes by degree, the roots only (the rest grey), or none (D69).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Marks {
+    All,
+    Roots,
+    Off,
+}
+
+impl Marks {
+    const ALL: [Marks; 3] = [Marks::All, Marks::Roots, Marks::Off];
+
+    fn label(self) -> &'static str {
+        match self {
+            Marks::All => "ALL",
+            Marks::Roots => "ROOT",
+            Marks::Off => "OFF",
+        }
+    }
+
+    fn config(self) -> &'static str {
+        match self {
+            Marks::All => "all",
+            Marks::Roots => "roots",
+            Marks::Off => "off",
+        }
+    }
+
+    fn from_config(s: &str) -> Marks {
+        Marks::ALL
+            .into_iter()
+            .find(|m| m.config() == s)
+            .unwrap_or(Marks::All)
+    }
+
+    fn tip(self) -> &'static str {
+        match self {
+            Marks::All => "Every note of the key, coloured by degree",
+            Marks::Roots => "Only the roots in colour, the rest grey",
+            Marks::Off => "An empty neck: only the notes you play light up",
+        }
+    }
+}
+
+/// The scale box's ALL / ROOT / OFF switch, segment `i`: after the SCALE caption.
+fn marks_rect(i: usize) -> Rect {
+    let b = box_rect(2);
+    Rect::from_min_size(
+        pos2(b.min.x + 60.0 + i as f32 * 33.0, b.min.y + 6.0),
+        vec2(33.0, 15.0),
+    )
+}
+
+/// The grey of the scale's other notes when only the roots are coloured.
+const GREY_NOTE: Color32 = Color32::from_rgb(0x6b, 0x71, 0x7b);
+
+/// The low-latency pill, right of the title.
+fn fast_rect() -> Rect {
+    Rect::from_min_size(pos2(PAD + 72.0, PAD + 1.0), vec2(52.0, 17.0))
+}
+
+/// Settings > Audio's FAST green.
+const FAST: Color32 = Color32::from_rgb(52, 199, 123);
 
 /// The 12 notes round the colour wheel (C red, E yellow-green, G# blue...).
 pub fn note_color(pc: usize) -> Color32 {
@@ -126,6 +233,17 @@ impl Shown {
         self.small = small.into();
     }
 
+    /// The glide has arrived (each channel within 2 of the target), or there's nothing to show.
+    fn settled(&self) -> bool {
+        match (self.fill, self.target) {
+            (Some(f), Some(t)) => {
+                f.r().abs_diff(t.r()) <= 2 && f.g().abs_diff(t.g()) <= 2 && f.b().abs_diff(t.b()) <= 2
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
     /// Glide toward the target (0.35 of the way every 30 ms, as the Python widget did).
     fn step(&mut self, dt: f32) {
         match (self.fill, self.target) {
@@ -157,7 +275,11 @@ pub struct NoteWidget {
     start: Instant,
     pos: Option<Pos2>,
     /// The drawn background for (which discs are live, the scale box, the scale it was drawn at).
-    bg: Option<(((bool, bool), bool, u32), egui::TextureHandle)>,
+    /// (P27.3: the last few kept, so a note starting or stopping doesn't draw it again; while the grip is dragged one
+    /// of the same layout is stretched, and it's drawn sharp once the drag ends)
+    bg: Vec<(BgKey, egui::TextureHandle)>,
+    /// What the pointer is over: the drawer's arrow; the ZOOM button (1), the dragger (2), ALL SHAPES (3), KEY (4).
+    hot: (bool, u8),
     /// The window has its rounded corners and border (Windows 11).
     styled: bool,
     /// The scale box is shown (config "note_widget_scale").
@@ -173,6 +295,30 @@ pub struct NoteWidget {
     /// The scale box is popped up large, and where the window was before (it goes back there).
     big: bool,
     small_pos: Option<Pos2>,
+    /// The drawer is out (config "note_widget_more"), its chord strip, and its zoom read from the config yet.
+    more: bool,
+    chords: ChordStrip,
+    zoom_read: bool,
+    /// The dragger is being dragged.
+    dragging: bool,
+    /// The key picked in the chord strip's KEY menu (None: the widget's guess), the heat strip, and when the
+    /// widget last listened.
+    key_pick: Option<Key>,
+    /// Low-latency output is on (Some), off, or can't be switched here (None: no engine, silent, not Windows).
+    fast: Option<bool>,
+    /// The pointer is over the low-latency pill.
+    fast_hot: bool,
+    /// What the scale box's neck marks, and the switch's segment under the pointer.
+    marks: Marks,
+    marks_hot: Option<usize>,
+    /// How big the whole widget is (config "note_widget_size"), the size being dragged to, and the grip hovered.
+    zoom: f32,
+    zoom_drag: Option<f32>,
+    /// When the input was last above the noise (P27.1: it repaints at 20 Hz for a while after).
+    loud_at: Option<Instant>,
+    grip_hot: bool,
+    heat: HeatStrip,
+    last_listen: Option<Instant>,
 }
 
 impl Default for NoteWidget {
@@ -193,7 +339,8 @@ impl Default for NoteWidget {
             was_on: false,
             start: Instant::now(),
             pos: None,
-            bg: None,
+            bg: Vec::new(),
+            hot: (false, 0),
             styled: false,
             show_scale: true,
             scale: None,
@@ -203,6 +350,21 @@ impl Default for NoteWidget {
             fitted_w: None,
             big: false,
             small_pos: None,
+            more: false,
+            chords: ChordStrip::default(),
+            zoom_read: false,
+            dragging: false,
+            key_pick: None,
+            fast: None,
+            fast_hot: false,
+            marks: Marks::All,
+            marks_hot: None,
+            zoom: 1.0,
+            zoom_drag: None,
+            loud_at: None,
+            grip_hot: false,
+            heat: HeatStrip::default(),
+            last_listen: None,
         }
     }
 }
@@ -212,9 +374,10 @@ fn pos_file(st: &AppState) -> std::path::PathBuf {
 }
 
 impl NoteWidget {
-    /// Every frame: listen (20 times a second) and show the window while it's on. `arr` is the part open in the
-    /// player, whose tuning the scale box's neck takes.
-    pub fn ui(&mut self, ctx: &egui::Context, st: &mut AppState, arr: Option<&Arrangement>) {
+    /// Every frame: listen (20 times a second) and show the window while it's on. `song` is the part open in the
+    /// player (whose tuning the necks take), the chart time at its now-line and whether it's playing.
+    pub fn ui(&mut self, ctx: &egui::Context, st: &mut AppState, song: Option<(&Arrangement, f64, bool)>) {
+        let arr = song.map(|s| s.0);
         let on = st.config.bool("note_widget", true);
         if on && !self.was_on {
             self.closed = false; // switched on (again) in Settings
@@ -225,14 +388,35 @@ impl NoteWidget {
         }
         self.show_scale = st.config.bool("note_widget_scale", true);
         self.big &= self.show_scale;
+        self.more = st.config.bool("note_widget_more", false);
+        if !self.zoom_read {
+            self.zoom_read = true;
+            self.chords.zoom = st.config.bool("note_widget_zoom", true);
+            self.chords.from = st
+                .config
+                .f64("note_widget_from", 0.0)
+                .clamp(0.0, 24.0 - chords::SPAN as f64) as f32;
+            self.chords.set_all(st.config.bool("note_widget_shapes", false));
+            self.zoom = (st.config.f64("note_widget_size", 1.0) as f32).clamp(ZOOM.0, ZOOM.1);
+            self.key_pick = key_from_config(&st.config.str("note_widget_chord_key", "auto"));
+        }
         self.set_tuning(arr);
         let [w, h] = self.size();
         let now = Instant::now();
         if now >= self.next {
             self.next = now + EVERY;
-            self.listen(st, now);
+            self.listen(st, now, song);
         }
-        ctx.request_repaint_after(EVERY);
+        // 20 times a second only while something can change (sound in the last 3 s, a song playing, a glide, a
+        // drag); else a look 4 times a second for sound. It redrew the whole app ~38 times a second idle (14% of a
+        // core): P27.1
+        let busy = self.loud_at.is_some_and(|t| now.duration_since(t) < QUIET_AFTER)
+            || song.is_some_and(|s| s.2)
+            || !self.note.settled()
+            || !self.deg.settled()
+            || self.zoom_drag.is_some()
+            || self.dragging;
+        ctx.request_repaint_after(if busy { EVERY } else { IDLE_POLL });
         if self.pos.is_none() {
             self.pos = std::fs::read_to_string(pos_file(st))
                 .ok()
@@ -250,6 +434,9 @@ impl NoteWidget {
             .with_resizable(false)
             .with_decorations(false)
             .with_always_on_top()
+            // (opened without taking the focus: it took it from the main window at every start, and the first
+            // click there only gave it back, doing nothing: owner report, 2026-11-03)
+            .with_active(false)
             .with_taskbar(false);
         if let Some(p) = self.pos {
             builder = builder.with_position(pos2(p.x / z, p.y / z));
@@ -259,7 +446,21 @@ impl NoteWidget {
         let mut close = false;
         let mut toggle_scale = false;
         let mut toggle_big = false;
+        let mut toggle_more = false;
+        let mut toggle_fast = false;
+        let mut pick_marks: Option<Marks> = None;
+        let mut save_zoom = false;
+        self.marks = Marks::from_config(&st.config.str("note_widget_scale_marks", "all"));
+        self.fast = match &st.audio {
+            Some(a) if cfg!(windows) && st.audio_mode != AudioMode::Silent => Some(a.prefs().exclusive),
+            _ => None,
+        };
+        let mut toggle_zoom = false;
+        let mut save_from = false;
+        let mut toggle_shapes = false;
+        let mut picked: Option<Option<Key>> = None;
         let shown = self.show_scale;
+        let more = self.more;
         let id = ViewportId::from_hash_of("quickrs-note-widget");
         if !self.styled {
             self.styled = style_window(); // (once the window exists)
@@ -284,8 +485,190 @@ impl NoteWidget {
                 }
             }
             let area = wctx.content_rect();
+            // the drawer's controls, in the widget's points and on the screen
+            let v = self.view();
+            let u = area.width() / v.width();
+            let screen =
+                |r: Rect| Rect::from_min_max(area.min + (r.min - v.min) * u, area.min + (r.max - v.min) * u);
+            let wide = width(self.show_scale, self.more);
+            let hover = wctx.input(|i| i.pointer.hover_pos());
+            let over = |r: Rect| hover.is_some_and(|h| screen(r).contains(h));
+            let (arrow_on, drawer_on) = (!self.big, self.more && !self.big);
+            let fast_on = !self.big && self.fast.is_some();
+            self.fast_hot = fast_on && over(fast_rect());
+            self.grip_hot = self.zoom_drag.is_some() || over(self.grip());
+            let marks_on = self.show_scale;
+            self.marks_hot = (0..3).find(|&i| marks_on && over(marks_rect(i)));
+            self.hot = (
+                arrow_on && over(chords::arrow_rect(wide)),
+                if drawer_on && over(chords::zoom_rect(wide)) {
+                    1
+                } else if drawer_on && over(chords::shapes_rect(wide)) {
+                    3
+                } else if drawer_on && over(chords::key_rect(wide)) {
+                    4
+                } else if drawer_on && self.chords.zoom && (self.dragging || over(chords::track_rect(wide))) {
+                    2
+                } else {
+                    0
+                },
+            );
             self.draw(ui, area);
             let resp = ui.interact(area, egui::Id::new("note-widget-drag"), Sense::click_and_drag());
+            // (made after the window's own, so they're on top of it)
+            // the grip: drag it to make the whole widget bigger or smaller (its top left stays put)
+            let g = ui.interact(
+                screen(self.grip()),
+                egui::Id::new("note-widget-grip"),
+                Sense::drag(),
+            );
+            if g.hovered() || g.dragged() {
+                wctx.set_cursor_icon(CursorIcon::ResizeNwSe);
+            }
+            if g.dragged() {
+                let d = g.drag_delta();
+                let z = self.zoom_drag.unwrap_or(self.zoom);
+                let z = (z * (1.0 + (d.x / area.width() + d.y / area.height()) / 2.0)).clamp(ZOOM.0, ZOOM.1);
+                self.zoom_drag = Some(z);
+                self.zoom = (z * 50.0).round() / 50.0; // (in 2% steps: the background is drawn again at each)
+            }
+            if g.drag_stopped() {
+                self.zoom_drag = None;
+                save_zoom = true;
+            }
+            if marks_on {
+                for (i, m) in Marks::ALL.into_iter().enumerate() {
+                    let r = ui.interact(
+                        screen(marks_rect(i)),
+                        egui::Id::new(("note-widget-marks", i)),
+                        Sense::click(),
+                    );
+                    if r.clicked() {
+                        pick_marks = Some(m);
+                    }
+                    if r.hovered() {
+                        wctx.set_cursor_icon(CursorIcon::PointingHand);
+                    }
+                    r.on_hover_text(m.tip());
+                }
+            }
+            if fast_on {
+                let f = ui.interact(
+                    screen(fast_rect()),
+                    egui::Id::new("note-widget-fast"),
+                    Sense::click(),
+                );
+                if f.clicked() {
+                    toggle_fast = true;
+                }
+                if f.hovered() {
+                    wctx.set_cursor_icon(CursorIcon::PointingHand);
+                }
+                f.on_hover_text(if self.fast == Some(true) {
+                    "Low latency: other apps go quiet while quickRS plays. Click for normal."
+                } else {
+                    "Normal: other apps play too. Click for low latency (other apps go quiet)."
+                });
+            }
+            if arrow_on {
+                let a = ui.interact(
+                    screen(chords::arrow_rect(wide)),
+                    egui::Id::new("note-widget-more"),
+                    Sense::click(),
+                );
+                if a.clicked() {
+                    toggle_more = true;
+                }
+                if a.hovered() {
+                    wctx.set_cursor_icon(CursorIcon::PointingHand);
+                }
+            }
+            if drawer_on {
+                let z = ui.interact(
+                    screen(chords::zoom_rect(wide)),
+                    egui::Id::new("note-widget-zoom"),
+                    Sense::click(),
+                );
+                if z.clicked() {
+                    toggle_zoom = true;
+                }
+                if z.hovered() {
+                    wctx.set_cursor_icon(CursorIcon::PointingHand);
+                }
+                let a = ui.interact(
+                    screen(chords::shapes_rect(wide)),
+                    egui::Id::new("note-widget-shapes"),
+                    Sense::click(),
+                );
+                if a.clicked() {
+                    toggle_shapes = true;
+                }
+                let k = ui.interact(
+                    screen(chords::key_rect(wide)),
+                    egui::Id::new("note-widget-key"),
+                    Sense::click(),
+                );
+                if a.hovered() || k.hovered() {
+                    wctx.set_cursor_icon(CursorIcon::PointingHand);
+                }
+                // the KEY menu: the guess, or any of the 24 keys (majors left, minors right)
+                let pick = self.key_pick;
+                egui::Popup::menu(&k).show(|ui| {
+                    let label = match self.key.key {
+                        Some(key) => format!("Auto: follow my playing ({})", chords::key_name(key)),
+                        None => "Auto: follow my playing".into(),
+                    };
+                    if ui.selectable_label(pick.is_none(), label).clicked() {
+                        picked = Some(None);
+                        ui.close();
+                    }
+                    ui.separator();
+                    egui::Grid::new("note-widget-keys").show(ui, |ui| {
+                        for t in [0u8, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5] {
+                            for key in [(t, Mode::Major), ((t + 9) % 12, Mode::Minor)] {
+                                if ui
+                                    .selectable_label(pick == Some(key), chords::key_name(key))
+                                    .clicked()
+                                {
+                                    picked = Some(Some(key));
+                                    ui.close();
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+                if self.chords.zoom {
+                    let tr = chords::track_rect(wide);
+                    let t = ui.interact(
+                        screen(tr),
+                        egui::Id::new("note-widget-track"),
+                        Sense::click_and_drag(),
+                    );
+                    if t.clicked()
+                        && let Some(h) = t.interact_pointer_pos()
+                    {
+                        // a click on the track: the thumb's middle goes there
+                        let at = v.min.x + (h.x - area.min.x) / u;
+                        let th = self.chords.thumb(tr);
+                        self.chords.drag(at - th.center().x, tr.width());
+                        self.chords.settle();
+                        save_from = true;
+                    }
+                    if t.dragged() {
+                        self.dragging = true;
+                        self.chords.drag(t.drag_delta().x / u, tr.width());
+                    }
+                    if t.drag_stopped() {
+                        self.dragging = false;
+                        self.chords.settle();
+                        save_from = true;
+                    }
+                    if t.hovered() || t.dragged() {
+                        wctx.set_cursor_icon(CursorIcon::Grab);
+                    }
+                }
+            }
             if resp.drag_started() {
                 wctx.send_viewport_cmd(ViewportCommand::StartDrag);
             }
@@ -312,7 +695,7 @@ impl NoteWidget {
                 save_pos = place();
             }
             resp.context_menu(|ui| {
-                if ui.button("Forget the key (start guessing again)").clicked() {
+                if ui.button("Forget the key and the trails (start again)").clicked() {
                     reset = true;
                     ui.close();
                 }
@@ -323,6 +706,15 @@ impl NoteWidget {
                 };
                 if ui.button(label).clicked() {
                     toggle_scale = true;
+                    ui.close();
+                }
+                let label = if more {
+                    "Close the drawer"
+                } else {
+                    "Open the drawer (chords)"
+                };
+                if ui.button(label).clicked() {
+                    toggle_more = true;
                     ui.close();
                 }
                 if ui.button("Close").clicked() {
@@ -336,6 +728,52 @@ impl NoteWidget {
         });
         if reset {
             self.key.reset();
+            self.chords.reset();
+            self.heat.reset();
+        }
+        if toggle_shapes {
+            self.chords.set_all(!self.chords.all);
+            st.config.set("note_widget_shapes", self.chords.all);
+            st.save_config();
+        }
+        if let Some(k) = picked {
+            self.key_pick = k;
+            st.config.set("note_widget_chord_key", key_to_config(k));
+            st.save_config();
+        }
+        if toggle_more {
+            st.config.set("note_widget_more", !more);
+            st.save_config();
+        }
+        // the low-latency switch, as Settings > Audio's (`audio_act` "exclusive"): the route re-planned, saved
+        if save_zoom {
+            st.config.set("note_widget_size", self.zoom as f64);
+            st.save_config();
+        }
+        if let Some(m) = pick_marks
+            && m != self.marks
+        {
+            self.marks = m;
+            st.config.set("note_widget_scale_marks", m.config());
+            st.save_config();
+        }
+        if toggle_fast && let Some(audio) = &st.audio {
+            let mut prefs = audio.prefs();
+            prefs.exclusive = !prefs.exclusive;
+            audio.set_prefs(prefs.clone());
+            self.fast = Some(prefs.exclusive);
+            st.config
+                .set("audio", serde_json::to_value(&prefs).unwrap_or_default());
+            st.save_config();
+        }
+        if toggle_zoom {
+            self.chords.zoom = !self.chords.zoom;
+            st.config.set("note_widget_zoom", self.chords.zoom);
+            st.save_config();
+        }
+        if save_from {
+            st.config.set("note_widget_from", self.chords.from as f64);
+            st.save_config();
         }
         if toggle_scale {
             st.config.set("note_widget_scale", !shown);
@@ -366,16 +804,28 @@ impl NoteWidget {
 
     /// Screenshot mode: the widget as it looks with Eb3 a few cents sharp, in Eb major (the scale box on a guitar in
     /// E standard), drawn in the main window with its right edge at `rect`'s. The Python look (D21; the parity
-    /// shots) leaves the scale box out, as the Python widget has none.
-    pub fn preview(&mut self, ui: &egui::Ui, rect: Rect) {
+    /// shots) leaves the scale box out, as the Python widget has none. With `more`, the drawer is out, naming the
+    /// Am7 it hears from the notes of x02010.
+    pub fn preview(&mut self, ui: &egui::Ui, rect: Rect, more: bool) {
         self.show_scale = !qrs_ui::theme::classic();
+        self.more = more;
+        self.fast = more.then_some(true); // (shown on the drawer's shot only)
+        self.marks = if more { Marks::Roots } else { Marks::All };
+        if more {
+            self.chords.set_all(true);
+            self.chords
+                .stage(&[45, 52, 55, 60, 64], &["G", "D", "C", "Am7"], &self.strings);
+            self.chords.key = Some((7, Mode::Major));
+            self.chords.key_auto = true;
+            self.heat.stage(&self.strings);
+        }
         self.status = "listening".into();
         self.note.set(Some(note_color(3)), "Eb", "Eb3  +3¢");
         self.deg.set(Some(degree_color("1")), "1", "Eb major");
         self.scale = Some((3, Mode::Major));
         self.playing = Some(51);
-        let w = width(self.show_scale);
-        let r = Rect::from_min_size(pos2(rect.max.x - w, rect.min.y), vec2(w, H));
+        let w = width(self.show_scale, more);
+        let r = Rect::from_min_size(pos2(rect.max.x - w, rect.min.y), vec2(w, height(more)));
         let p = ui.painter();
         p.rect_filled(
             r.translate(vec2(0.0, 10.0)).expand(6.0),
@@ -391,13 +841,22 @@ impl NoteWidget {
             let b = box_rect(2);
             Rect::from_min_max(b.min - vec2(PAD, PAD), pos2(b.max.x + PAD, H))
         } else {
-            Rect::from_min_size(Pos2::ZERO, vec2(width(self.show_scale), H))
+            Rect::from_min_size(
+                Pos2::ZERO,
+                vec2(width(self.show_scale, self.more), height(self.more)),
+            )
         }
     }
 
-    /// The window's size (the system's points): the view, BIG times over when popped up.
+    /// The resize grip: the bottom right corner of the view.
+    fn grip(&self) -> Rect {
+        let v = self.view();
+        Rect::from_min_max(v.max - vec2(20.0, 20.0), v.max)
+    }
+
+    /// The window's size (the system's points): the view at the widget's size, BIG times over when popped up.
     fn size(&self) -> [f32; 2] {
-        let v = self.view().size() * if self.big { BIG } else { 1.0 };
+        let v = self.view().size() * self.zoom * if self.big { BIG } else { 1.0 };
         [v.x, v.y]
     }
 
@@ -410,14 +869,31 @@ impl NoteWidget {
         }
     }
 
-    /// The note you're playing (from the guitar input) and the key it's in.
-    fn listen(&mut self, st: &AppState, now: Instant) {
+    /// The note you're playing (from the guitar input) and the key it's in (a chord's notes count too); the heat
+    /// maps' notes.
+    fn listen(&mut self, st: &AppState, now: Instant, song: Option<(&Arrangement, f64, bool)>) {
+        let dt = self
+            .last_listen
+            .map_or(0.0, |l| now.duration_since(l).as_secs_f64().min(0.5));
+        self.last_listen = Some(now);
+        self.heat.song(song, dt, self.strings.len());
+        let mut level = 0.0;
         self.status = match &st.audio {
             None => "audio engine off".into(),
             Some(a) if a.engine.status().input.is_none() => "no guitar input (F2)".into(),
             Some(a) => {
                 let e = &a.engine;
                 let rate = e.capture().rate();
+                level = e.meters().level;
+                if level >= 0.002 {
+                    self.loud_at = Some(now);
+                }
+                if self.more {
+                    let t = now.duration_since(self.start).as_secs_f64();
+                    let cap = e.capture();
+                    self.chords
+                        .listen(|b| cap.latest(b).is_some(), rate, &self.strings, t);
+                }
                 if e.meters().level >= 0.002 && e.capture().latest(&mut self.buf).is_some() {
                     let (hz, clarity) = qrs_analysis::pitch::pitch(&mut self.sp, &self.buf, rate);
                     if hz > 0.0 && clarity >= 0.85 {
@@ -446,9 +922,29 @@ impl NoteWidget {
         let pc = held
             .filter(|_| since < 0.15)
             .map(|m| (m.round() as i64).rem_euclid(12) as u8);
-        self.key.add(pc, now.duration_since(self.start).as_secs_f64());
+        let t = now.duration_since(self.start).as_secs_f64();
+        let tones = if self.more {
+            self.chords.ringing_tones()
+        } else {
+            Vec::new()
+        };
+        if pc.is_none() && tones.len() >= 2 {
+            self.key.add_all(&tones, t);
+        } else {
+            self.key.add(pc, t);
+        }
         self.scale = self.key.key;
         self.playing = held.map(|m| m.round() as i32);
+        self.chords.key = self.key_pick.or(self.key.key);
+        self.chords.key_auto = self.key_pick.is_none();
+        let sounding = held.filter(|_| since < 0.15).map(|m| m.round() as i32);
+        let chord = if self.more {
+            self.chords.ringing_shape()
+        } else {
+            None
+        };
+        self.heat
+            .listen(t, sounding, self.playing, chord, level, &self.strings);
         // what the boxes show
         match held {
             None => self.note.set(None, "—", "play a note"),
@@ -510,23 +1006,38 @@ impl NoteWidget {
         self.deg.step(dt);
         // `u` points a widget pixel: the window is W x H of the system's points, but egui's zoom (the main
         // window's scale) applies to every window, so its content area is W x H / zoom points
-        let w = width(self.show_scale);
+        let w = width(self.show_scale, self.more);
+        let h = height(self.more);
         let view = self.view();
         let u = area.width() / view.width();
         let live = (self.note.target.is_some(), self.deg.target.is_some());
         let k = u * ctx.pixels_per_point(); // screen pixels a widget pixel
-        let key = (live, self.show_scale, k.to_bits());
-        if self.bg.as_ref().is_none_or(|(kk, _)| *kk != key) {
-            let img = background(live, self.show_scale, k);
-            let tex = ctx.load_texture("note-widget-bg", img, egui::TextureOptions::LINEAR);
-            self.bg = Some((key, tex));
-        }
+        // (k rounded: it's the same scale when the main window's zoom changes, give or take a float's last digits,
+        // and redrawing this background took 45 ms a step of a resize: D70)
+        let key = (live, (self.show_scale, self.more), (k * 256.0).round() as u32);
+        let have = self.bg.iter().position(|(kk, _)| *kk == key).or_else(|| {
+            // dragging the grip: any size of this layout, stretched (P27.3)
+            self.zoom_drag
+                .and(self.bg.iter().rposition(|(kk, _)| kk.0 == key.0 && kk.1 == key.1))
+        });
+        let i = match have {
+            Some(i) => i,
+            None => {
+                let img = background(live, self.show_scale, self.more, k);
+                let tex = ctx.load_texture("note-widget-bg", img, egui::TextureOptions::LINEAR);
+                if self.bg.len() >= BG_KEEP {
+                    drop(self.bg.remove(0)); // (the oldest goes, its texture freed)
+                }
+                self.bg.push((key, tex));
+                self.bg.len() - 1
+            }
+        };
         // (popped up, the window is the scale box's part of the widget: everything else falls outside it)
         let o = area.min - view.min.to_vec2() * u;
-        if let Some((_, tex)) = &self.bg {
+        if let Some((_, tex)) = self.bg.get(i) {
             p.image(
                 tex.id(),
-                Rect::from_min_size(o, vec2(w, H) * u),
+                Rect::from_min_size(o, vec2(w, h) * u),
                 Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
                 Color32::WHITE,
             );
@@ -541,10 +1052,40 @@ impl NoteWidget {
                 Align2::LEFT_TOP,
                 st(14.0, 800, FG),
             );
+            chords::draw_arrow(&p, u, at, w, self.more, self.hot.0);
+            // the grip's three lines in the bottom right corner
+            let gr = self.grip();
+            let col = if self.grip_hot { FG } else { DIM };
+            for k in [4.0, 8.0, 12.0] {
+                p.line_segment(
+                    [
+                        at(gr.max.x - 5.0 - k, gr.max.y - 5.0),
+                        at(gr.max.x - 5.0, gr.max.y - 5.0 - k),
+                    ],
+                    Stroke::new(1.3 * u, col),
+                );
+            }
+            if let Some(on) = self.fast {
+                let r = fast_rect();
+                let pr = Rect::from_min_max(at(r.min.x, r.min.y), at(r.max.x, r.max.y));
+                let (fill, text, edge) = match (on, self.fast_hot) {
+                    (true, hot) => (
+                        if hot { mix(FAST, FG, 0.25) } else { FAST },
+                        Color32::from_rgb(6, 34, 20),
+                        FAST,
+                    ),
+                    (false, true) => (HILITE, FG, DIM),
+                    (false, false) => (BASE, DIM, FRET),
+                };
+                p.rect_filled(pr, 8.5 * u, fill);
+                p.rect_stroke(pr, 8.5 * u, Stroke::new(u, edge), egui::StrokeKind::Inside);
+                let label = if on { "FAST" } else { "NORMAL" };
+                pil_text(&p, label, pr.center(), Align2::CENTER_CENTER, st(9.0, 800, text));
+            }
             pil_text(
                 &p,
                 &self.status,
-                at(w - PAD - 2.0, PAD + 4.0),
+                at(w - PAD - 26.0, PAD + 4.0),
                 Align2::RIGHT_TOP,
                 st(11.0, 500, DIM),
             );
@@ -590,7 +1131,41 @@ impl NoteWidget {
         }
         if self.show_scale {
             caption("SCALE", box_rect(2));
+            // ALL / ROOT / OFF: one rounded strip, the picked segment lit
+            let whole = Rect::from_min_max(marks_rect(0).min, marks_rect(2).max);
+            let wr = Rect::from_min_max(at(whole.min.x, whole.min.y), at(whole.max.x, whole.max.y));
+            p.rect_filled(wr, 7.5 * u, SHADE);
+            for (i, m) in Marks::ALL.into_iter().enumerate() {
+                let r = marks_rect(i).shrink(1.5);
+                let sr = Rect::from_min_max(at(r.min.x, r.min.y), at(r.max.x, r.max.y));
+                let on = m == self.marks;
+                if on {
+                    p.rect_filled(sr, 6.0 * u, degree_color("1"));
+                } else if self.marks_hot == Some(i) {
+                    p.rect_filled(sr, 6.0 * u, HILITE);
+                }
+                let col = if on {
+                    ink(degree_color("1"))
+                } else if self.marks_hot == Some(i) {
+                    FG
+                } else {
+                    DIM
+                };
+                pil_text(
+                    &p,
+                    m.label(),
+                    sr.center(),
+                    Align2::CENTER_CENTER,
+                    st(8.0, 800, col),
+                );
+            }
             self.draw_scale(&p, u, at);
+        }
+        if self.more && !self.big {
+            caption("CHORD", chords::strip_rect(w));
+            self.chords.draw(&p, u, at, w, &self.strings, self.hot.1);
+            caption("HEAT", heat::strip_rect(w));
+            self.heat.draw(&p, u, at, w, &self.strings);
         }
     }
 
@@ -677,21 +1252,34 @@ impl NoteWidget {
         for (s, f, midi) in spots() {
             let deg = self.scale.and_then(|key| scale_degree(key, midi));
             let playing = self.playing == Some(midi);
-            let fill = match deg {
-                Some(d) => degree_color(d),
-                None if playing && self.scale.is_some() => OUT_OF_KEY,
-                None if playing => note_color(midi.rem_euclid(12) as usize),
-                None => continue,
+            // OFF: only the note played, in its note's own colour (as the NOTE disc) with its name: nothing of the
+            // key (owner request, 2026-11-02)
+            let off = self.marks == Marks::Off;
+            let deg = if off { None } else { deg };
+            let fill = match (deg, self.marks) {
+                (Some("1"), _) | (Some(_), Marks::All) => degree_color(deg.unwrap_or("1")),
+                (Some(_), _) => GREY_NOTE,
+                (None, Marks::Off) if playing => note_color(midi.rem_euclid(12) as usize),
+                (None, _) if playing && self.scale.is_some() => OUT_OF_KEY,
+                (None, _) if playing => note_color(midi.rem_euclid(12) as usize),
+                (None, _) => continue,
             };
             let c = at(fx(f), sy(s));
             p.circle_filled(c, SPOT * u, fill);
-            if let Some(d) = deg {
+            let label = if off {
+                Some(NOTE_NAMES[midi.rem_euclid(12) as usize])
+            } else {
+                deg
+            };
+            if let Some(d) = label {
+                // (a two-letter name a little smaller, to fit the dot)
+                let size = if d.chars().count() > 1 { 6.5 } else { 8.0 };
                 pil_text(
                     p,
                     d,
                     c,
                     Align2::CENTER_CENTER,
-                    Style::new(8.0 * u, 800, ink(fill)),
+                    Style::new(size * u, 800, ink(fill)),
                 );
             }
         }
@@ -849,7 +1437,8 @@ const DIM: Color32 = Color32::from_rgb(0x9a, 0xa0, 0xaa);
 const FRET: Color32 = Color32::from_rgb(0x4a, 0x4f, 0x57);
 const STRING: Color32 = Color32::from_rgb(0x8a, 0x90, 0x9a);
 const NUT: Color32 = Color32::from_rgb(0xc9, 0xcc, 0xd1);
-const INLAY: Color32 = Color32::from_rgb(0x3e, 0x43, 0x4a);
+/// (plain white, to be seen at a glance: owner request, 2026-11-02)
+const INLAY: Color32 = Color32::from_rgb(0xf4, 0xf5, 0xf7);
 
 /// The NOTE (0), KEY (1) and SCALE (2) boxes, in the window's points.
 fn box_rect(i: usize) -> Rect {
@@ -914,14 +1503,15 @@ fn inset(l: &mut Layers, s: &Mask, d: f32, k: f32) {
 /// The panel, its two sunken boxes and each disc raised (live) or sunk in (empty), and with `scale` the scale box
 /// with its board sunk in further and darker, at `k` pixels a point (`background`; the text and the neck go on top
 /// each frame).
-fn background(live: (bool, bool), scale: bool, k: f32) -> egui::ColorImage {
-    let w = width(scale);
-    let (wp, hp) = ((w * k).round() as usize, (H * k).round() as usize);
+fn background(live: (bool, bool), scale: bool, more: bool, k: f32) -> egui::ColorImage {
+    let w = width(scale, more);
+    let h = height(more);
+    let (wp, hp) = ((w * k).round() as usize, (h * k).round() as usize);
     let mut l = Layers::new(wp, hp);
     l.over_all(qrs_ui::raster::rgbf(BASE), 1.0);
     // the panel's own edge catches the light on the top left
     let panel = shape(
-        Rect::from_min_size(Pos2::ZERO, vec2(w, H)),
+        Rect::from_min_size(Pos2::ZERO, vec2(w, h)),
         18.0,
         false,
         k,
@@ -948,12 +1538,59 @@ fn background(live: (bool, bool), scale: bool, k: f32) -> egui::ColorImage {
         inset(&mut l, &board, 2.0, k);
         l.over_c(SHADE, &board.map(|v| v * 0.5));
     }
+    if more {
+        inset(
+            &mut l,
+            &shape(chords::strip_rect(w), 18.0, false, k, wp, hp),
+            4.0,
+            k,
+        );
+        let board = shape(chords::board_rect(w), 8.0, false, k, wp, hp);
+        inset(&mut l, &board, 2.0, k);
+        l.over_c(SHADE, &board.map(|v| v * 0.5));
+        inset(
+            &mut l,
+            &shape(heat::strip_rect(w), 18.0, false, k, wp, hp),
+            4.0,
+            k,
+        );
+        for row in 0..2 {
+            let board = shape(heat::board_rect(w, row), 8.0, false, k, wp, hp);
+            inset(&mut l, &board, 2.0, k);
+            l.over_c(SHADE, &board.map(|v| v * 0.5));
+        }
+    }
     l.image(None).to_egui()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chord_key_is_kept_in_the_config() {
+        for k in [None, Some((9, Mode::Major)), Some((6, Mode::Minor))] {
+            assert_eq!(key_from_config(&key_to_config(k)), k);
+        }
+        assert_eq!(key_from_config("12 major"), None);
+        assert_eq!(key_from_config("auto"), None);
+    }
+
+    /// P27.1: the widget only keeps repainting while a disc's colour is still gliding.
+    #[test]
+    fn a_glide_settles() {
+        let mut sh = Shown::new();
+        assert!(sh.settled(), "nothing to show is settled");
+        sh.set(Some(Color32::from_rgb(200, 40, 40)), "C", "");
+        assert!(!sh.settled());
+        for _ in 0..60 {
+            sh.step(0.03);
+        }
+        assert!(sh.settled(), "{:?}", sh.fill);
+        sh.set(None, "-", "");
+        sh.step(0.03);
+        assert!(sh.settled());
+    }
 
     #[test]
     fn colours_go_round_the_wheel() {
@@ -984,19 +1621,35 @@ mod tests {
     #[test]
     fn the_scale_box_pops_up() {
         let mut nw = NoteWidget::default();
-        assert_eq!(nw.size(), [width(true), H]);
+        assert_eq!(nw.size(), [width(true, false), H]);
         nw.big = true;
         let v = nw.view();
         assert!(v.contains_rect(box_rect(2)) && !v.contains(box_rect(1).center()));
         assert_eq!(nw.size(), [v.width() * BIG, v.height() * BIG]);
         nw.big = false;
-        assert_eq!(nw.view().size(), vec2(width(true), H));
+        assert_eq!(nw.view().size(), vec2(width(true, false), H));
+        // the drawer: as wide as the scale box's window, taller by the drawer
+        nw.more = true;
+        assert_eq!(nw.size(), [width(true, false), H + DRAWER_H + HEAT_H]);
+        nw.show_scale = false;
+        assert_eq!(nw.size(), [width(true, false), H + DRAWER_H + HEAT_H]);
     }
 
     #[test]
     fn the_scale_box_fits_the_wider_window() {
-        assert_eq!(width(false), W);
-        assert_eq!(box_rect(2).max.x + PAD, width(true));
+        assert_eq!(width(false, false), W);
+        assert_eq!(box_rect(2).max.x + PAD, width(true, false));
+        // the drawer's strip under the boxes, its neck right of the chord's name, the dragger under the numbers
+        let w = width(false, true);
+        let strip = chords::strip_rect(w);
+        assert!(strip.min.y > box_rect(0).max.y && strip.max.y < height(true));
+        assert!(chords::board_rect(w).min.x > strip.min.x + 170.0);
+        assert!(chords::track_rect(w).max.y < strip.max.y - 4.0);
+        assert!(chords::zoom_rect(w).max.y < chords::board_rect(w).min.y);
+        // ALL SHAPES and KEY in a row left of ZOOM, none over another
+        let (key, all, zoom) = (chords::key_rect(w), chords::shapes_rect(w), chords::zoom_rect(w));
+        assert!(key.max.x < all.min.x && all.max.x < zoom.min.x && key.width() > 200.0);
+        assert!(chords::arrow_rect(w).max.x <= w - PAD + 1.0);
         assert!(box_rect(2).min.x >= box_rect(1).max.x + GAP);
         let board = neck_board();
         assert!(

@@ -28,12 +28,17 @@ image.workspace = true
 raw-window-handle.workspace = true
 chrono.workspace = true
 tiny-skia.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 # the folder and keys-file pickers (Settings > Library, the welcome)
 rfd = { version = "0.15", default-features = false }
 ureq.workspace = true
 sha2.workspace = true
 zip.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux: the desktop's own file picker, through its xdg portal (GNOME, KDE, ...); no GTK to build against (P28.1)
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 
 [target.'cfg(windows)'.dependencies]
 # ASIO drivers (RS_ASIO-style setups, audio interfaces' own drivers)

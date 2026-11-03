@@ -18,11 +18,6 @@ pub fn now_ns() -> u64 {
     epoch().elapsed().as_nanos() as u64
 }
 
-/// An `Instant` as our nanosecond time (for backends that report Instants).
-pub fn instant_ns(t: Instant) -> u64 {
-    t.saturating_duration_since(epoch()).as_nanos() as u64
-}
-
 /// What the output side publishes every block: the song time heard at a wall-clock instant.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SongClock {

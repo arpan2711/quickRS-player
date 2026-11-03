@@ -5,14 +5,18 @@
 //! New here: ear mode (H), for a lesson's riff the coach in the console (coach.rs), and note by note (W,
 //! notebynote.rs: the song waits at each note until you play it).
 
+mod arcade;
 pub mod board;
 pub mod coach;
+mod continuous;
 mod controls;
 pub(crate) mod gearinfo;
 mod highway;
+mod history;
 mod hud;
 mod notebynote;
 mod practise;
+mod review;
 mod songaudio;
 mod songsynth;
 mod tab;
@@ -500,6 +504,17 @@ pub struct PlayerView {
     pub coach: Option<coach::Coach>,
     /// A take of a stretch (P17.11): recording, analysing, its report and "your tab".
     take: Option<take::Session>,
+    /// The last run's review (P29.1): its spots, and the one being practised.
+    review: Option<review::Review>,
+    /// This part's saved runs (newest first), as last read or written; and where they live.
+    runs: Vec<history::SavedRun>,
+    reviews_path: std::path::PathBuf,
+    /// Continuous mode (O, P29.2): the loop runs straight on, every pass scored.
+    continuous: bool,
+    /// Continuous mode's game (P29.3): multiplier, score, confetti.
+    arcade: arcade::Arcade,
+    /// Each loop's pass accuracies while the song is open (by `continuous::loop_key`).
+    pass_hist: std::collections::HashMap<(i64, i64), Vec<f64>>,
     /// Note by note (W, P15.3): the song stops at each note still to be played until you play it.
     pub nbn: bool,
     /// The note the song is stopped at, waiting for you.
@@ -530,6 +545,8 @@ pub struct PlayerView {
     /// The Shortcuts sheet is up.
     shortcuts: bool,
     countdown_until: Option<Instant>,
+    /// Opened paused and not played yet: the first Play counts in (as opening a song does).
+    fresh: bool,
     pub lyrics: Vec<Line>,
     lyric_starts: Vec<f64>,
     pub lyrics_next: bool,
@@ -717,6 +734,7 @@ impl PlayerView {
             pressed: None,
             shortcuts: false,
             countdown_until: Some(Instant::now() + Duration::from_secs_f32(COUNTDOWN)),
+            fresh: false,
             lyrics,
             lyric_starts,
             lyrics_next: st.config.bool("lyrics_next", true),
@@ -768,6 +786,12 @@ impl PlayerView {
             recorded: false,
             new_best: false,
             summary_dismissed: false,
+            review: None,
+            runs: Vec::new(),
+            reviews_path: st.data.root.join("reviews.json"),
+            continuous: false,
+            arcade: Default::default(),
+            pass_hist: Default::default(),
             result_scored: false,
             result_rank: None,
             tile_drag: None,
@@ -1319,6 +1343,12 @@ impl PlayerView {
     }
 
     /// Skip the count-in and play (--play).
+    /// Open paused at the start (no count-in); the first Play counts in.
+    pub fn open_paused(&mut self) {
+        self.countdown_until = None;
+        self.fresh = true;
+    }
+
     pub fn start_now(&mut self) {
         self.countdown_until = None;
         if !self.transport.playing() {
@@ -1347,6 +1377,9 @@ impl PlayerView {
 
     pub fn act(&mut self, st: &mut AppState, name: &str) {
         let pos = self.transport.position();
+        if name.starts_with("review") && self.review_act(name) {
+            return;
+        }
         match name {
             "library" => self.reqs.push(PlayerReq::Library),
             // the results card closed: the song page as it was, stopped at the end (a recording keeps running)
@@ -1440,7 +1473,9 @@ impl PlayerView {
             }
             "play" => {
                 self.stop_synth();
-                if self.countdown_until.is_some() {
+                if std::mem::take(&mut self.fresh) && !self.transport.playing() && self.waiting.is_none() {
+                    self.countdown_until = Some(Instant::now() + Duration::from_secs_f32(COUNTDOWN));
+                } else if self.countdown_until.is_some() {
                     self.countdown_until = None;
                     self.transport.play();
                 } else if self.transport.finished() {
@@ -1658,9 +1693,11 @@ impl PlayerView {
                     self.seek(a - LOOP_LEAD_IN);
                 }
             }
+            "continuous" => self.toggle_continuous(),
             "clear_loop" => {
                 self.loop_a = None;
                 self.loop_b = None;
+                self.continuous = false;
                 self.say("Loop cleared", "");
             }
             "loop_section" => {
@@ -2053,6 +2090,8 @@ impl PlayerView {
             Key::A => "part",
             Key::Y => "lyrics",
             Key::H => "ear",
+            Key::E if !ctrl => "review",
+            Key::O if !ctrl => "continuous",
             Key::W => "nbn",
             Key::N => "nota:show",
             Key::M => "monitor",
@@ -2142,6 +2181,9 @@ impl PlayerView {
             return;
         }
         if self.sec_menu.is_some() && self.section_menu_event(ev) {
+            return;
+        }
+        if self.review_event(ev) {
             return;
         }
         #[cfg(feature = "nux")]
@@ -2312,7 +2354,12 @@ impl PlayerView {
             && self.now() >= b
         {
             self.loop_pass_done(st);
-            self.seek((a - LOOP_LEAD_IN).max(0.0));
+            if self.continuous {
+                // straight on from the loop's start, as if the song went round
+                self.seek(a + self.offset);
+            } else {
+                self.seek((a - LOOP_LEAD_IN).max(0.0));
+            }
             self.countdown_until = None;
         }
         if playing && self.transport.finished() {
@@ -2330,6 +2377,11 @@ impl PlayerView {
         } else if ended_now {
             self.recorded = true;
             self.record_completion(st);
+            if self.loop_a.zip(self.loop_b).is_none() {
+                // (a run, not a loop reaching the end: saved with the last ones, its review ready for the card's
+                // Review)
+                self.record_review_run();
+            }
         }
         // the guitar: plucks to the scorer, the pitch to the tuner
         let e = self.engine().cloned();
@@ -2373,7 +2425,9 @@ impl PlayerView {
                 .update(now, None, qrs_audio::clock::now_ns() as f64 / 1e9);
         }
         self.nbn_watch();
+        let before = std::mem::take(&mut self.states);
         self.states = self.scorer.groups.iter().map(|g| g.state).collect();
+        self.arcade_notes(&before);
         self.reveal_played();
         self.coach_tick(st);
         self.take_tick(st);
@@ -2415,7 +2469,9 @@ impl PlayerView {
     fn loop_pass_done(&mut self, st: &mut AppState) {
         self.loop_passes += 1;
         let acc = self.loop_pass_accuracy();
-        if !self.take.as_ref().is_some_and(take::Session::going) {
+        self.review_pass(acc);
+        self.continuous_pass(acc);
+        if !self.continuous && !self.take.as_ref().is_some_and(take::Session::going) {
             self.loop_pass_level(st, acc);
         }
         self.coach_pass(st, acc);
@@ -2426,11 +2482,14 @@ impl PlayerView {
         let (Some(a), Some(b)) = (self.loop_a, self.loop_b) else {
             return None;
         };
+        // (a note at the loop's end still in its late window when the loop goes round isn't counted: it can't be
+        // judged once the song is back at the start, and isn't yet missed)
+        let now = self.now();
         let groups: Vec<&qrs_analysis::detect::NoteGroup> = self
             .scorer
             .groups
             .iter()
-            .filter(|g| a <= g.t && g.t < b)
+            .filter(|g| a <= g.t && g.t < b && (g.state.is_some() || g.t < now - qrs_analysis::detect::LATE))
             .collect();
         if groups.is_empty() || !self.has_input() {
             return None;
@@ -2518,7 +2577,7 @@ impl PlayerView {
         let at: f64 = std::env::var("QUICKRS_SHOT_AT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .or_else(|| crate::shotclock::seq_env().map(|s| s.0)) // (a sequence starts where it starts)
+            .or_else(|| crate::shotclock::seq_env().and_then(|s| s.first().copied())) // (a sequence starts where it starts)
             .unwrap_or(61.0);
         // what an earlier shot staged goes
         self.loop_a = None;
@@ -2734,6 +2793,11 @@ impl PlayerView {
                 }
                 "slowing" => self.shot_stretch = Some(0.42),
                 "results_practice" | "no_audio" => self.shot_song_end(st, what),
+                // the run's review (P29.1): a run with a few rough stretches, its page or a spot being practised
+                "review" | "review_spot" | "review_continuous" | "review_history" => {
+                    self.shot_song_end(st, "results");
+                    self.stage_review(what);
+                }
                 // the results card closed (its x or Esc, P23.12): the page under it, stopped at the end
                 "results_closed" => {
                     self.shot_song_end(st, "results");
@@ -2885,11 +2949,15 @@ impl PlayerView {
         }
         self.update(st);
         ctx.request_repaint(); // the tab moves with the song
-        if self.summary_up() {
+        if self.overlay_up() {
             if self.backdrop.ready(&ctx) {
-                // the song has ended, so what's under the results card doesn't change
+                // the song has ended (or is held under the review), so what's under the card doesn't change
                 self.backdrop.draw(ui.painter(), area);
-                self.draw_summary(ui, st, area);
+                if self.review_open() {
+                    self.draw_review(ui, area);
+                } else {
+                    self.draw_summary(ui, st, area);
+                }
                 let acts = std::mem::take(&mut self.acts);
                 for a in acts {
                     self.act(st, &a);
@@ -2988,8 +3056,14 @@ impl PlayerView {
             self.draw_aside(ui, st, aside, now);
         }
         self.draw_states(ui, well);
+        let strip = self.draw_review_strip(ui, well);
+        let plate = self.draw_continuous(ui, well, strip.map(|r| r.min.y));
+        // continuous mode's score panel, beside the strip (or the passes' plate)
+        if let Some(r) = strip.or(plate) {
+            self.draw_arcade(ui, r.max.x + px(10.0), r.max.y, area);
+        }
         if self.sec_menu.is_some() {
-            if self.pedal_view_open() || self.summary_up() {
+            if self.pedal_view_open() || self.overlay_up() {
                 self.sec_menu = None; // (it closes under the pedal's view and the results, as in the Python app)
             } else {
                 self.draw_section_menu(ui);
@@ -3097,6 +3171,10 @@ impl PlayerView {
         }
         let tx = snap(cover.max.x + px(18.0));
         let tw = snap(sp.min.x.min(status.min.x) - px(24.0) - tx);
+        // the favourite star right after the title (owner request, 2026-11-02): room kept for it, so a long title
+        // is cut short (…) before the star goes
+        let star_r = px(12.0);
+        let star_room = snap(2.0 * star_r + px(14.0));
         let tr = txt(
             &p,
             &self.entry.display_title(),
@@ -3105,8 +3183,42 @@ impl PlayerView {
             th.text,
             800,
             Align2::LEFT_TOP,
-            Some(tw),
+            Some(snap(tw - star_room).max(pixels(40.0))),
         );
+        {
+            let fav = st.userdata.is_favorite(&self.ids);
+            let c = ipos(tr.max.x + px(12.0) + star_r, mid_y(tr) + px(1.0));
+            let hit = Rect::from_center_size(c, Vec2::splat(2.0 * star_r + px(10.0)));
+            let resp = interact(ui, hit, "player-fav", Sense::click());
+            crate::library::draw_star(&p, c, if resp.hovered() { star_r * 1.12 } else { star_r }, fav);
+            if resp.hovered() {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+                self.tip = Some((
+                    if fav {
+                        "In your favourites (click to remove)"
+                    } else {
+                        "Add to favourites"
+                    }
+                    .into(),
+                    String::new(),
+                    ipos(hit.min.x, hit.max.y + px(8.0)),
+                    Align2::LEFT_TOP,
+                ));
+            }
+            if resp.clicked() {
+                let on = st.userdata.toggle_favorite(&self.ids);
+                if let (Some(first), Some(grp)) = (self.ids.first(), st.groups.get(self.g)) {
+                    let canon = grp.canonical.clone();
+                    st.userdata.alias(&canon, first);
+                }
+                let title = self.entry.display_title();
+                st.say(format!(
+                    "{} {title} {} favourites",
+                    if on { "Added" } else { "Removed" },
+                    if on { "to" } else { "from" }
+                ));
+            }
+        }
         let year = if self.entry.year != 0 {
             self.entry.year.to_string()
         } else {
@@ -4847,7 +4959,7 @@ impl PlayerView {
                 th.text_2,
             );
             if self.hit(ui, plate, "play").clicked() {}
-        } else if self.summary_up() {
+        } else if self.overlay_up() {
             summary = true;
             if !self.backdrop.capturing() {
                 // the next frame, the player alone like this one, is captured: blurred under the card from then on
@@ -5006,6 +5118,11 @@ impl PlayerView {
         );
     }
 
+    /// The results card or the review is up, over the blurred player.
+    fn overlay_up(&self) -> bool {
+        self.review_open() || self.summary_up()
+    }
+
     /// The results are up: the song ran to its end with something played.
     fn summary_up(&self) -> bool {
         summary_shows(
@@ -5022,7 +5139,9 @@ impl PlayerView {
         let p = ui.painter().clone();
         let th = t();
         let ctx = ui.ctx().clone();
-        let _ = interact(ui, area, "summary-modal", Sense::click()); // modal: only its buttons (and keys) do anything
+        // modal: only its buttons (and keys) do anything; a click on the haze around it closes it, as its x does
+        // (owner request, 2026-11-02)
+        let modal = interact(ui, area, "summary-modal", Sense::click());
         let c = self.scorer.counts();
         let scored = self.result_scored;
         let top = st.userdata.top(&self.ids, &self.part_name);
@@ -5054,6 +5173,9 @@ impl PlayerView {
             vec2(pw, ph),
         );
         paint::floating(&p, panel, Some(32.0));
+        if modal.clicked() && modal.interact_pointer_pos().is_some_and(|at| !panel.contains(at)) {
+            self.acts.push("summary_close".into());
+        }
         let (lx, rx) = (snap(panel.min.x + px_), snap(panel.max.x - px_));
         let mut y = snap(panel.min.y + py_);
         let (chip_text, chip_col, chip_icon) = if self.new_best {
@@ -5377,7 +5499,34 @@ impl PlayerView {
         }
         let lib_w = snap(button_w(&ctx, "Library", "⌫", 15.0, false) + px(20.0));
         let lib = Rect::from_min_size(ipos(rx - lib_w, y), vec2(lib_w, px(54.0)));
-        let again = Rect::from_min_size(pos2(lx, y), vec2(snap(lib.min.x - px(14.0) - lx), px(54.0)));
+        // the run's review (P29.1): where the notes went, to practise
+        let rev_w = if self.review.is_some() {
+            snap(button_w(&ctx, "Review", "E", 15.0, true) + px(20.0))
+        } else {
+            0.0
+        };
+        let rev = Rect::from_min_size(ipos(lib.min.x - px(14.0) - rev_w, y), vec2(rev_w, px(54.0)));
+        let again_end = if rev_w > 0.0 { rev.min.x } else { lib.min.x };
+        let again = Rect::from_min_size(pos2(lx, y), vec2(snap(again_end - px(14.0) - lx), px(54.0)));
+        if rev_w > 0.0
+            && button(
+                ui,
+                rev,
+                "sum-review",
+                "Review",
+                "E",
+                ButtonStyle {
+                    icon: Some(Icon::Search),
+                    accent: self.review.as_ref().is_some_and(|r| !r.list.is_empty()),
+                    size: 15.0,
+                    r: Some(17.0),
+                    ..Default::default()
+                },
+            )
+            .clicked()
+        {
+            self.acts.push("review".into());
+        }
         if button(
             ui,
             again,

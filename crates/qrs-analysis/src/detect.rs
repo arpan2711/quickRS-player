@@ -680,11 +680,6 @@ impl Scorer {
         self.pending.sort_by_key(|p| p.index);
     }
 
-    /// Forget plucks heard so far (e.g. when switching parts mid-song: they belonged to the old part).
-    pub fn ignore_pending(&mut self) {
-        self.pending.clear();
-    }
-
     /// Forget judgements from time t on (after a seek or a loop pass).
     pub fn reset_from(&mut self, t: f64) {
         for g in &mut self.groups {

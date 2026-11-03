@@ -20,7 +20,6 @@ brands = []
 cpal.workspace = true
 qrs-formats.workspace = true
 qrs-analysis.workspace = true
-thiserror.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -53,6 +52,3 @@ windows = { workspace = true, features = [
     "Win32_Devices_DeviceAndDriverInstallation",
 ] }
 
-[dev-dependencies]
-serde_json.workspace = true
-qrs-formats = { workspace = true }

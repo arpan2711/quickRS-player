@@ -693,6 +693,26 @@ impl UserData {
         all
     }
 
+    /// The best accuracy (0 to 1) of any part's runs at full speed: what the 70% / 80% / 90% playlists go by (a slowed
+    /// run doesn't count).
+    pub fn best_full_speed_acc(&self, ids: &[String]) -> Option<f64> {
+        ids.iter()
+            .filter_map(|i| self.scores.get(i))
+            .flat_map(|recs| recs.values())
+            .filter_map(Value::as_object)
+            .flat_map(|r| {
+                let rec = (r.get("speed").and_then(Value::as_f64).unwrap_or(1.0) >= 0.999)
+                    .then(|| r.get("best_acc").and_then(Value::as_f64))
+                    .flatten();
+                top_of(r)
+                    .into_iter()
+                    .filter(|run| run.speed >= 0.999)
+                    .filter_map(|run| run.acc)
+                    .chain(rec)
+            })
+            .reduce(f64::max)
+    }
+
     /// The best record of one part (or, with None, the best across the song's parts by accuracy): (score, accuracy,
     /// speed).
     pub fn best(&self, ids: &[String], part: Option<&str>) -> Option<(i64, f64, f64)> {

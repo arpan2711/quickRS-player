@@ -6,7 +6,7 @@
 //! `+` augmented, a trailing 7 the chord's seventh.
 
 /// Note names as the jam page shows them (sharps for C#/F#, flats elsewhere).
-pub const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+pub use qrs_formats::model::NOTE_NAMES;
 
 pub fn note_name(pc: u8) -> &'static str {
     NOTE_NAMES[(pc % 12) as usize]

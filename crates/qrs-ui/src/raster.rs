@@ -321,43 +321,6 @@ impl Image {
         egui::ColorImage::from_rgba_unmultiplied([self.w, self.h], &self.rgba)
     }
 
-    /// Area-averaged downscale by an integer factor (pygame's smoothscale of a supersampled drawing), averaging
-    /// premultiplied colour so edges don't darken.
-    pub fn downsample(&self, k: usize) -> Image {
-        if k <= 1 {
-            return self.clone();
-        }
-        let (w, h) = (self.w / k, self.h / k);
-        let mut out = Image::new(w, h);
-        let n = (k * k) as f32;
-        for y in 0..h {
-            for x in 0..w {
-                let mut acc = [0.0f32; 4];
-                for sy in 0..k {
-                    for sx in 0..k {
-                        let i = ((y * k + sy) * self.w + x * k + sx) * 4;
-                        let a = self.rgba[i + 3] as f32;
-                        for ch in 0..3 {
-                            acc[ch] += self.rgba[i + ch] as f32 * a;
-                        }
-                        acc[3] += a;
-                    }
-                }
-                let o = (y * w + x) * 4;
-                let a = acc[3] / n;
-                for ch in 0..3 {
-                    out.rgba[o + ch] = if acc[3] > 0.0 {
-                        (acc[ch] / acc[3] + 0.5).min(255.0) as u8
-                    } else {
-                        0
-                    };
-                }
-                out.rgba[o + 3] = (a + 0.5).min(255.0) as u8;
-            }
-        }
-        out
-    }
-
     /// Draw `src` over this image with its top-left at (x, y), scaled in alpha by `alpha`.
     pub fn blit(&mut self, src: &Image, x: i32, y: i32, alpha: f32) {
         for sy in 0..src.h as i32 {

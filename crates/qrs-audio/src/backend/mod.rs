@@ -284,8 +284,3 @@ pub fn open_duplex(
         b => Err(oerr(format!("{} has no duplex mode", b.label()))),
     }
 }
-
-/// Whether this backend can only run one device at a time (ASIO: one driver per process).
-pub fn exclusive_driver(b: Backend) -> bool {
-    b == Backend::Asio
-}

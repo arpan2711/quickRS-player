@@ -1,6 +1,6 @@
 //! DSP building blocks for the tone (all allocation happens in `new`; `process` never allocates).
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 #[inline]
 pub fn db_to_gain(db: f32) -> f32 {
@@ -458,9 +458,6 @@ pub fn sine(rate: f32, hz: f32, n: usize, amp: f32) -> Vec<f32> {
 pub fn rms(x: &[f32]) -> f32 {
     (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt()
 }
-
-#[allow(dead_code)]
-const _: f32 = PI;
 
 #[cfg(test)]
 mod tests {

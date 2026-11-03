@@ -455,6 +455,8 @@ impl SettingsView {
                         Ok(msg) => self.say(msg),
                         Err(e) => self.say(e),
                     }
+                } else if crate::dialogs::unavailable() {
+                    self.say(crate::dialogs::NO_PICKER);
                 }
             }
             "rmfolder" => {

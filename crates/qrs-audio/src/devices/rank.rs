@@ -218,6 +218,14 @@ pub fn rank_inputs(devices: &[DeviceInfo], rs: Option<&RocksmithSetup>) -> Vec<R
                     }
                 }
             };
+            // Linux (P28.3): a card taken directly is busy whenever the desktop's sound server is using it (for
+            // the song's sound, say), so the system default comes first and the cards after it, in their order
+            let score =
+                if cfg!(target_os = "linux") && d.id.backend == Backend::System && d.id.id != "default-in" {
+                    score.min(1000) / 20
+                } else {
+                    score
+                };
             RankedInput {
                 device: d.clone(),
                 score: score + d.is_default_input as i32,
@@ -284,6 +292,44 @@ mod tests {
         }
     }
 
+    /// Linux (P28.3): the system default (the desktop's sound server) first, the cards taken directly after it
+    /// in their own order.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_puts_the_system_default_first() {
+        let mut default = dev(
+            Backend::System,
+            "System default input (pipewire)",
+            "",
+            Bus::Unknown,
+            None,
+            "",
+        );
+        default.id.id = "default-in".into();
+        let card = |n: &str| {
+            let mut d = dev(Backend::System, n, "", Bus::Unknown, None, "");
+            d.id.id = "plughw:CARD=X,DEV=0".into();
+            d
+        };
+        let ranked = rank_inputs(
+            &[
+                card("HDA Intel PCH, ALC897 Analog (direct)"),
+                card("Scarlett Solo USB, USB Audio (direct)"),
+                default,
+            ],
+            None,
+        );
+        let names: Vec<&str> = ranked.iter().map(|r| r.device.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "System default input (pipewire)",
+                "Scarlett Solo USB, USB Audio (direct)",
+                "HDA Intel PCH, ALC897 Analog (direct)"
+            ]
+        );
+    }
+
     /// The devices on the owner's PC (2026-10-14), plus a Real Tone Cable.
     fn owner_pc() -> Vec<DeviceInfo> {
         vec![
@@ -333,6 +379,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "linux"))] // (Linux ranks its System devices its own way: the test above)
     fn mac_picks_the_interface_over_the_built_in_mic() {
         let mut default = dev(
             Backend::System,

@@ -54,11 +54,15 @@ open it.
 Highway*, the first key on the tab's toolbar). `V` again, or the same key on
 the highway's toolbar, goes back.
 
-Notes come toward you and land on their strings. Hits light up, misses say
-MISS. The camera follows the hand's position the way Rocksmith's does: it
-moves seldom and early. On the highway's own toolbar:
+The highway is drawn through one camera, as Rocksmith's is. Each note
+travels along its own string toward you and reaches it at its fret. Chords
+come as a box with the fingers ringed, and a chord played again as a
+staircase. Hits light up, misses say MISS. The camera follows the hand's
+position the way Rocksmith's does: it only pans and moves in or out, seldom
+and early. On the highway's own toolbar:
 
-* *Speed*: how fast notes come.
+* *Speed*: how far apart the notes are. Turning it up spreads them out but
+  never makes them show up later.
 * *Camera*: *Rocksmith*, or *Steady*, which holds a view as long as it can.
 * Invert (`I`): low E at the bottom instead of the top.
 
@@ -130,6 +134,41 @@ work a part out by ear with the song as your guide.
 
 ![Ear mode](../screenshots/ear-mode.png)
 
+
+### Reviewing a run
+
+This is experimental. After a song, *Review* on the results card (or `E` at any time in the
+song) opens the run's review:
+
+* At the top, the accuracy of the run, what it would be with the listed
+  parts clean, and a short write-up.
+* A map of every bar, red where notes were lost, with a lane under it naming
+  each bar's part. Click any bar to practise its part.
+* The parts that cost the most notes, worst first. A part is a riff or phrase
+  found by what repeats in the song (not by the chart's section names), so a
+  riff that plays 14 times is listed once, at the time you played it worst.
+  Each row has a small tab of it.
+
+Click a part (or `Enter`) to loop it. Every practice tool still works. A strip
+at the foot of the tab shows which part it is, its passes and best, and keys
+for continuous mode, the previous and next part, the list, and stop.
+
+The last 4 runs of each song and part are kept. The list in the review's
+header picks one. `E` on a song you've only just opened shows the newest saved
+run.
+
+### Continuous mode
+
+`O` on any loop (or the first key on the review strip) plays the loop over and
+over: its end runs straight into its start, with no count-in, and every pass
+is scored. A panel shows the last pass, the pass so far, the best three, clean
+passes in a row, and a bar for each pass.
+
+A score panel beside it counts up as you play. A hit is 100 and late or early
+is 50, times a multiplier that goes up a step every 8 notes in a row (to 4x)
+and back to 1x on a miss. A pass with no misses adds a quarter, a perfect pass
+doubles it (more for perfects in a row), with confetti. Level-up is off while
+it's on, so passes stay comparable. `O` again, or clearing the loop, stops it.
 
 ### Scoring
 

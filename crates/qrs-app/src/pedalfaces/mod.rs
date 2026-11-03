@@ -40,7 +40,7 @@ pub fn ink(c: [u8; 3]) -> Color32 {
     }
 }
 
-fn shade(c: [u8; 3], k: f32) -> [u8; 3] {
+pub(crate) fn shade(c: [u8; 3], k: f32) -> [u8; 3] {
     let f = |v: u8| -> u8 {
         if k >= 0.0 {
             (v as f32 + (255.0 - v as f32) * k).round().clamp(0.0, 255.0) as u8
@@ -51,18 +51,18 @@ fn shade(c: [u8; 3], k: f32) -> [u8; 3] {
     [f(c[0]), f(c[1]), f(c[2])]
 }
 
-fn sk(c: [u8; 3], a: f32) -> Color {
+pub(crate) fn sk(c: [u8; 3], a: f32) -> Color {
     Color::from_rgba8(c[0], c[1], c[2], (a.clamp(0.0, 1.0) * 255.0) as u8)
 }
 
-fn solid(c: Color) -> Paint<'static> {
+pub(crate) fn solid(c: Color) -> Paint<'static> {
     let mut p = Paint::default();
     p.set_color(c);
     p.anti_alias = true;
     p
 }
 
-fn rrect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
+pub(crate) fn rrect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
     let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
     let mut b = PathBuilder::new();
     b.move_to(x + r, y);
@@ -78,7 +78,7 @@ fn rrect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
     b.finish()
 }
 
-fn linear(p0: (f32, f32), p1: (f32, f32), stops: Vec<(f32, Color)>) -> Option<Paint<'static>> {
+pub(crate) fn linear(p0: (f32, f32), p1: (f32, f32), stops: Vec<(f32, Color)>) -> Option<Paint<'static>> {
     let stops = stops.into_iter().map(|(o, c)| GradientStop::new(o, c)).collect();
     let shader = LinearGradient::new(
         Point::from_xy(p0.0, p0.1),
@@ -94,7 +94,7 @@ fn linear(p0: (f32, f32), p1: (f32, f32), stops: Vec<(f32, Color)>) -> Option<Pa
     })
 }
 
-fn radial(c: (f32, f32), r: f32, stops: Vec<(f32, Color)>) -> Option<Paint<'static>> {
+pub(crate) fn radial(c: (f32, f32), r: f32, stops: Vec<(f32, Color)>) -> Option<Paint<'static>> {
     let stops: Vec<GradientStop> = stops.into_iter().map(|(o, c)| GradientStop::new(o, c)).collect();
     let shader = RadialGradient::new(
         Point::from_xy(c.0, c.1),
@@ -113,7 +113,7 @@ fn radial(c: (f32, f32), r: f32, stops: Vec<(f32, Color)>) -> Option<Paint<'stat
 }
 
 /// A tiny repeatable random number (powder coat, tolex grain).
-fn hash01(i: u32) -> f32 {
+pub(crate) fn hash01(i: u32) -> f32 {
     let mut x = i.wrapping_mul(0x9E37_79B9) ^ 0x85EB_CA6B;
     x ^= x >> 15;
     x = x.wrapping_mul(0x2C1B_3C6D);
@@ -190,7 +190,6 @@ pub fn print(p: &Painter, s: &str, pos: Pos2, anchor: Align2, size: f32, color: 
 // -- logo lettering (P21) -----------------------------------------------------------------------------------------------
 
 /// A logo's style of letters, in the spirit of an era (never a real maker's mark). All OFL fonts in assets/fonts.
-#[allow(dead_code)] // (used as the families are redrawn, P21.2-P21.3)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Lettering {
     /// A flowing 50s/60s script (Damion).
@@ -211,7 +210,6 @@ pub(crate) enum Lettering {
     Print,
 }
 
-#[allow(dead_code)] // (used as the families are redrawn, P21.2-P21.3)
 impl Lettering {
     fn font(self) -> Option<(&'static str, &'static [u8])> {
         Some(match self {
@@ -250,7 +248,6 @@ impl Lettering {
 
 /// The font family for a lettering, once it's loaded (it's added to the context on first use and ready a frame
 /// later; until then None).
-#[allow(dead_code)] // (used as the families are redrawn, P21.2-P21.3)
 fn lettering_family(ctx: &egui::Context, l: Lettering) -> Option<FontFamily> {
     use egui::FontData;
     use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
@@ -272,7 +269,6 @@ fn lettering_family(ctx: &egui::Context, l: Lettering) -> Option<FontFamily> {
 
 /// A logo or name in a lettering, shrunk to fit `max_w`. `caps` upper-cases it (the script styles read best as
 /// written). Falls back to the pedal print while the font loads.
-#[allow(dead_code)] // (used as the families are redrawn, P21.2-P21.3)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lettering(
     p: &Painter,
