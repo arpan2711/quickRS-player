@@ -117,6 +117,11 @@ Easy to miss, and some of the best parts. `F1` in a song lists every key.
 * **The highway, rebuilt** through one camera, with Rocksmith-style chords.
 * **The note widget's drawer**: the chord you play named from the sound,
   every shape of it, its number in the key, and a heat trail on the neck.
+* **More than four input channels**: Settings and the guided guitar setup
+  now show every channel the input reports, in extra rows when needed.
+  Individual meters and automatic detection cover the first 16 channels;
+  higher channels can be picked by hand. See
+  [Input channels](docs/AUDIO-SETUP.md#input-channels).
 * Automatic 65 / 80 / 90% playlists, double-click to open a song paused,
   smoother lists, quicker resizing, and fixes. Full list in the
   [0.4.0 release notes](https://github.com/arpan2711/quickRS-player/releases/tag/v0.4.0).

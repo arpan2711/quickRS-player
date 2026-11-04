@@ -80,6 +80,9 @@ The Real Tone Cable works as it does in Rocksmith: plug it in and quickRS picks 
 ASIO, including RS_ASIO setups), amp modellers and microphones work too. Settings (F2) > Audio input / output
 shows what's picked. "Set up your guitar" there walks you through it step by step: the input, the output, a level
 check, what's plugged in, and calibration.
+INPUT CHANNEL offers every channel the input reports, not just the first four. Extra choices wrap into rows
+in Settings and the guided setup. Auto and individual channel meters cover the first 16 channels; higher
+channels can be picked by hand. Use the main input level meter to check them; their individual meters stay dark.
 Calibration works like Rocksmith's: guitar volume and tone knobs all the way up, hands off for 2 seconds, then
 strum as hard as you can until the bar fills. If it says your interface clipped, turn the interface's gain down
 and calibrate again. It recommends a trim and a pluck sensitivity, which you can adjust with sliders.
