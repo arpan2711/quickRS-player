@@ -683,14 +683,10 @@ impl SettingsView {
         let row_h = 44.0;
         let list_h = 2.0 * px(8.0) + rows * px(row_h) + (rows - 1.0) * px(4.0);
         let left_h = pad + hh + list_h + px(14.0) + line_h(&ctx, 13.0) + pad;
-        let right_h = pad
-            + hh
-            + px(76.0)
-            + px(14.0)
-            + 2.0 * line_h(&ctx, 13.0)
-            + px(16.0)
-            + 3.0 * line_h(&ctx, 13.0)
-            + pad;
+        let gap = px(24.0);
+        let channel_w = area.width() - snap((area.width() - gap) / 2.0) - gap - 2.0 * pad;
+        let right_h =
+            pad + hh + Self::h_channel(st, &ctx, channel_w) + px(16.0) + 3.0 * line_h(&ctx, 13.0) + pad;
         let (a, b) = self.two_cards(&p, area, left_h.max(right_h).min(area.height()));
         let yy = self.heading(
             &p,
@@ -727,7 +723,7 @@ impl SettingsView {
         let yy = self.draw_channel(ui, st, b.min.x + pad, yy, b.width() - 2.0 * pad) + px(16.0);
         super::caption_lines(
             &p,
-            "Automatic listens to every channel and picks the one your guitar is on from the first clear notes. \
+            "Automatic picks the channel your guitar is on from the first clear notes. \
              On a two-input interface, pick the input your cable is in.",
             b.min.x + pad,
             yy,
@@ -932,7 +928,7 @@ impl SettingsView {
             .y;
         }
         // the channels' meters: the one that moves is your guitar's
-        let card2_h = pad + hh + px(76.0) + px(14.0) + 2.0 * line_h(&ctx, 13.0) + pad;
+        let card2_h = 2.0 * pad + hh + Self::h_channel(st, &ctx, area.width() - 2.0 * pad);
         let c2 = Rect::from_min_size(
             pos2(area.min.x, card.max.y + px(24.0)),
             vec2(area.width(), card2_h),

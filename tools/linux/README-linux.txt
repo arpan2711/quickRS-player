@@ -67,6 +67,10 @@ quickRS takes the guitar from your desktop's sound system (PipeWire or PulseAudi
   4. Calibrate (it's offered at the first start): guitar volume and tone knobs all the way up, hands off for 2
      seconds, then strum as hard as you can until the bar fills.
 
+INPUT CHANNEL offers every channel the input reports, not just the first four. Extra choices wrap into rows
+in Settings and the guided setup. Auto and individual channel meters cover the first 16 channels; higher
+channels can be picked by hand. Use the main input level meter to check them; their individual meters stay dark.
+
 Delay between your strum and what you hear: PipeWire chooses its own buffer size. To try a smaller one while you
 play (until the next restart), in a terminal:
     pw-metadata -n settings 0 clock.force-quantum 128

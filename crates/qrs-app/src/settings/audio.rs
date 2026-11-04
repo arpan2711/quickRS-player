@@ -29,6 +29,57 @@ pub(super) struct Row {
     choice: Choice,
 }
 
+/// Prefer the running stream's channel count, then the planned device's; assume stereo before either is known.
+/// Keep at least one choice, without limiting selectable channels to the number of individual meters.
+fn input_channels(audio: &Audio) -> usize {
+    audio
+        .engine
+        .status()
+        .input
+        .as_ref()
+        .map(|i| i.channels as usize)
+        .or_else(|| {
+            audio
+                .plan()
+                .input
+                .as_ref()
+                .map(|i| i.device.input_channels as usize)
+        })
+        .unwrap_or(2)
+        .max(1)
+}
+
+/// Labels paired with AudioPrefs::channel: None for Auto, zero-based inputs, or -1 for all mixed.
+/// A mono input needs only its single channel choice.
+fn channel_options(n_ch: usize) -> Vec<(String, Option<i32>)> {
+    if n_ch == 1 {
+        return vec![("Channel 1".into(), Some(0))];
+    }
+    let mut opts = vec![("Auto".into(), None)];
+    for c in 0..n_ch {
+        opts.push((
+            if n_ch == 2 {
+                format!("Channel {}", c + 1)
+            } else {
+                format!("In {}", c + 1)
+            },
+            Some(c as i32),
+        ));
+    }
+    opts.push((if n_ch == 2 { "Both mixed" } else { "All" }.into(), Some(-1)));
+    opts
+}
+
+/// Columns per row and total track height for a nonempty choice list, balancing rows to avoid a short last row.
+/// Budget 80 points per choice for its label and meter, or use one column when the space is narrower.
+fn channel_grid(n_choices: usize, w: f32) -> (usize, f32) {
+    let max_columns = (w / px(80.0)).floor().max(1.0) as usize;
+    let rows = n_choices.div_ceil(max_columns);
+    let columns = n_choices.div_ceil(rows);
+    let height = rows as f32 * px(76.0) + (rows - 1) as f32 * px(8.0);
+    (columns, height)
+}
+
 fn kind_note(r: &RankedInput) -> &'static str {
     match r.kind {
         InputKind::RealToneCable => "Real Tone Cable",
@@ -274,8 +325,16 @@ impl SettingsView {
         2.0 * px(8.0) + n * px(row_h) + (n - 1.0).max(0.0) * px(4.0)
     }
 
-    /// The guitar's channel: a choice for each (Auto, each channel, all mixed), a meter on each, and a line on how
-    /// it's found. Returns the y under it.
+    /// Selector height including the gap and two-line hint, but not the card's heading or padding.
+    /// Shared by Settings and the guide so their cards reserve room for the same wrapped choices.
+    pub(super) fn h_channel(st: &AppState, ctx: &egui::Context, w: f32) -> f32 {
+        let n_ch = st.audio.as_ref().map(input_channels).unwrap_or(2);
+        let (_, height) = channel_grid(channel_options(n_ch).len(), w);
+        height + px(14.0) + 2.0 * line_h(ctx, 13.0)
+    }
+
+    /// The guitar's channel: Auto, every reported input and all mixed, wrapping to fit. Individual meters cover
+    /// the first 16 inputs. Returns the y under the hint.
     pub(super) fn draw_channel(&mut self, ui: &Ui, st: &AppState, x: f32, y: f32, w: f32) -> f32 {
         let Some(audio) = &st.audio else { return y };
         let p = ui.painter().clone();
@@ -284,72 +343,53 @@ impl SettingsView {
         let status = audio.engine.status();
         let meters = audio.engine.meters();
         let silent = st.audio_mode == AudioMode::Silent;
-        let n_ch = status
-            .input
-            .as_ref()
-            .map(|i| i.channels as usize)
-            .or_else(|| plan.input.as_ref().map(|i| i.device.input_channels as usize))
-            .unwrap_or(2)
-            .clamp(1, 4);
-        // (label, prefs.channel) for each choice
-        let mut opts: Vec<(String, Option<i32>)> = Vec::new();
-        if n_ch == 1 {
-            opts.push(("Channel 1".into(), Some(0)));
-        } else {
-            opts.push(("Auto".into(), None));
-            for c in 0..n_ch {
-                opts.push((
-                    if n_ch == 2 {
-                        format!("Channel {}", c + 1)
-                    } else {
-                        format!("In {}", c + 1)
-                    },
-                    Some(c as i32),
-                ));
-            }
-            opts.push((if n_ch == 2 { "Both mixed" } else { "All" }.into(), Some(-1)));
-        }
+        let n_ch = input_channels(audio);
+        let opts = channel_options(n_ch);
         let sel = if n_ch == 1 {
             0
         } else {
             opts.iter().position(|o| o.1 == prefs.channel).unwrap_or(0)
         };
-        let seg = Rect::from_min_size(pos2(x, y), vec2(w, px(64.0) + 2.0 * px(6.0)));
-        let labels: Vec<&str> = opts.iter().map(|o| o.0.as_str()).collect();
-        let mut so = Segmented::new(&labels, Some(sel));
-        so.size = if opts.len() > 3 { 13.0 } else { 14.0 };
-        so.gap = 6.0;
-        so.extra = true;
-        let (rects, clicked) = widgets::segmented(ui, seg, "set-inch", &so);
-        if let Some(i) = clicked
-            && n_ch > 1
-        {
-            self.acts.push(match opts[i].1 {
-                None => "ch:auto".into(),
-                Some(c) => format!("ch:{c}"),
-            });
-        }
+        let (columns, height) = channel_grid(opts.len(), w);
         let live = status.input.is_some() && !silent;
         let all_peak = meters.channels[..meters.channel_count.min(meters.channels.len())]
             .iter()
             .fold(0.0f32, |a, &b| a.max(b));
-        for (rr, (_, ch_)) in rects.iter().zip(&opts) {
-            let pk = if !live {
-                0.0
-            } else {
-                match ch_ {
-                    None => meters.peak,
-                    Some(-1) => all_peak,
-                    Some(c) => meters.channels.get(*c as usize).copied().unwrap_or(0.0),
-                }
-            };
-            // mr.midtop = (rr.centerx, rr.y + rr.height * 0.6)
-            let mw = 10.0 * px(5.0) + 9.0 * px(2.0).max(pixels(1.0));
-            let mr = Rect::from_min_size(
-                pos2(centre_x(*rr) - snap(mw / 2.0), snap(rr.min.y + rr.height() * 0.6)),
-                vec2(mw, px(8.0)),
-            );
-            knobs::led_meter(&p, pk, mr, 10);
+        for (row, choices) in opts.chunks(columns).enumerate() {
+            let start = row * columns;
+            let seg = Rect::from_min_size(pos2(x, y + row as f32 * (px(76.0) + px(8.0))), vec2(w, px(76.0)));
+            let labels: Vec<&str> = choices.iter().map(|o| o.0.as_str()).collect();
+            let mut so = Segmented::new(&labels, sel.checked_sub(start).filter(|&i| i < choices.len()));
+            so.size = if opts.len() > 3 { 13.0 } else { 14.0 };
+            so.gap = 6.0;
+            so.extra = true;
+            let (rects, clicked) = widgets::segmented(ui, seg, ("set-inch", row), &so);
+            if let Some(i) = clicked
+                && n_ch > 1
+            {
+                self.acts.push(match choices[i].1 {
+                    None => "ch:auto".into(),
+                    Some(c) => format!("ch:{c}"),
+                });
+            }
+            for (rr, (_, ch_)) in rects.iter().zip(choices) {
+                let pk = if !live {
+                    0.0
+                } else {
+                    match ch_ {
+                        None => meters.peak,
+                        Some(-1) => all_peak,
+                        Some(c) => meters.channels.get(*c as usize).copied().unwrap_or(0.0),
+                    }
+                };
+                let mw =
+                    (10.0 * px(5.0) + 9.0 * px(2.0).max(pixels(1.0))).min((rr.width() - px(8.0)).max(0.0));
+                let mr = Rect::from_min_size(
+                    pos2(centre_x(*rr) - snap(mw / 2.0), snap(rr.min.y + rr.height() * 0.6)),
+                    vec2(mw, px(8.0)),
+                );
+                knobs::led_meter(&p, pk, mr, 10);
+            }
         }
         let route_ch = plan.route.input.as_ref().map(|i| i.channel);
         let hint = match (route_ch, prefs.channel) {
@@ -366,7 +406,7 @@ impl SettingsView {
             (Some(-1), None) => "Listening to every channel mixed.".into(),
             (Some(c), None) => format!("Your guitar is on channel {}: found by itself.", c + 1),
         };
-        caption_lines(&p, &hint, x, seg.max.y + px(14.0), w, 13.0, 2)
+        caption_lines(&p, &hint, x, y + height + px(14.0), w, 13.0, 2)
     }
 }
 
@@ -606,7 +646,7 @@ impl SettingsView {
         y += ch + gap;
 
         // the guitar's channel, and hearing the guitar (one more switch row than the Python app's: the buffer)
-        let chan_h = 2.0 * pad + hh + px(76.0) + px(14.0) + line_h(&ctx, 13.0);
+        let chan_h = 2.0 * pad + hh + Self::h_channel(st, &ctx, colw - 2.0 * pad);
         let hear_h = 2.0 * pad + hh + px(4.0) + 4.0 * Self::h_switch("lg", true) + 3.0 * px(12.0);
         let card_h = chan_h.max(hear_h);
         let card = Rect::from_min_size(pos2(body.min.x, y), vec2(colw, card_h));
@@ -1269,5 +1309,60 @@ impl SettingsView {
         st.config
             .set("audio", serde_json::to_value(&prefs).unwrap_or_default());
         st.save_config();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_options_include_every_input() {
+        for n_ch in [4, 8, 16, 24] {
+            let opts = channel_options(n_ch);
+            assert_eq!(opts.len(), n_ch + 2);
+            assert_eq!(opts[0], ("Auto".into(), None));
+            for c in 0..n_ch {
+                assert_eq!(opts[c + 1], (format!("In {}", c + 1), Some(c as i32)));
+            }
+            assert_eq!(opts[n_ch + 1], ("All".into(), Some(-1)));
+        }
+    }
+
+    #[test]
+    fn mono_and_stereo_channel_options_are_unchanged() {
+        assert_eq!(channel_options(1), vec![("Channel 1".into(), Some(0))]);
+        assert_eq!(
+            channel_options(2),
+            vec![
+                ("Auto".into(), None),
+                ("Channel 1".into(), Some(0)),
+                ("Channel 2".into(), Some(1)),
+                ("Both mixed".into(), Some(-1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn eight_channel_selector_wraps_without_squeezing_meters() {
+        let opts = channel_options(8);
+        let (columns, height) = channel_grid(opts.len(), px(480.0));
+        assert_eq!(columns, 5);
+        assert_eq!(height, px(160.0));
+        let rows: Vec<_> = opts.chunks(columns).collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1][3], ("In 8".into(), Some(7)));
+        assert_eq!(rows[1][4], ("All".into(), Some(-1)));
+    }
+
+    #[test]
+    fn channel_grid_adapts_to_width_and_keeps_small_devices_on_one_row() {
+        for n_ch in [1, 2, 4] {
+            let opts = channel_options(n_ch);
+            assert_eq!(channel_grid(opts.len(), px(480.0)), (opts.len(), px(76.0)));
+        }
+        assert_eq!(channel_grid(10, px(800.0)), (10, px(76.0)));
+        assert_eq!(channel_grid(10, px(320.0)), (4, px(244.0)));
+        assert_eq!(channel_grid(10, 0.0), (1, px(832.0)));
     }
 }
