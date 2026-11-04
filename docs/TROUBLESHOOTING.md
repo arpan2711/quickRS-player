@@ -10,6 +10,7 @@ please [report it](#reporting-a-bug).
 * [A song is listed twice, or the wrong copy plays](#a-song-is-listed-twice-or-the-wrong-copy-plays)
 * [A feedpak plays only one instrument](#a-feedpak-plays-only-one-instrument)
 * [Notes don't count](#notes-dont-count)
+* [My interface reports more channels than I can pick](#my-interface-reports-more-channels-than-i-can-pick)
 * [Chords or strums don't count](#chords-or-strums-dont-count)
 * [A recording isn't in the folder](#a-recording-isnt-in-the-folder)
 * [Everything is late or early](#everything-is-late-or-early)
@@ -116,10 +117,26 @@ the pack sets them* puts the mix back.
 * Calibrate it: Settings > *Sound* > *INPUT LEVEL* >
   *Check level*. See [AUDIO-SETUP](AUDIO-SETUP.md#calibrating-your-input).
 * On an interface, check the channel: *INPUT CHANNEL*, or let quickRS find it
-  by playing a few clear notes.
+  by playing a few clear notes. Automatic detection covers the first 16
+  channels; pick higher channels by hand. See
+  [Input channels](AUDIO-SETUP.md#input-channels).
 * Tune up. The tuner tile uses the song's tuning, and follows a pitch shift.
 * If you shifted the pitch, quickRS expects the shifted notes. *Original
   pitch* in *Controls* > *PITCH* puts it back.
+
+
+### My interface reports more channels than I can pick
+
+*INPUT CHANNEL* in Settings > *Sound* and the guided setup
+shows every channel the input reports. Extra choices wrap into more rows:
+an eight-channel input should offer *In 1* through *In 8*. Older builds
+stopped at four choices; use a build with the multi-channel selector fix
+if you still see only *In 1* through *In 4*.
+
+The 16-channel limit is for individual meters and automatic detection,
+not manual selection. Above channel 16, select the channel by hand and
+check the main input level meter; the individual meter stays dark.
+See [Input channels](AUDIO-SETUP.md#input-channels).
 
 
 ### Chords or strums don't count
