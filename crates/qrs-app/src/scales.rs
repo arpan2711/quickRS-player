@@ -17,6 +17,7 @@ use qrs_ui::units::px;
 use qrs_ui::widgets::{ButtonStyle, button, interact};
 
 use crate::library::{LibView, View, page_rects, txt};
+use crate::licks::{self, Check, LickRun, Ln, Phase};
 use crate::listen::Listen;
 use crate::state::AppState;
 
@@ -255,6 +256,8 @@ pub enum Mode {
     Free,
     /// The box in order, up then back down.
     UpDown,
+    /// Blues licks in the box: heard on the synth, then played back (licks.rs).
+    Licks,
 }
 
 pub struct ScalesView {
@@ -284,6 +287,11 @@ pub struct ScalesView {
     rearmed: bool,
     wrong: Option<(i32, Instant)>,
     flash: Option<(usize, Instant)>,
+    /// Licks: the ones for this box, the one shown (placed on the neck) and what's listened for.
+    run: LickRun,
+    lick_list: Vec<usize>,
+    placed: Vec<(Spot, Ln)>,
+    checks: Vec<Check>,
 }
 
 impl Default for ScalesView {
@@ -310,6 +318,10 @@ impl Default for ScalesView {
             rearmed: true,
             wrong: None,
             flash: None,
+            run: LickRun::default(),
+            lick_list: Vec::new(),
+            placed: Vec::new(),
+            checks: Vec::new(),
         }
     }
 }
@@ -332,7 +344,14 @@ impl ScalesView {
         let b = c.i64("scales_box", 1);
         self.boxn = (b > 0).then(|| (b as usize - 1).min(self.kind.boxes() - 1));
         self.tuning = (c.i64("scales_tuning", 0).max(0) as usize).min(TUNINGS.len() - 1);
-        self.mode = if c.str("scales_mode", "free") == "updown" { Mode::UpDown } else { Mode::Free };
+        self.mode = match c.str("scales_mode", "free").as_str() {
+            "updown" => Mode::UpDown,
+            "licks" => Mode::Licks,
+            _ => Mode::Free,
+        };
+        self.run.bpm = (c.i64("scales_lick_bpm", 70) as f32).clamp(licks::BPM_MIN, licks::BPM_MAX);
+        self.run.lick = (c.i64("scales_lick", 0).max(0) as usize).min(licks::LICKS.len() - 1);
+        self.run.auto = c.bool("scales_lick_auto", true);
         self.degrees = c.bool("scales_degrees", false);
         self.rebuild();
     }
@@ -342,7 +361,17 @@ impl ScalesView {
         st.config.set("scales_kind", self.kind.id());
         st.config.set("scales_box", self.boxn.map(|b| b as i64 + 1).unwrap_or(0));
         st.config.set("scales_tuning", self.tuning as i64);
-        st.config.set("scales_mode", if self.mode == Mode::UpDown { "updown" } else { "free" });
+        st.config.set(
+            "scales_mode",
+            match self.mode {
+                Mode::UpDown => "updown",
+                Mode::Licks => "licks",
+                Mode::Free => "free",
+            },
+        );
+        st.config.set("scales_lick_bpm", self.run.bpm.round() as i64);
+        st.config.set("scales_lick", self.run.lick as i64);
+        st.config.set("scales_lick_auto", self.run.auto);
         st.config.set("scales_degrees", self.degrees);
         st.save_config();
     }
@@ -364,6 +393,56 @@ impl ScalesView {
         self.order = idx;
         self.order.extend(down);
         self.restart();
+        self.rebuild_lick();
+    }
+
+    /// Licks fit the minor pentatonic and blues boxes 1 and 2.
+    fn licks_fit(&self) -> bool {
+        matches!(self.kind, ScaleKind::MinorPent | ScaleKind::Blues) && self.boxn.is_none_or(|b| b < 2)
+    }
+
+    /// The licks for this box, the one shown placed on the neck.
+    fn rebuild_lick(&mut self) {
+        self.lick_list = if self.licks_fit() { licks::for_box(self.boxn, self.kind == ScaleKind::Blues) } else { Vec::new() };
+        if !self.lick_list.contains(&self.run.lick)
+            && let Some(&first) = self.lick_list.first()
+        {
+            self.run.lick = first;
+        }
+        let strings = *self.strings();
+        match self.lick_list.contains(&self.run.lick) {
+            true => {
+                self.placed = licks::place(&licks::LICKS[self.run.lick], self.root, &strings);
+                self.checks = licks::checks(&self.placed, &strings);
+            }
+            false => {
+                self.placed.clear();
+                self.checks.clear();
+            }
+        }
+    }
+
+    /// The next (or previous) lick for this box.
+    fn other_lick(&mut self, st: &mut AppState, by: i32) {
+        let Some(at) = self.lick_list.iter().position(|&l| l == self.run.lick) else { return };
+        let n = self.lick_list.len() as i32;
+        self.run.lick = self.lick_list[(at as i32 + by).rem_euclid(n) as usize];
+        self.run.stop(st.audio.as_ref().map(|a| a.engine.as_ref()));
+        self.rebuild_lick();
+        self.save(st);
+    }
+
+    fn lick_demo(&mut self, st: &AppState) {
+        if self.placed.is_empty() {
+            return;
+        }
+        match st.audio.as_ref() {
+            Some(a) => {
+                let strings = *self.strings();
+                self.run.demo(&a.engine, &self.placed, &strings);
+            }
+            None => self.run.turn(None),
+        }
     }
 
     fn restart(&mut self) {
@@ -389,7 +468,7 @@ impl ScalesView {
     fn played(&mut self, m: i32, now: Instant) {
         let same = |p: &Spot, s: &Self| s.midi(*p) == m;
         match self.mode {
-            Mode::Free => {
+            Mode::Free | Mode::Licks => {
                 let found: Vec<usize> = (0..self.targets.len()).filter(|&i| same(&self.targets[i], self)).collect();
                 if found.is_empty() {
                     self.wrong = Some((m, now));
@@ -433,8 +512,21 @@ impl ScalesView {
 
     /// Listen: a note counts once it's held steady, and again only after another note or a quiet moment.
     fn hear(&mut self, st: &AppState) -> bool {
-        let live = self.listen.update(st.audio.as_ref().map(|a| a.engine.as_ref()));
+        let engine = st.audio.as_ref().map(|a| a.engine.as_ref());
+        let live = self.listen.update(engine);
         let now = Instant::now();
+        if self.mode == Mode::Licks {
+            if self.run.update(engine, now) {
+                self.lick_demo(st);
+            }
+            if !self.run.listening() {
+                // (the synth's playing: what the mic hears is it)
+                self.heard = None;
+                self.counted = None;
+                return live || self.run.phase != Phase::Idle;
+            }
+            self.run.pitch(self.listen.midi, &self.checks, now);
+        }
         if self.listen.level_db < QUIET_DB {
             self.rearmed = true;
         }
@@ -452,11 +544,15 @@ impl ScalesView {
                 if fresh && now - since >= STEADY && self.listen.level_db >= QUIET_DB {
                     self.counted = Some(m);
                     self.rearmed = false;
-                    self.played(m, now);
+                    if self.mode == Mode::Licks {
+                        self.run.onset(m, &self.checks, now);
+                    } else {
+                        self.played(m, now);
+                    }
                 }
             }
         }
-        live
+        live || self.mode == Mode::Licks
     }
 
     pub fn handle(&mut self, lv: &mut LibView, st: &mut AppState, ev: &Event) -> bool {
@@ -476,7 +572,27 @@ impl ScalesView {
             Key::ArrowDown => self.root = (self.root - 1).rem_euclid(12),
             Key::N => self.boxn = None,
             Key::M => {
-                self.mode = if self.mode == Mode::Free { Mode::UpDown } else { Mode::Free };
+                self.mode = match self.mode {
+                    Mode::Free => Mode::UpDown,
+                    Mode::UpDown => Mode::Licks,
+                    Mode::Licks => Mode::Free,
+                };
+            }
+            Key::Space if self.mode == Mode::Licks => {
+                self.lick_demo(st);
+                return true;
+            }
+            Key::Enter if self.mode == Mode::Licks => {
+                self.run.turn(st.audio.as_ref().map(|a| a.engine.as_ref()));
+                return true;
+            }
+            Key::OpenBracket if self.mode == Mode::Licks => {
+                self.other_lick(st, -1);
+                return true;
+            }
+            Key::CloseBracket if self.mode == Mode::Licks => {
+                self.other_lick(st, 1);
+                return true;
             }
             Key::D => self.degrees = !self.degrees,
             Key::R => {
@@ -523,6 +639,20 @@ impl ScalesView {
         txt(&p, &title, pos2(main.min.x + px(130.0), hy + px(3.0)), 16.0, th.caption, 600, Align2::LEFT_CENTER, None);
 
         let mut changed = false;
+        // the mode, at the header's right
+        let mw = px(108.0);
+        let mut mx = main.max.x;
+        for (i, (m, label)) in [(Mode::Licks, "Licks"), (Mode::UpDown, "Up & down"), (Mode::Free, "Free")].iter().enumerate() {
+            mx -= mw;
+            let r = Rect::from_min_size(pos2(mx, hy - px(20.0)), vec2(mw, px(40.0)));
+            let on = self.mode == *m;
+            if button(ui, r, ("scale-mode", i), label, "", ButtonStyle::active(on)).clicked() && !on {
+                self.mode = *m;
+                self.run.stop(st.audio.as_ref().map(|a| a.engine.as_ref()));
+                changed = true;
+            }
+            mx -= px(6.0);
+        }
         let gap = px(6.0);
         let row_h = px(40.0);
         let label_w = px(64.0);
@@ -601,20 +731,20 @@ impl ScalesView {
             self.degrees = !self.degrees;
             changed = true;
         }
-        let mw = px(108.0);
-        for (i, (m, label)) in [(Mode::UpDown, "Up & down"), (Mode::Free, "Free")].iter().enumerate() {
-            rx -= mw + gap;
-            let r = Rect::from_min_size(pos2(rx, y), vec2(mw, row_h));
-            let on = self.mode == *m;
-            if button(ui, r, ("scale-mode", i), label, "", ButtonStyle::active(on)).clicked() && !on {
-                self.mode = *m;
-                changed = true;
-            }
-        }
-        y += row_h + px(22.0);
+        y += row_h + px(16.0);
 
         if changed {
+            self.run.stop(st.audio.as_ref().map(|a| a.engine.as_ref()));
             self.changed(st);
+        }
+
+        if self.mode == Mode::Licks {
+            let panel_h = px(206.0);
+            let neck = Rect::from_min_max(pos2(main.min.x, y), pos2(main.max.x, main.max.y - panel_h - px(12.0)));
+            self.draw_neck(ui, &p, neck);
+            let pr = Rect::from_min_max(pos2(main.min.x, main.max.y - panel_h), main.max);
+            self.draw_licks(ui, st, &p, pr);
+            return;
         }
 
         // the neck
@@ -685,11 +815,17 @@ impl ScalesView {
         }
         let playing = self.listen.midi.map(|m| m.round() as i32);
         let next = (self.mode == Mode::UpDown).then(|| self.order.get(self.step).copied()).flatten();
+        let lick_mode = self.mode == Mode::Licks;
         for (i, spot) in self.targets.iter().enumerate() {
             let m = strings[spot.string] + spot.fret;
             let semis = (m - self.root).rem_euclid(12);
             let col = degree_color(semis);
             let c = pos2(fx(spot.fret), sy(spot.string));
+            if lick_mode {
+                // the box under the lick: there, but quiet
+                p.circle_filled(c, r * 0.62, faded(col, 0.42));
+                continue;
+            }
             let done = self.hit.get(i).copied().unwrap_or(false);
             let fill = if done || next.is_none() { col } else { faded(col, 0.55) };
             p.circle_filled(c, r, if done { col } else { faded(fill, if self.mode == Mode::Free { 0.55 } else { 0.85 }) });
@@ -717,8 +853,12 @@ impl ScalesView {
             let ink = Color32::from_rgb(0x15, 0x15, 0x1a);
             txt(p, label, c, (r * 0.85 / px(1.0)).clamp(9.0, 14.0), ink, 800, Align2::CENTER_CENTER, None);
         }
+        if lick_mode {
+            self.draw_lick_on_neck(ui, p, &fx, &sy, r, playing);
+        }
         // a played note that's not in the box: marked where it is on the neck, in red
-        if let Some((m, at)) = self.wrong.filter(|(_, at)| now - *at < WRONG_FOR) {
+        let wrong = if lick_mode { self.run.wrong } else { self.wrong };
+        if let Some((m, at)) = wrong.filter(|(_, at)| now - *at < WRONG_FOR) {
             let a = 1.0 - (now - at).as_secs_f32() / WRONG_FOR.as_secs_f32();
             let lo = self.targets.iter().map(|s| s.fret).min().unwrap_or(0).saturating_sub(1);
             for s in 0..6 {
@@ -730,6 +870,173 @@ impl ScalesView {
             }
         }
         let _ = interact(ui, area, "scale-neck-area", Sense::hover());
+    }
+
+    /// The lick over the box: its notes numbered in order with arrows between, how each is played, the ones
+    /// played lit and the next one ringed.
+    fn draw_lick_on_neck(
+        &self,
+        ui: &Ui,
+        p: &egui::Painter,
+        fx: &dyn Fn(i32) -> f32,
+        sy: &dyn Fn(usize) -> f32,
+        r: f32,
+        playing: Option<i32>,
+    ) {
+        let th = t();
+        let strings = *self.strings();
+        let at = |i: usize| pos2(fx(self.placed[i].0.fret), sy(self.placed[i].0.string));
+        let turn = self.run.phase == Phase::Turn || self.run.phase == Phase::Done;
+        let done: Vec<usize> = if turn {
+            self.checks.iter().take(self.run.step).flat_map(|c| c.notes.iter().copied()).collect()
+        } else {
+            Vec::new()
+        };
+        let next: &[usize] = if self.run.phase == Phase::Turn {
+            self.checks.get(self.run.step).map(|c| c.notes.as_slice()).unwrap_or(&[])
+        } else {
+            &[]
+        };
+        // arrows from each step's top note to the next's
+        let tops: Vec<usize> = self.checks.iter().map(|c| *c.notes.iter().max_by_key(|&&i| strings[self.placed[i].0.string] + self.placed[i].0.fret).unwrap()).collect();
+        for w in tops.windows(2) {
+            let (a, b) = (at(w[0]), at(w[1]));
+            if (b - a).length() < r * 2.2 {
+                continue;
+            }
+            let d = (b - a).normalized();
+            let (a2, b2) = (a + d * (r + px(3.0)), b - d * (r + px(5.0)));
+            let c = faded(th.accent, 0.8);
+            p.line_segment([a2, b2], Stroke::new(px(2.5), c));
+            let side = vec2(-d.y, d.x) * px(5.0);
+            p.add(egui::Shape::convex_polygon(vec![b2 + d * px(2.0), b2 - d * px(7.0) + side, b2 - d * px(7.0) - side], c, Stroke::NONE));
+        }
+        // the notes, numbered by step (a double stop's two share one)
+        let pulse = 0.5 + 0.5 * (ui.input(|x| x.time) as f32 * 5.0).sin();
+        for (k, c) in self.checks.iter().enumerate() {
+            for &i in &c.notes {
+                let (spot, ln) = self.placed[i];
+                let m = strings[spot.string] + spot.fret;
+                let semis = (m - self.root).rem_euclid(12);
+                let pos = at(i);
+                let lit = done.contains(&i);
+                p.circle_filled(pos, r, degree_color(semis));
+                p.circle_stroke(pos, r, Stroke::new(px(2.0), if lit { Color32::WHITE } else { Color32::from_rgb(0x15, 0x15, 0x1a) }));
+                if next.contains(&i) {
+                    p.circle_stroke(pos, r + px(5.0) + pulse * px(3.0), Stroke::new(px(3.0), th.accent));
+                }
+                if playing == Some(m) {
+                    p.circle_stroke(pos, r + px(8.0), Stroke::new(px(2.0), Color32::WHITE));
+                }
+                txt(p, &(k + 1).to_string(), pos, (r * 0.85 / px(1.0)).clamp(9.0, 14.0), Color32::from_rgb(0x15, 0x15, 0x1a), 800, Align2::CENTER_CENTER, None);
+                if let Some(mark) = licks::neck_mark(&ln) {
+                    let mp = pos + vec2(r * 0.9, -r * 0.95);
+                    p.circle_filled(mp, px(9.0), th.base);
+                    txt(p, mark, mp, 11.0, th.accent, 800, Align2::CENTER_CENTER, None);
+                }
+            }
+        }
+    }
+
+    /// Licks: the tab, which lick (and its role), listen / your turn, the tempo, how it went.
+    fn draw_licks(&mut self, ui: &Ui, st: &mut AppState, p: &egui::Painter, area: Rect) {
+        let th = t();
+        if self.placed.is_empty() {
+            qrs_ui::paint::card(p, area, px(18.0), false);
+            let msg = if !matches!(self.kind, ScaleKind::MinorPent | ScaleKind::Blues) {
+                "Licks are written for the minor pentatonic and blues scales: pick Min pent or Blues."
+            } else {
+                "Licks are in boxes 1 and 2 so far: pick Box 1, Box 2 or Whole neck."
+            };
+            txt(p, msg, area.center(), 15.0, th.caption, 600, Align2::CENTER_CENTER, Some(area.width() - px(40.0)));
+            return;
+        }
+        let tab_w = (area.width() * 0.5).max(px(380.0));
+        let tab = Rect::from_min_size(area.min, vec2(tab_w, area.height()));
+        let step = matches!(self.run.phase, Phase::Turn | Phase::Done).then_some(self.run.step);
+        licks::draw_tab(p, tab, &self.placed, &self.checks, step);
+
+        let card = Rect::from_min_max(pos2(tab.max.x + px(12.0), area.min.y), area.max);
+        qrs_ui::paint::card(p, card, px(18.0), false);
+        let pad = px(16.0);
+        let x = card.min.x + pad;
+        let w = card.width() - pad * 2.0;
+        let l = &licks::LICKS[self.run.lick];
+        let at = self.lick_list.iter().position(|&i| i == self.run.lick).unwrap_or(0);
+        txt(p, &format!("LICK {} OF {} · {}{}", at + 1, self.lick_list.len(), l.role.label().to_uppercase(), if l.blues { " · BLUES" } else { "" }), pos2(x, card.min.y + px(18.0)), 11.0, th.caption, 800, Align2::LEFT_CENTER, None);
+        txt(p, l.name, pos2(x, card.min.y + px(42.0)), 19.0, th.text, 800, Align2::LEFT_CENTER, Some(w));
+        // what's happening
+        let (state, col) = match self.run.phase {
+            Phase::Idle => ("Listen to it, then play it back".to_string(), th.caption),
+            Phase::Demo => ("Listen…".to_string(), th.accent),
+            Phase::Turn => (
+                if self.run.message.is_empty() || self.run.message == "Your turn" {
+                    format!("Your turn: note {} of {}", (self.run.step + 1).min(self.checks.len()), self.checks.len())
+                } else {
+                    self.run.message.clone()
+                },
+                th.accent,
+            ),
+            Phase::Done => (self.run.message.clone(), if self.run.misses == 0 && self.run.bends_short == 0 { Color32::from_rgb(0x4c, 0xc0, 0x7d) } else { Color32::from_rgb(0xff, 0x8a, 0x6b) }),
+        };
+        txt(p, &state, pos2(x, card.min.y + px(70.0)), 14.0, col, 700, Align2::LEFT_CENTER, Some(w));
+        // buttons: prev, listen, your turn, next / tempo, repeat
+        let bh = px(40.0);
+        let gap = px(6.0);
+        let y1 = card.min.y + px(92.0);
+        let sw = px(44.0);
+        let mid = (w - sw * 2.0 - gap * 3.0) / 2.0;
+        let mut bx = x;
+        let engine = st.audio.as_ref().map(|a| a.engine.clone());
+        if button(ui, Rect::from_min_size(pos2(bx, y1), vec2(sw, bh)), "lick-prev", "‹", cap("["), ButtonStyle::default()).clicked() {
+            self.other_lick(st, -1);
+        }
+        bx += sw + gap;
+        let demo_on = self.run.phase == Phase::Demo;
+        if button(ui, Rect::from_min_size(pos2(bx, y1), vec2(mid, bh)), "lick-listen", "Listen", cap("Space"), ButtonStyle::active(demo_on).icon(Icon::Play)).clicked() {
+            self.lick_demo(st);
+        }
+        bx += mid + gap;
+        let turn_on = self.run.phase == Phase::Turn;
+        if button(ui, Rect::from_min_size(pos2(bx, y1), vec2(mid, bh)), "lick-turn", "Your turn", cap("Enter"), ButtonStyle::active(turn_on)).clicked() {
+            self.run.turn(engine.as_deref());
+        }
+        bx += mid + gap;
+        if button(ui, Rect::from_min_size(pos2(bx, y1), vec2(sw, bh)), "lick-next", "›", cap("]"), ButtonStyle::default()).clicked() {
+            self.other_lick(st, 1);
+        }
+        let y2 = y1 + bh + gap * 2.0;
+        let mut bx = x;
+        let mut save = false;
+        if button(ui, Rect::from_min_size(pos2(bx, y2), vec2(sw, bh)), "lick-slower", "−", "", ButtonStyle::default()).clicked() {
+            self.run.bpm = (self.run.bpm - 5.0).max(licks::BPM_MIN);
+            save = true;
+        }
+        bx += sw + gap;
+        let tw = px(104.0);
+        button(ui, Rect::from_min_size(pos2(bx, y2), vec2(tw, bh)), "lick-bpm", &format!("{:.0} bpm", self.run.bpm), "", ButtonStyle::value());
+        bx += tw + gap;
+        if button(ui, Rect::from_min_size(pos2(bx, y2), vec2(sw, bh)), "lick-faster", "+", "", ButtonStyle::default()).clicked() {
+            self.run.bpm = (self.run.bpm + 5.0).min(licks::BPM_MAX);
+            save = true;
+        }
+        bx += sw + gap;
+        let aw = (x + w - bx).max(px(90.0));
+        if button(ui, Rect::from_min_size(pos2(bx, y2), vec2(aw, bh)), "lick-auto", "Keep going", "", ButtonStyle::active(self.run.auto)).clicked() {
+            self.run.auto = !self.run.auto;
+            save = true;
+        }
+        if save {
+            self.save(st);
+        }
+        let y3 = card.max.y - px(16.0);
+        let input = st.audio.as_ref().is_some_and(|a| a.engine.status().input.is_some());
+        let foot = match (input, self.listen.note()) {
+            (false, _) => "no guitar input (Settings › Audio)".to_string(),
+            (true, Some((n, o, _))) if self.run.listening() => format!("hearing {n}{o} · {} clean in a row", self.run.clean_reps),
+            _ => format!("{} clean in a row · 3 clean takes step the tempo up", self.run.clean_reps),
+        };
+        txt(p, &foot, pos2(x, y3), 12.0, th.caption, 600, Align2::LEFT_CENTER, Some(w));
     }
 
     fn draw_status(&mut self, ui: &Ui, st: &AppState, p: &egui::Painter, area: Rect) {
@@ -762,7 +1069,7 @@ impl ScalesView {
         let total = self.targets.len();
         let done = self.hit.iter().filter(|&&h| h).count();
         let (head, line) = match self.mode {
-            Mode::Free => (
+            Mode::Free | Mode::Licks => (
                 "FIND EVERY NOTE".to_string(),
                 format!("{done} of {total}"),
             ),

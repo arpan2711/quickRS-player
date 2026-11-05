@@ -18,6 +18,7 @@ mod guitar_setup;
 mod home;
 mod keyfile;
 mod library;
+mod licks;
 mod listen;
 mod loading;
 #[cfg(feature = "nux")]
