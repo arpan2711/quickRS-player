@@ -3,6 +3,8 @@ quickRS
 
 [**⬇ Download for Windows**](https://github.com/arpan2711/quickRS-player/releases/latest) · [**⬇ Download for Mac** (beta)](https://github.com/arpan2711/quickRS-player/releases/latest) · [Get your songs in](docs/GETTING-SONGS.md) · [Report a bug](https://github.com/arpan2711/quickRS-player/issues) · [**☕ Support it**](https://ko-fi.com/arpanmitra)
 
+[**⬇ Download for Linux**](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.1/quickRS-0.3.0-fork.1-linux-x64.tar.gz) · [**⬇ Download for Android**](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.1/quickRS-0.3.0-fork.1-android-arm64.apk) (unofficial builds from this fork; [details](#linux-and-android-this-fork))
+
 quickRS is a practice player for the Rocksmith 2014 songs you already own. It
 reads your `.psarc` files (or feedpaks, an open one-file-per-song format),
 shows the chart as scrolling tab or as a 3D note highway, and listens to your
@@ -47,6 +49,14 @@ AI model, no upload, and the same take always gets the same answer. See
   takes an extra step. See [docs/INSTALL.md](docs/INSTALL.md#macos).
   On a Mac, the keys written Ctrl in these docs are Cmd (a take is `Cmd+R`).
 
+* **Linux (x86-64, unofficial):** [`quickRS-0.3.0-fork.1-linux-x64.tar.gz`](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.1/quickRS-0.3.0-fork.1-linux-x64.tar.gz).
+  Unpack it and run `./quickrs`. It needs glibc 2.43 or newer (Fedora 44 has it).
+* **Android (64-bit ARM, Android 8 or later, unofficial):**
+  [`quickRS-0.3.0-fork.1-android-arm64.apk`](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.1/quickRS-0.3.0-fork.1-android-arm64.apk).
+
+The Linux and Android builds are 0.3.0 with extra practice pages, from
+[this fork's release](https://github.com/VinceCurran/quickRS-player/releases/tag/v0.3.0-fork.1), and have had little testing.
+
 No songs and no Rocksmith keys are included.
 
 Have 0.1.0? It can't update itself, so download the 0.3.0 zip by hand this
@@ -61,8 +71,10 @@ Upstream quickRS ships for Windows and macOS. This fork adds a Linux build, an
 Android build, and three practice pages. All of it is on the
 [`android` branch](https://github.com/VinceCurran/quickRS-player/tree/android),
 which is based on 0.3.0. `main` follows upstream and doesn't contain this code
-yet. There are no ready-made downloads, so you build it yourself. These builds
-don't come from upstream, so please don't report their bugs there.
+yet. Download a build from the
+[0.3.0-fork.1 pre-release](https://github.com/VinceCurran/quickRS-player/releases/tag/v0.3.0-fork.1), or build it yourself as
+described below. These builds don't come from upstream, so please don't report
+their bugs there.
 
 **New practice pages** (in the sidebar, on both Linux and Android)
 
@@ -84,7 +96,8 @@ The one change Linux needs is enabling the `xdg-portal` backend of the file
 dialog crate (`rfd`), which gives GNOME and KDE file dialogs. This is on the
 branch already.
 
-You need Rust, the ALSA headers and libclang. On Fedora those come from
+The [Linux download](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.1/quickRS-0.3.0-fork.1-linux-x64.tar.gz) needs glibc 2.43 or newer, which rules out most
+distributions for now. To build it yourself, you need Rust, the ALSA headers and libclang. On Fedora those come from
 `alsa-lib-devel`, `clang-libs` and `clang-resource-filesystem`. Then:
 
 ```
@@ -110,7 +123,8 @@ Pro with Android 16. What's different from the desktop version:
 * The update notice is hidden, because the desktop updates can't update an APK.
   Don't use *Settings > Updates* here either.
 
-To build it, install Rust, `cargo-apk`, and the Android SDK platform tools,
+The [Android download](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.1/quickRS-0.3.0-fork.1-android-arm64.apk) installs with `adb install` or from a file on the
+tablet. To build it yourself, install Rust, `cargo-apk`, and the Android SDK platform tools,
 platform 35 and NDK 29:
 
 ```
@@ -160,9 +174,8 @@ adb push "My Song.psarc" /sdcard/Android/data/io.github.quickrs.player/files/son
   feedback fix hasn't been confirmed by ear, and the mic may stop responding after
   the tablet sleeps (restarting the app fixes it). Speaker sound and room noise
   can register as extra strums, so headphones help.
-* The Linux build has been installed and run on Fedora 44 from 0.3.0 with only
-  the file dialog change. The branch with the new pages compiles and passes its
-  unit tests on Linux, but hasn't been run there as a desktop app.
+* The Linux build starts on Fedora 44. The new pages compile and pass their unit
+  tests on Linux, but haven't been used there on desktop.
 
 
 ### Documentation
