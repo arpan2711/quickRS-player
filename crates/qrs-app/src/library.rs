@@ -121,6 +121,8 @@ pub enum View {
     Licks,
     /// Scales: a scale's boxes on the neck, played against (scales.rs).
     Scales,
+    /// Strumming patterns, on a chord or through a progression (strum.rs).
+    Strum,
     /// Lessons (P13.4): each lesson's notes beside its riffs.
     Lessons,
     All,
@@ -138,6 +140,7 @@ impl View {
             View::Home => "Home".into(),
             View::Licks => "Saved licks".into(),
             View::Scales => "Scales".into(),
+            View::Strum => "Strumming".into(),
             View::Lessons => "Lessons".into(),
             View::All => "All songs".into(),
             View::Fav => "Favourites".into(),
@@ -2119,6 +2122,7 @@ impl LibView {
             36.0,
         );
         item(&mut y, "Scales", Some(View::Scales), None, Some(Icon::Grid), 36.0);
+        item(&mut y, "Strumming", Some(View::Strum), None, Some(Icon::Music), 36.0);
         if cfg!(feature = "lessons") {
             item(
                 &mut y,

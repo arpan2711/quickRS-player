@@ -152,7 +152,7 @@ impl ScaleKind {
 }
 
 /// The tunings offered: (name, open strings low to high as MIDI).
-const TUNINGS: [(&str, [i32; 6]); 4] = [
+pub const TUNINGS: [(&str, [i32; 6]); 4] = [
     ("E Standard", [40, 45, 50, 55, 59, 64]),
     ("Eb Standard", [39, 44, 49, 54, 58, 63]),
     ("D Standard", [38, 43, 48, 53, 57, 62]),

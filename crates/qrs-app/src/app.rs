@@ -93,6 +93,7 @@ pub struct QuickRs {
     pub lib: LibView,
     pub home: HomeView,
     pub scales: crate::scales::ScalesView,
+    pub strum: crate::strum::StrumView,
     pub loading: Option<Loading>,
     pub player: Option<PlayerView>,
     /// The settings panel, floating over the page it was opened from.
@@ -171,6 +172,7 @@ impl QuickRs {
             lib: LibView::default(),
             home: HomeView::default(),
             scales: Default::default(),
+            strum: Default::default(),
             loading: None,
             player: None,
             settings: None,
@@ -580,11 +582,18 @@ impl QuickRs {
                 self.home.handle(&mut self.lib, &mut self.state, ev);
             } else if at_scales {
                 self.scales.handle(&mut self.lib, &mut self.state, ev);
+            } else if self.lib.view == View::Strum && !self.lib.has_dialog() {
+                self.strum.handle(&mut self.lib, &mut self.state, ev);
             } else {
                 self.lib.handle(&mut self.state, area, ev);
             }
         }
-        if self.lib.view == View::Scales && !self.lib.has_dialog() {
+        if self.lib.view == View::Strum && !self.lib.has_dialog() {
+            self.strum.ui(ui, &mut self.lib, &mut self.state, area);
+            if self.lib.view != View::Strum {
+                ctx.request_repaint(); // the sidebar went somewhere else: draw it next frame
+            }
+        } else if self.lib.view == View::Scales && !self.lib.has_dialog() {
             self.scales.ui(ui, &mut self.lib, &mut self.state, area);
             if self.lib.view != View::Scales {
                 ctx.request_repaint(); // the sidebar went somewhere else: draw it next frame

@@ -37,6 +37,7 @@ mod setup;
 mod shotclock;
 mod shots;
 mod state;
+mod strum;
 mod tones;
 mod transport;
 mod update;
