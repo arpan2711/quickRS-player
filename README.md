@@ -55,6 +55,116 @@ carry over. From 0.3.0 on, quickRS updates itself. See
 [UPDATING](docs/UPDATING.md#from-010).
 
 
+### Linux and Android (this fork)
+
+Upstream quickRS ships for Windows and macOS. This fork adds a Linux build, an
+Android build, and three practice pages. All of it is on the
+[`android` branch](https://github.com/VinceCurran/quickRS-player/tree/android),
+which is based on 0.3.0. `main` follows upstream and doesn't contain this code
+yet. There are no ready-made downloads, so you build it yourself. These builds
+don't come from upstream, so please don't report their bugs there.
+
+**New practice pages** (in the sidebar, on both Linux and Android)
+
+* **Scales:** a scale's boxes on the neck, in any key and tuning. quickRS listens
+  and marks the notes you play, in *Free* or *Up & down* mode.
+* **Licks** (a mode of Scales): 20 original blues licks in boxes 1 and 2, in any
+  key and tuning. It plays each lick, then you play it back, with bends checked
+  and tempo steps.
+* **Strumming:** 32 strumming patterns, on one chord or through a progression
+  (I IV V, I V vi IV, vi IV I V, I vi IV V, ii V I, 12-bar blues, i VI III VII,
+  i iv v). It shows the chord boxes, a moving line, each strum's timing in
+  milliseconds, and clean bars. Click and chord backing are optional. It can't
+  hear whether a strum went up or down, so the arrows are only a guide, and only
+  the chords of down strums are checked.
+
+**Linux**
+
+The one change Linux needs is enabling the `xdg-portal` backend of the file
+dialog crate (`rfd`), which gives GNOME and KDE file dialogs. This is on the
+branch already.
+
+You need Rust, the ALSA headers and libclang. On Fedora those come from
+`alsa-lib-devel`, `clang-libs` and `clang-resource-filesystem`. Then:
+
+```
+git clone -b android https://github.com/VinceCurran/quickRS-player.git
+cd quickRS-player
+cargo build --profile fast
+```
+
+The programs are in `target/fast`: `quickrs`, `quickrs-convert` and
+`quickrs-cli`. Keys go in `~/.local/share/quickrs/keys.json`.
+
+**Android**
+
+Built for 64-bit ARM (Android 8 or later, landscape) and run on a Redmi Pad 2
+Pro with Android 16. What's different from the desktop version:
+
+* It's a native app packaged with `cargo-apk`, and asks for the microphone at
+  first start.
+* The built-in mic is treated as a microphone, so it isn't played back through
+  the speakers. That avoids feedback.
+* There are no file dialogs and no floating note widget. Songs are read from the
+  app's own folder.
+* The update notice is hidden, because the desktop updates can't update an APK.
+  Don't use *Settings > Updates* here either.
+
+To build it, install Rust, `cargo-apk`, and the Android SDK platform tools,
+platform 35 and NDK 29:
+
+```
+rustup target add aarch64-linux-android
+cargo install cargo-apk
+sdkmanager "platform-tools" "platforms;android-35" "ndk;29.0.14206865"
+```
+
+Release builds need your own signing key (make one with `keytool -genkeypair`).
+Keep it safe, because updates must be signed with the same key. Then set up the
+environment and build, on Linux, with the ANDROID_HOME path adjusted to yours:
+
+```
+export ANDROID_HOME=$HOME/Android/Sdk
+export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/29.0.14206865
+TC=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin
+export PATH=$TC:$ANDROID_HOME/platform-tools:$PATH
+export CC_aarch64_linux_android=$TC/aarch64-linux-android26-clang
+export CXX_aarch64_linux_android=$TC/aarch64-linux-android26-clang++
+export AR_aarch64_linux_android=$TC/llvm-ar
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TC/aarch64-linux-android26-clang
+export CARGO_APK_RELEASE_KEYSTORE=/path/to/your.keystore
+export CARGO_APK_RELEASE_KEYSTORE_PASS=your-password
+
+cargo apk build -p qrs-app --lib --release
+adb install -r target/release/apk/quickRS.apk
+```
+
+Xiaomi tablets also need *Install via USB* turned on in Developer options. Start
+the app once so its folder exists, then copy your keys and songs over (no keys or
+songs are included):
+
+```
+adb push keys.json /sdcard/Android/data/io.github.quickrs.player/files/keys.json
+adb push "My Song.psarc" /sdcard/Android/data/io.github.quickrs.player/files/songs/
+```
+
+**What has and hasn't been tested**
+
+* On the tablet, the Strumming page's layout, click and timing were checked using
+  the app's own click heard through the mic. Scales and Licks have been opened and
+  run there too.
+* Not yet tried with a real guitar: Strumming's chord check, and listening on
+  Scales and Licks. Timing against a real guitar may need the ‹ › adjustment on
+  the Strumming page.
+* Only the built-in mic has been used as an input on Android, not USB. The
+  feedback fix hasn't been confirmed by ear, and the mic may stop responding after
+  the tablet sleeps (restarting the app fixes it). Speaker sound and room noise
+  can register as extra strums, so headphones help.
+* The Linux build has been installed and run on Fedora 44 from 0.3.0 with only
+  the file dialog change. The branch with the new pages compiles and passes its
+  unit tests on Linux, but hasn't been run there as a desktop app.
+
+
 ### Documentation
 
 * [Installing](docs/INSTALL.md), including the Windows SmartScreen and macOS
