@@ -215,6 +215,10 @@ impl NoteWidget {
     /// Every frame: listen (20 times a second) and show the window while it's on. `arr` is the part open in the
     /// player, whose tuning the scale box's neck takes.
     pub fn ui(&mut self, ctx: &egui::Context, st: &mut AppState, arr: Option<&Arrangement>) {
+        // Android has one window: a second viewport would be drawn over the app, so there's no floating widget
+        if cfg!(target_os = "android") {
+            return;
+        }
         let on = st.config.bool("note_widget", true);
         if on && !self.was_on {
             self.closed = false; // switched on (again) in Settings

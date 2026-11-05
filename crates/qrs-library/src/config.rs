@@ -166,10 +166,21 @@ impl Config {
 
     /// The folders the user added (config.json's library_dirs, relative ones made whole; without the defaults).
     pub fn added_dirs(&self) -> Vec<PathBuf> {
-        self.paths("library_dirs")
+        #[allow(unused_mut)]
+        let mut dirs: Vec<PathBuf> = self
+            .paths("library_dirs")
             .iter()
             .map(|d| self.resolve(d))
-            .collect()
+            .collect();
+        // Android: the app's own songs folder (next to config.json) is always read; there's no folder picker
+        #[cfg(target_os = "android")]
+        {
+            let own = self.resolve(Path::new("./songs"));
+            if !dirs.iter().any(|d| same_dir(d, &own)) {
+                dirs.push(own);
+            }
+        }
+        dirs
     }
 
     /// Folders taken out of the library that would otherwise be found by themselves (`library_dirs_removed`).
