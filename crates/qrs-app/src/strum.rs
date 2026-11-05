@@ -28,6 +28,9 @@ const STD: [i32; 6] = [40, 45, 50, 55, 59, 64];
 const GREEN: Color32 = Color32::from_rgb(0x4c, 0xc0, 0x7d);
 const AMBER: Color32 = Color32::from_rgb(0xf0, 0xb0, 0x4a);
 const RED: Color32 = Color32::from_rgb(0xff, 0x5f, 0x5f);
+const BLUE: Color32 = Color32::from_rgb(0x5c, 0xb8, 0xff);
+/// The room left of the first arrow (in eighths of the bar): the line is seen coming.
+const LEAD_EIGHTHS: f32 = 1.5;
 
 /// The 32 patterns: D down, U up, . nothing, on 1 & 2 & 3 & 4 &.
 pub const PATTERNS: [&str; 32] = [
@@ -179,8 +182,62 @@ pub struct Hit {
 pub struct BarScore {
     pub bar: i64,
     pub slots: [Option<Hit>; 8],
-    /// Strums where the pattern has none: where in the bar (eighths).
+    /// Strums where the pattern has none: where in the bar (eighths; a little below 0 just before its first).
     pub extras: Vec<f32>,
+}
+
+/// How the latest strum was heard.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Heard {
+    /// It filled a slot: milliseconds from it, + late, - early.
+    Counted(f32),
+    /// By a slot of the pattern, but too far from it to count.
+    TooFar(f32),
+    /// Where the pattern has no strum (or a second one on a slot).
+    Extra,
+}
+
+impl Heard {
+    /// The words for it.
+    pub fn text(self) -> String {
+        match self {
+            Heard::Counted(ms) if ms.abs() <= TIGHT_MS => format!("On time ({ms:+.0} ms)"),
+            Heard::Counted(ms) => format!("{} ms {}", ms.abs().round(), late_or_early(ms)),
+            Heard::TooFar(ms) => format!("{} ms {}: too far off to count", ms.abs().round(), late_or_early(ms)),
+            Heard::Extra => "Extra strum".to_string(),
+        }
+    }
+
+    fn colour(self) -> Color32 {
+        match self {
+            Heard::Counted(ms) => timing_colour(ms),
+            Heard::TooFar(_) | Heard::Extra => RED,
+        }
+    }
+}
+
+fn late_or_early(ms: f32) -> &'static str {
+    if ms > 0.0 { "late" } else { "early" }
+}
+
+/// Green on time, amber late, blue early.
+fn timing_colour(ms: f32) -> Color32 {
+    if ms.abs() <= TIGHT_MS {
+        GREEN
+    } else if ms > 0.0 {
+        AMBER
+    } else {
+        BLUE
+    }
+}
+
+/// The short note under a slot.
+fn slot_note(ms: f32) -> String {
+    if ms.abs() <= TIGHT_MS {
+        "on time".to_string()
+    } else {
+        format!("{:.0} {}", ms.abs(), late_or_early(ms))
+    }
 }
 
 /// The score of a run: pure, so it's tested without an engine.
@@ -198,6 +255,8 @@ pub struct StrumScore {
     pub chords_judged: u32,
     pub sum_ms: f64,
     pub tight: u32,
+    /// The latest strum.
+    pub last: Option<Heard>,
 }
 
 /// Within this it's on the beat (ms).
@@ -236,6 +295,7 @@ impl StrumScore {
         let b = self.bar_mut(bar);
         if pattern[slot] != b'.' && b.slots[slot].is_none() && ms.abs() <= window {
             b.slots[slot] = Some(Hit { ms, chord: None });
+            self.last = Some(Heard::Counted(ms));
             self.hits += 1;
             self.sum_ms += ms as f64;
             if ms.abs() <= TIGHT_MS {
@@ -247,7 +307,8 @@ impl StrumScore {
         if b.slots[slot].is_some_and(|h| (ms - h.ms).abs() < 60.0) {
             return None;
         }
-        b.extras.push(eighth.rem_euclid(8.0) as f32);
+        b.extras.push((eighth - (bar * 8) as f64) as f32);
+        self.last = Some(if pattern[slot] != b'.' && b.slots[slot].is_none() { Heard::TooFar(ms) } else { Heard::Extra });
         self.extra += 1;
         None
     }
@@ -775,12 +836,23 @@ impl StrumView {
         qrs_ui::paint::card(p, area, px(18.0), false);
         let pattern = strokes(self.pattern);
         let inner = area.shrink2(vec2(px(20.0), px(14.0)));
-        let col = inner.width() / 8.0;
-        let x = |e: f32| inner.min.x + col * (e + 0.5);
-        let room = inner.height() - px(94.0);
+        let col = inner.width() / (8.0 + LEAD_EIGHTHS);
+        let x = |e: f32| inner.min.x + col * (e + LEAD_EIGHTHS);
+        let eighth_ms = (30_000.0 / self.bpm) as f32;
+        let room = inner.height() - px(112.0);
         let arrow_h = room.clamp(px(40.0), px(240.0));
         let top = inner.min.y + px(26.0) + (room - arrow_h).max(0.0) / 2.0;
         txt(&p, &format!("PATTERN {}", self.pattern + 1), pos2(inner.min.x, inner.min.y + px(8.0)), 11.0, th.caption, 800, Align2::LEFT_CENTER, None);
+        if let Some(h) = self.score.last {
+            txt(p, &h.text(), pos2(inner.max.x, inner.min.y + px(8.0)), 18.0, h.colour(), 800, Align2::RIGHT_CENTER, None);
+        }
+        // where a strum was heard: a pin above the bar and a line down it
+        let pin = |e: f32, c: Color32| {
+            let hx = x(e);
+            let (w, y) = (px(7.0), top - px(4.0));
+            p.line_segment([pos2(hx, y), pos2(hx, top + arrow_h)], Stroke::new(px(2.0), c.gamma_multiply(0.75)));
+            p.add(egui::Shape::convex_polygon(vec![pos2(hx, y), pos2(hx + w, y - w * 1.4), pos2(hx - w, y - w * 1.4)], c, Stroke::NONE));
+        };
         let bar = beat.map(|b| (b / 4.0).floor() as i64);
         let shown = bar.and_then(|b| self.score.bar(b));
         for s in 0..8 {
@@ -788,9 +860,7 @@ impl StrumView {
             let result = shown.and_then(|b| b.slots[s]);
             let past = bar.is_some_and(|br| br >= 0) && beat.is_some_and(|b| b.rem_euclid(4.0) * 2.0 > s as f64 + 0.5);
             let ink = match (pattern[s] != b'.', result) {
-                (_, Some(h)) if h.chord == Some(false) => AMBER,
-                (_, Some(h)) if h.ms.abs() > TIGHT_MS => AMBER,
-                (_, Some(_)) => GREEN,
+                (_, Some(h)) => timing_colour(h.ms),
                 (true, None) if past => RED,
                 _ if pattern[s] == b'D' => th.text,
                 _ => th.caption,
@@ -805,11 +875,11 @@ impl StrumView {
             let on_beat = s % 2 == 0;
             txt(p, COUNTS[s], pos2(cx, top + arrow_h + px(18.0)), if on_beat { 17.0 } else { 13.0 }, if on_beat { th.text } else { th.caption }, 800, Align2::CENTER_CENTER, None);
             if let Some(h) = result {
-                let note = match h.chord {
-                    Some(false) => "chord?".to_string(),
-                    _ => format!("{:+.0}", h.ms),
-                };
-                txt(p, &note, pos2(cx, top + arrow_h + px(42.0)), 14.0, ink, 700, Align2::CENTER_CENTER, None);
+                txt(p, &slot_note(h.ms), pos2(cx, top + arrow_h + px(42.0)), 14.0, ink, 700, Align2::CENTER_CENTER, None);
+                if h.chord == Some(false) {
+                    txt(p, "chord?", pos2(cx, top + arrow_h + px(62.0)), 13.0, RED, 700, Align2::CENTER_CENTER, None);
+                }
+                pin(s as f32 + h.ms / eighth_ms, ink);
             }
         }
         if let Some(b) = shown {
@@ -820,10 +890,21 @@ impl StrumView {
                 p.line_segment([c - vec2(d, -d), c + vec2(d, -d)], Stroke::new(px(3.0), RED));
             }
         }
-        // the moving line (eighths are centred in their columns)
-        if let Some(b) = beat.filter(|b| *b >= 0.0) {
-            let lx = x((b.rem_euclid(4.0) * 2.0) as f32);
-            p.line_segment([pos2(lx, top - px(8.0)), pos2(lx, top + arrow_h + px(30.0))], Stroke::new(px(3.0), th.accent));
+        // the moving line, and the next bar's coming in over the room before the first arrow
+        if let Some(b) = beat {
+            let e = (b.rem_euclid(4.0) * 2.0) as f32;
+            let span = [top - px(8.0), top + arrow_h + px(30.0)];
+            if b >= 0.0 {
+                p.line_segment([pos2(x(e), span[0]), pos2(x(e), span[1])], Stroke::new(px(3.0), th.accent));
+            }
+            if e >= 8.0 - LEAD_EIGHTHS {
+                let lx = x(e - 8.0);
+                p.line_segment([pos2(lx, span[0]), pos2(lx, span[1])], Stroke::new(px(2.0), th.accent.gamma_multiply(0.6)));
+                // the next bar's first strum, heard before its beat
+                if let Some(h) = bar.and_then(|br| self.score.bar(br + 1)).and_then(|n| n.slots[0]) {
+                    pin(h.ms / eighth_ms, timing_colour(h.ms));
+                }
+            }
         }
     }
 
@@ -1102,6 +1183,41 @@ mod tests {
         }
         s.close(8.6, &pat);
         assert_eq!((s.extra, s.bars_clean), (1, 0));
+    }
+
+    #[test]
+    fn the_latest_strum_says_how_far_off_it_was() {
+        let pat = strokes(0); // the four beats, at 500 ms an eighth
+        let mut s = StrumScore::default();
+        s.strum(0.03, 60.0, &pat);
+        assert_eq!(s.last.unwrap().text(), "On time (+30 ms)");
+        s.strum(1.05, 60.0, &pat);
+        assert_eq!(s.last.unwrap().text(), "50 ms late");
+        s.strum(1.92, 60.0, &pat);
+        assert_eq!(s.last.unwrap().text(), "80 ms early");
+        s.strum(3.15, 60.0, &pat);
+        assert_eq!(s.last.unwrap().text(), "150 ms late: too far off to count");
+        s.strum(0.5, 60.0, &pat);
+        assert_eq!(s.last.unwrap().text(), "Extra strum");
+    }
+
+    #[test]
+    fn a_stray_strum_just_before_a_bar_is_placed_before_its_first_beat() {
+        let pat = strokes(0);
+        let mut s = StrumScore::default();
+        s.strum(3.9, 60.0, &pat); // 200 ms before bar 1's first beat: too far to count
+        let b = s.bar(1).unwrap();
+        assert!((b.extras[0] + 0.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_notes_tell_late_from_early() {
+        assert_eq!(slot_note(20.0), "on time");
+        assert_eq!(slot_note(50.4), "50 late");
+        assert_eq!(slot_note(-50.4), "50 early");
+        assert_eq!(timing_colour(50.0), AMBER);
+        assert_eq!(timing_colour(-50.0), BLUE);
+        assert_eq!(timing_colour(-20.0), GREEN);
     }
 
     #[test]
