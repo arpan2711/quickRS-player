@@ -3,7 +3,7 @@ quickRS
 
 [**⬇ Download for Windows**](https://github.com/arpan2711/quickRS-player/releases/latest) · [**⬇ Download for Mac** (beta)](https://github.com/arpan2711/quickRS-player/releases/latest) · [Get your songs in](docs/GETTING-SONGS.md) · [Report a bug](https://github.com/arpan2711/quickRS-player/issues) · [**☕ Support it**](https://ko-fi.com/arpanmitra)
 
-[**⬇ Download for Linux**](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.1/quickRS-0.3.0-fork.1-linux-x64.tar.gz) · [**⬇ Download for Android**](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.1/quickRS-0.3.0-fork.1-android-arm64.apk) (unofficial builds from this fork; [details](#linux-and-android-this-fork))
+[**⬇ Download for Linux**](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.2/quickRS-0.3.0-fork.2-linux-x64.tar.gz) · [**⬇ Download for Android**](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.2/quickRS-0.3.0-fork.2-android-arm64.apk) (unofficial builds from this fork; [details](#linux-and-android-this-fork))
 
 quickRS is a practice player for the Rocksmith 2014 songs you already own. It
 reads your `.psarc` files (or feedpaks, an open one-file-per-song format),
@@ -49,13 +49,13 @@ AI model, no upload, and the same take always gets the same answer. See
   takes an extra step. See [docs/INSTALL.md](docs/INSTALL.md#macos).
   On a Mac, the keys written Ctrl in these docs are Cmd (a take is `Cmd+R`).
 
-* **Linux (x86-64, unofficial):** [`quickRS-0.3.0-fork.1-linux-x64.tar.gz`](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.1/quickRS-0.3.0-fork.1-linux-x64.tar.gz).
+* **Linux (x86-64, unofficial):** [`quickRS-0.3.0-fork.2-linux-x64.tar.gz`](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.2/quickRS-0.3.0-fork.2-linux-x64.tar.gz).
   Unpack it and run `./quickrs`. It needs glibc 2.43 or newer (Fedora 44 has it).
 * **Android (64-bit ARM, Android 8 or later, unofficial):**
-  [`quickRS-0.3.0-fork.1-android-arm64.apk`](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.1/quickRS-0.3.0-fork.1-android-arm64.apk).
+  [`quickRS-0.3.0-fork.2-android-arm64.apk`](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.2/quickRS-0.3.0-fork.2-android-arm64.apk).
 
 The Linux and Android builds are 0.3.0 with extra practice pages, from
-[this fork's release](https://github.com/VinceCurran/quickRS-player/releases/tag/v0.3.0-fork.1), and have had little testing.
+[this fork's release](https://github.com/VinceCurran/quickRS-player/releases/tag/v0.3.0-fork.2), and have had little testing.
 
 No songs and no Rocksmith keys are included.
 
@@ -72,7 +72,7 @@ Android build, and three practice pages. All of it is on the
 [`android` branch](https://github.com/VinceCurran/quickRS-player/tree/android),
 which is based on 0.3.0. `main` follows upstream and doesn't contain this code
 yet. Download a build from the
-[0.3.0-fork.1 pre-release](https://github.com/VinceCurran/quickRS-player/releases/tag/v0.3.0-fork.1), or build it yourself as
+[0.3.0-fork.2 pre-release](https://github.com/VinceCurran/quickRS-player/releases/tag/v0.3.0-fork.2), or build it yourself as
 described below. These builds don't come from upstream, so please don't report
 their bugs there.
 
@@ -85,8 +85,9 @@ their bugs there.
   and tempo steps.
 * **Strumming:** 32 strumming patterns, on one chord or through a progression
   (I IV V, I V vi IV, vi IV I V, I vi IV V, ii V I, 12-bar blues, i VI III VII,
-  i iv v). It shows the chord boxes, a moving line, each strum's timing in
-  milliseconds, and clean bars. Click and chord backing are optional. It can't
+  i iv v). It shows the chord boxes, a moving line with room to see beat 1 coming,
+  a pin where each strum was heard (green on time, amber late, blue early), how
+  many milliseconds off it was, and clean bars. Click and chord backing are optional. It can't
   hear whether a strum went up or down, so the arrows are only a guide, and only
   the chords of down strums are checked.
 
@@ -96,7 +97,7 @@ The one change Linux needs is enabling the `xdg-portal` backend of the file
 dialog crate (`rfd`), which gives GNOME and KDE file dialogs. This is on the
 branch already.
 
-The [Linux download](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.1/quickRS-0.3.0-fork.1-linux-x64.tar.gz) needs glibc 2.43 or newer, which rules out most
+The [Linux download](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.2/quickRS-0.3.0-fork.2-linux-x64.tar.gz) needs glibc 2.43 or newer, which rules out most
 distributions for now. To build it yourself, you need Rust, the ALSA headers and libclang. On Fedora those come from
 `alsa-lib-devel`, `clang-libs` and `clang-resource-filesystem`. Then:
 
@@ -123,7 +124,7 @@ Pro with Android 16. What's different from the desktop version:
 * The update notice is hidden, because the desktop updates can't update an APK.
   Don't use *Settings > Updates* here either.
 
-The [Android download](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.1/quickRS-0.3.0-fork.1-android-arm64.apk) installs with `adb install` or from a file on the
+The [Android download](https://github.com/VinceCurran/quickRS-player/releases/download/v0.3.0-fork.2/quickRS-0.3.0-fork.2-android-arm64.apk) installs with `adb install` or from a file on the
 tablet. To build it yourself, install Rust, `cargo-apk`, and the Android SDK platform tools,
 platform 35 and NDK 29:
 
@@ -167,13 +168,15 @@ adb push "My Song.psarc" /sdcard/Android/data/io.github.quickrs.player/files/son
 * On the tablet, the Strumming page's layout, click and timing were checked using
   the app's own click heard through the mic. Scales and Licks have been opened and
   run there too.
-* Not yet tried with a real guitar: Strumming's chord check, and listening on
-  Scales and Licks. Timing against a real guitar may need the ‹ › adjustment on
+* Not yet tried with a real guitar: Strumming's timing and chord check, and
+  listening on Scales and Licks. The chord check may be too lenient: in tests it
+  sometimes passed a plain click, so treat it as a rough guide. Timing against a real guitar may need the ‹ › adjustment on
   the Strumming page.
 * Only the built-in mic has been used as an input on Android, not USB. The
   feedback fix hasn't been confirmed by ear, and the mic may stop responding after
   the tablet sleeps (restarting the app fixes it). Speaker sound and room noise
-  can register as extra strums, so headphones help.
+  register as extra strums, and Backing through the speakers causes a lot of them,
+  so use headphones or turn Backing and Click off.
 * The Linux build starts on Fedora 44. The new pages compile and pass their unit
   tests on Linux, but haven't been used there on desktop.
 
