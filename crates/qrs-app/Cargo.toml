@@ -29,8 +29,6 @@ raw-window-handle.workspace = true
 chrono.workspace = true
 tiny-skia.workspace = true
 serde_json.workspace = true
-# the folder and keys-file pickers (Settings > Library, the welcome)
-rfd = { version = "0.15", default-features = false }
 ureq.workspace = true
 sha2.workspace = true
 zip.workspace = true
@@ -43,6 +41,24 @@ windows = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Dw
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1.34"
 
+[lib]
+name = "qrs_app"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = { workspace = true, features = ["accesskit", "web_screen_reader"] }
+# (eframe's own default: winit with every desktop backend)
+winit = "0.30"
+# the folder and keys-file pickers (Settings > Library, the welcome)
+rfd = { version = "0.15", default-features = false }
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { workspace = true, features = ["android-native-activity"] }
+android_logger = "0.15"
+winit = { version = "0.30", default-features = false, features = ["android-native-activity", "rwh_06"] }
+log.workspace = true
+
 [[bin]]
 name = "quickrs"
 path = "src/main.rs"
@@ -50,3 +66,32 @@ path = "src/main.rs"
 [target.'cfg(target_os = "linux")'.dependencies]
 # file dialogs through the desktop portal (GNOME, KDE)
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+
+# the Android package (cargo apk build -p qrs-app --lib)
+[package.metadata.android]
+package = "io.github.quickrs.player"
+apk_name = "quickRS"
+build_targets = ["aarch64-linux-android"]
+resources = "../../android/res"
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 35
+
+[package.metadata.android.application]
+label = "quickRS"
+icon = "@mipmap/ic_launcher"
+
+[package.metadata.android.application.activity]
+orientation = "sensorLandscape"
+config_changes = "orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.RECORD_AUDIO"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.usb.host"
+required = false

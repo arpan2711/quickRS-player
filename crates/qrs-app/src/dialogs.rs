@@ -3,6 +3,21 @@
 
 use std::path::{Path, PathBuf};
 
+// Android has no rfd: the pickers find nothing (songs and keys go in the app's files folder, see android.rs)
+#[cfg(target_os = "android")]
+mod rfd {
+    use std::path::{Path, PathBuf};
+    pub struct FileDialog;
+    impl FileDialog {
+        pub fn new() -> Self { FileDialog }
+        pub fn set_title(self, _: &str) -> Self { self }
+        pub fn set_directory(self, _: &Path) -> Self { self }
+        pub fn add_filter(self, _: &str, _: &[&str]) -> Self { self }
+        pub fn pick_folder(self) -> Option<PathBuf> { None }
+        pub fn pick_file(self) -> Option<PathBuf> { None }
+    }
+}
+
 /// A folder of songs, starting at `from` when it's a folder.
 pub fn pick_folder(from: Option<&Path>) -> Option<PathBuf> {
     let mut d = rfd::FileDialog::new().set_title("Add a folder of songs");

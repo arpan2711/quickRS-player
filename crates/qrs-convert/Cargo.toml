@@ -27,3 +27,10 @@ winresource = "0.1.34"
 [target.'cfg(target_os = "linux")'.dependencies]
 # file dialogs through the desktop portal (GNOME, KDE)
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies.eframe]
+workspace = true
+features = ["accesskit", "web_screen_reader"]
+
+[target.'cfg(not(target_os = "android"))'.dependencies.winit]
+version = "0.30"
