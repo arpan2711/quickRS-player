@@ -4,6 +4,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use eframe::egui;
@@ -329,6 +330,10 @@ pub struct StrumView {
     backing: bool,
     input_offset: f64,
     running: bool,
+    /// Started, but the audio thread hasn't restarted the jam's clock yet: its beat is still the last run's.
+    awaiting_clock: bool,
+    /// When the page last drew (wall ns): see `watch`.
+    last_frame: Option<Arc<AtomicU64>>,
     saved: Option<Saved>,
     score: StrumScore,
     pending: Vec<Pending>,
@@ -353,6 +358,8 @@ impl Default for StrumView {
             backing: false,
             input_offset: 0.0,
             running: false,
+            awaiting_clock: false,
+            last_frame: None,
             saved: None,
             score: StrumScore::default(),
             pending: Vec::new(),
@@ -360,6 +367,23 @@ impl Default for StrumView {
             last_chord: None,
         }
     }
+}
+
+/// The audio goes on while the app is in the background, but the page doesn't draw: stop the click once it hasn't
+/// for a moment. The thread ends with the run (when the view lets go of the time it shares with it).
+fn watch(e: Arc<Engine>) -> Arc<AtomicU64> {
+    let last = Arc::new(AtomicU64::new(qrs_audio::clock::now_ns()));
+    let seen = last.clone();
+    std::thread::spawn(move || {
+        while Arc::strong_count(&seen) > 1 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if qrs_audio::clock::now_ns().saturating_sub(seen.load(Ordering::Relaxed)) > 1_500_000_000 {
+                e.jam_stop();
+                return;
+            }
+        }
+    });
+    last
 }
 
 fn cap(k: &'static str) -> &'static str {
@@ -459,11 +483,14 @@ impl StrumView {
         let _ = e.take_onsets();
         e.jam_play(1);
         self.running = true;
+        self.awaiting_clock = true;
+        self.last_frame = Some(watch(e));
     }
 
     /// Stop, and give the jam back as it was.
     pub fn stop(&mut self, st: &AppState) {
         self.running = false;
+        self.last_frame = None;
         self.pending.clear();
         let Some(e) = Self::engine(st) else { return };
         e.jam_stop();
@@ -494,6 +521,22 @@ impl StrumView {
     fn listen(&mut self, st: &AppState) {
         let Some(e) = Self::engine(st) else { return };
         let jam = e.jam();
+        if self.awaiting_clock {
+            // the count-in is the first thing the restarted clock shows
+            if !(jam.running && jam.beat < 0.0) {
+                let _ = e.take_onsets();
+                return;
+            }
+            self.awaiting_clock = false;
+        }
+        if let Some(f) = &self.last_frame {
+            f.store(qrs_audio::clock::now_ns(), Ordering::Relaxed);
+        }
+        // `watch` stopped it while the app was away: nothing played then is to be scored
+        if !jam.running {
+            self.stop(st);
+            return;
+        }
         let bpm = self.bpm;
         let beats_per_s = bpm / 60.0;
         let now = qrs_audio::clock::now_ns();
@@ -734,8 +777,9 @@ impl StrumView {
         let inner = area.shrink2(vec2(px(20.0), px(14.0)));
         let col = inner.width() / 8.0;
         let x = |e: f32| inner.min.x + col * (e + 0.5);
-        let top = inner.min.y + px(26.0);
-        let arrow_h = (inner.height() - px(94.0)).clamp(px(40.0), px(130.0));
+        let room = inner.height() - px(94.0);
+        let arrow_h = room.clamp(px(40.0), px(240.0));
+        let top = inner.min.y + px(26.0) + (room - arrow_h).max(0.0) / 2.0;
         txt(&p, &format!("PATTERN {}", self.pattern + 1), pos2(inner.min.x, inner.min.y + px(8.0)), 11.0, th.caption, 800, Align2::LEFT_CENTER, None);
         let bar = beat.map(|b| (b / 4.0).floor() as i64);
         let shown = bar.and_then(|b| self.score.bar(b));
@@ -765,7 +809,7 @@ impl StrumView {
                     Some(false) => "chord?".to_string(),
                     _ => format!("{:+.0}", h.ms),
                 };
-                txt(p, &note, pos2(cx, top + arrow_h + px(40.0)), 12.0, ink, 700, Align2::CENTER_CENTER, None);
+                txt(p, &note, pos2(cx, top + arrow_h + px(42.0)), 14.0, ink, 700, Align2::CENTER_CENTER, None);
             }
         }
         if let Some(b) = shown {
@@ -886,9 +930,9 @@ impl StrumView {
             "Press Start: a bar's count, then play. The direction arrows are your guide; only the timing and the chord are checked.".to_string()
         } else {
             let timing = match s.mean_ms() {
-                Some(m) if m > 8.0 => format!("{m:.0} ms late on average"),
-                Some(m) if m < -8.0 => format!("{:.0} ms early on average", -m),
-                Some(_) => "on the beat on average".to_string(),
+                Some(m) if m > 8.0 => format!(" · {m:.0} ms late on average"),
+                Some(m) if m < -8.0 => format!(" · {:.0} ms early on average", -m),
+                Some(_) => " · on the beat on average".to_string(),
                 None => String::new(),
             };
             let chords = if s.chords_judged > 0 {
@@ -897,7 +941,7 @@ impl StrumView {
                 String::new()
             };
             format!(
-                "Clean bars {}/{} (streak {}) · strums {}/{} · {} extra · {}{}",
+                "Clean bars {}/{} (streak {}) · strums {}/{} · {} extra{}{}",
                 s.bars_clean, s.bars_done, s.streak, s.hits, total, s.extra, timing, chords
             )
         };

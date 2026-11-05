@@ -1011,6 +1011,10 @@ fn mb(n: u64) -> f64 {
 /// The notice at the bottom left, over the page: a newer version (Update now, Later, Skip this version, its
 /// notes), then how the update is going. Not over a song (it waits until the song is closed).
 pub fn notice(ui: &eframe::egui::Ui, st: &mut crate::state::AppState, area: eframe::egui::Rect) {
+    // the desktop zips can't update an Android install: the APK is built and installed separately
+    if cfg!(target_os = "android") {
+        return;
+    }
     use eframe::egui::{Align2, CursorIcon, Rect, Sense, pos2, vec2};
     use qrs_ui::paint;
     use qrs_ui::text::{self, Style};
