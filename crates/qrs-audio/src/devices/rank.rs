@@ -218,6 +218,17 @@ pub fn rank_inputs(devices: &[DeviceInfo], rs: Option<&RocksmithSetup>) -> Vec<R
                     }
                 }
             };
+            // Android: the tablet's or phone's own input (the system default or a generic one, not USB) is its
+            // built-in microphone, so it isn't monitored through the speakers (they'd feed back)
+            #[cfg(target_os = "android")]
+            let (kind, reason) = if matches!(kind, InputKind::SystemDefault | InputKind::Other)
+                && d.hardware.bus != Bus::Usb
+                && !t.contains("usb")
+            {
+                (InputKind::Microphone, "built-in microphone".to_string())
+            } else {
+                (kind, reason)
+            };
             RankedInput {
                 device: d.clone(),
                 score: score + d.is_default_input as i32,
