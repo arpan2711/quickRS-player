@@ -56,6 +56,7 @@ rfd = { version = "0.15", default-features = false }
 [target.'cfg(target_os = "android")'.dependencies]
 eframe = { workspace = true, features = ["android-native-activity"] }
 android_logger = "0.15"
+jni = "0.21"
 winit = { version = "0.30", default-features = false, features = ["android-native-activity", "rwh_06"] }
 log.workspace = true
 

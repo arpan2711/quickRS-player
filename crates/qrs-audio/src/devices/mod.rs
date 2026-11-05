@@ -335,6 +335,13 @@ fn scan(previous: &[DeviceInfo], asio_busy: bool) -> Vec<DeviceInfo> {
 }
 
 impl Audio {
+    /// Open the current route again (Android: the microphone was refused until the permission was granted).
+    pub fn reopen(&self) {
+        let _ = self.tx.send(Msg::Rescan);
+        let route = self.state.lock().plan.route.clone();
+        self.engine.open(route);
+    }
+
     /// Start on the best devices for these preferences.
     pub fn start(prefs: AudioPrefs, library_dirs: Vec<PathBuf>) -> Audio {
         let engine = Arc::new(Engine::new());

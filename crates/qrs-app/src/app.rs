@@ -1067,6 +1067,12 @@ impl eframe::App for QuickRs {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        #[cfg(target_os = "android")]
+        if crate::android::mic_just_granted() {
+            if let Some(a) = self.state.audio.as_ref() {
+                a.reopen();
+            }
+        }
         if !self.timed.0 {
             self.timed.0 = true;
             crate::gpu::drawn();
