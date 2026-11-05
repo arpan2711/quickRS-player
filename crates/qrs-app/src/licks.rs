@@ -452,6 +452,8 @@ pub struct LickRun {
     phase_at: Instant,
     synth: SynthPlayer,
     synth_started: bool,
+    /// When the demo's synth stopped (the turn starts a moment later).
+    demo_ended: Option<Instant>,
 }
 
 /// Clean takes in a row before the tempo goes up, and by how much.
@@ -481,6 +483,7 @@ impl Default for LickRun {
             phase_at: Instant::now(),
             synth: SynthPlayer::default(),
             synth_started: false,
+            demo_ended: None,
         }
     }
 }
@@ -509,6 +512,7 @@ impl LickRun {
         let place: std::sync::Arc<dyn Fn(f64) -> f64 + Send + Sync> = std::sync::Arc::new(|x| x);
         self.synth.start(notes, strings.to_vec(), 0.0, end + 0.6, 1.0, false, false, tone, engine.rate(), place);
         self.synth_started = false;
+        self.demo_ended = None;
         self.reset_take();
         self.message.clear();
         self.phase = Phase::Demo;
@@ -539,16 +543,15 @@ impl LickRun {
                 if self.synth.state == SynthState::Playing {
                     self.synth_started = true;
                 }
-                let over = self.synth.state == SynthState::Idle && (self.synth_started || engine.is_none());
-                if over {
-                    if self.phase_at.elapsed() > Duration::ZERO && self.synth_started {
-                        // the last note's ring dies away first
-                        self.synth_started = false;
-                        self.phase_at = now;
-                    }
-                    if now - self.phase_at >= MUTE_AFTER_DEMO {
-                        self.turn(None);
-                    }
+                // over: the synth played and stopped (or never could: no engine, or it gave up rendering)
+                let over = self.synth.state == SynthState::Idle
+                    && (self.synth_started || engine.is_none() || now - self.phase_at > Duration::from_secs(20));
+                if over && self.demo_ended.is_none() {
+                    self.demo_ended = Some(now); // the last note's ring dies away first
+                }
+                if self.demo_ended.is_some_and(|t| now - t >= MUTE_AFTER_DEMO) {
+                    self.demo_ended = None;
+                    self.turn(None);
                 }
                 false
             }

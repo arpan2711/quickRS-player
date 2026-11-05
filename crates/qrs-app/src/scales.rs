@@ -887,16 +887,6 @@ impl ScalesView {
         let strings = *self.strings();
         let at = |i: usize| pos2(fx(self.placed[i].0.fret), sy(self.placed[i].0.string));
         let turn = self.run.phase == Phase::Turn || self.run.phase == Phase::Done;
-        let done: Vec<usize> = if turn {
-            self.checks.iter().take(self.run.step).flat_map(|c| c.notes.iter().copied()).collect()
-        } else {
-            Vec::new()
-        };
-        let next: &[usize] = if self.run.phase == Phase::Turn {
-            self.checks.get(self.run.step).map(|c| c.notes.as_slice()).unwrap_or(&[])
-        } else {
-            &[]
-        };
         // arrows from each step's top note to the next's
         let tops: Vec<usize> = self.checks.iter().map(|c| *c.notes.iter().max_by_key(|&&i| strings[self.placed[i].0.string] + self.placed[i].0.fret).unwrap()).collect();
         for w in tops.windows(2) {
@@ -919,16 +909,30 @@ impl ScalesView {
                 let m = strings[spot.string] + spot.fret;
                 let semis = (m - self.root).rem_euclid(12);
                 let pos = at(i);
-                let lit = done.contains(&i);
+                // the same place played more than once: drawn once, with every step's number on it ("1·3")
+                let steps: Vec<usize> = self
+                    .checks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c2)| c2.notes.iter().any(|&j| self.placed[j].0 == spot))
+                    .map(|(k2, _)| k2)
+                    .collect();
+                if steps.first() != Some(&k) {
+                    continue;
+                }
+                let lit = steps.iter().all(|&k2| k2 < self.run.step) && turn;
+                let is_next = steps.contains(&self.run.step) && self.run.phase == Phase::Turn;
                 p.circle_filled(pos, r, degree_color(semis));
                 p.circle_stroke(pos, r, Stroke::new(px(2.0), if lit { Color32::WHITE } else { Color32::from_rgb(0x15, 0x15, 0x1a) }));
-                if next.contains(&i) {
+                if is_next {
                     p.circle_stroke(pos, r + px(5.0) + pulse * px(3.0), Stroke::new(px(3.0), th.accent));
                 }
                 if playing == Some(m) {
                     p.circle_stroke(pos, r + px(8.0), Stroke::new(px(2.0), Color32::WHITE));
                 }
-                txt(p, &(k + 1).to_string(), pos, (r * 0.85 / px(1.0)).clamp(9.0, 14.0), Color32::from_rgb(0x15, 0x15, 0x1a), 800, Align2::CENTER_CENTER, None);
+                let label = steps.iter().map(|k2| (k2 + 1).to_string()).collect::<Vec<_>>().join("·");
+                let size = if steps.len() > 1 { (r * 0.7 / px(1.0)).clamp(8.0, 12.0) } else { (r * 0.85 / px(1.0)).clamp(9.0, 14.0) };
+                txt(p, &label, pos, size, Color32::from_rgb(0x15, 0x15, 0x1a), 800, Align2::CENTER_CENTER, None);
                 if let Some(mark) = licks::neck_mark(&ln) {
                     let mp = pos + vec2(r * 0.9, -r * 0.95);
                     p.circle_filled(mp, px(9.0), th.base);
