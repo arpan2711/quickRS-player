@@ -92,6 +92,7 @@ pub struct QuickRs {
     pub state: AppState,
     pub lib: LibView,
     pub home: HomeView,
+    pub scales: crate::scales::ScalesView,
     pub loading: Option<Loading>,
     pub player: Option<PlayerView>,
     /// The settings panel, floating over the page it was opened from.
@@ -169,6 +170,7 @@ impl QuickRs {
             state,
             lib: LibView::default(),
             home: HomeView::default(),
+            scales: Default::default(),
             loading: None,
             player: None,
             settings: None,
@@ -573,13 +575,21 @@ impl QuickRs {
                 && self.lib.picker.is_none()
                 && self.lib.menu.is_none()
                 && self.lib.text_box.is_none();
+            let at_scales = self.lib.view == View::Scales && !self.lib.has_dialog();
             if at_home {
                 self.home.handle(&mut self.lib, &mut self.state, ev);
+            } else if at_scales {
+                self.scales.handle(&mut self.lib, &mut self.state, ev);
             } else {
                 self.lib.handle(&mut self.state, area, ev);
             }
         }
-        if self.lib.view == View::Home && self.lib.picker.is_none() && self.lib.text_box.is_none() {
+        if self.lib.view == View::Scales && !self.lib.has_dialog() {
+            self.scales.ui(ui, &mut self.lib, &mut self.state, area);
+            if self.lib.view != View::Scales {
+                ctx.request_repaint(); // the sidebar went somewhere else: draw it next frame
+            }
+        } else if self.lib.view == View::Home && self.lib.picker.is_none() && self.lib.text_box.is_none() {
             self.home.ui(ui, &mut self.lib, &mut self.state, area);
             if self.lib.view != View::Home || self.lib.picker.is_some() || self.lib.text_box.is_some() {
                 ctx.request_repaint(); // the sidebar or a card went to the library: draw it next frame

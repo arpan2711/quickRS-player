@@ -30,6 +30,7 @@ mod player;
 mod preview;
 mod recording;
 mod room;
+mod scales;
 mod settings;
 mod setup;
 mod shotclock;

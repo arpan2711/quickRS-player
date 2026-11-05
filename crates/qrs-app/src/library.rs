@@ -119,6 +119,8 @@ pub enum View {
     Home,
     /// Saved licks (stretches of songs saved from the player).
     Licks,
+    /// Scales: a scale's boxes on the neck, played against (scales.rs).
+    Scales,
     /// Lessons (P13.4): each lesson's notes beside its riffs.
     Lessons,
     All,
@@ -135,6 +137,7 @@ impl View {
         match self {
             View::Home => "Home".into(),
             View::Licks => "Saved licks".into(),
+            View::Scales => "Scales".into(),
             View::Lessons => "Lessons".into(),
             View::All => "All songs".into(),
             View::Fav => "Favourites".into(),
@@ -2115,6 +2118,7 @@ impl LibView {
             Some(Icon::Note),
             36.0,
         );
+        item(&mut y, "Scales", Some(View::Scales), None, Some(Icon::Grid), 36.0);
         if cfg!(feature = "lessons") {
             item(
                 &mut y,
