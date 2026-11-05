@@ -12,7 +12,8 @@ use qrs_formats::Techs;
 
 #[derive(clap::Args)]
 pub struct Args {
-    /// list (the models), render (the listening set), live, or rigs (how a library's song tones are matched)
+    /// list (the models), render (the listening set), listen (P37.2: boards and chains measured), live, or rigs (how a
+    /// library's song tones are matched)
     #[arg(default_value = "list")]
     pub action: String,
     /// Folder for the WAVs (render)
@@ -69,7 +70,8 @@ pub struct Args {
     /// render: a recording of your guitar (a WAV from `live --record`) to play through every starting board
     #[arg(long)]
     pub guitar: Option<PathBuf>,
-    /// rigs: song folders to scan (default: the config's library folders and their feedpak folders)
+    /// rigs: song folders to scan (default: the config's library folders and their feedpak folders); listen: the NAM
+    /// captures folder (default: the app's)
     #[arg(long = "dir")]
     pub dirs: Vec<PathBuf>,
     /// rigs: config.json with library_dirs (default: the app's own)
@@ -96,7 +98,7 @@ fn note(t: f64, string: i32, fret: i32, sus: f64, tech: Techs, in_chord: bool) -
 }
 
 /// Power-chord chugs at 120 bpm: E5 with palm-muted eighths, then A5 and G5 let ring.
-fn chug() -> Vec<SynthNote> {
+pub(crate) fn chug() -> Vec<SynthNote> {
     let mut n = Vec::new();
     let e = 0.25;
     let mut t = 0.0;
@@ -118,7 +120,7 @@ fn chug() -> Vec<SynthNote> {
 }
 
 /// A minor-pentatonic lick with a bend and vibrato at the end.
-fn lick() -> Vec<SynthNote> {
+pub(crate) fn lick() -> Vec<SynthNote> {
     let seq: [(f64, i32, i32, f64); 10] = [
         (0.0, 3, 7, 0.0),
         (0.25, 3, 9, 0.0),
@@ -144,7 +146,7 @@ fn lick() -> Vec<SynthNote> {
 }
 
 /// Open chords strummed: E, A, D, G, a beat each, then E let ring.
-fn chords() -> Vec<SynthNote> {
+pub(crate) fn chords() -> Vec<SynthNote> {
     let shapes: [&[(i32, i32)]; 5] = [
         &[(0, 0), (1, 2), (2, 2), (3, 1), (4, 0), (5, 0)],
         &[(1, 0), (2, 2), (3, 2), (4, 2), (5, 0)],
@@ -164,7 +166,7 @@ fn chords() -> Vec<SynthNote> {
 }
 
 /// The notes played dry (mono), peaks at -10 dBFS like a guitar into an interface.
-fn dry(notes: &[SynthNote], bass: bool) -> Vec<f32> {
+pub(crate) fn dry(notes: &[SynthNote], bass: bool) -> Vec<f32> {
     let opens: Vec<i32> = if bass {
         vec![28, 33, 38, 43]
     } else {
@@ -189,7 +191,7 @@ fn dry(notes: &[SynthNote], bass: bool) -> Vec<f32> {
     mono.iter().map(|v| v * 0.316 / peak).collect()
 }
 
-fn write(path: &Path, x: &[f32]) -> anyhow::Result<()> {
+pub(crate) fn write(path: &Path, x: &[f32]) -> anyhow::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
@@ -369,8 +371,26 @@ pub fn run(keys: &qrs_formats::Keys, a: Args) -> anyhow::Result<()> {
         let dirs = crate::library_cmd::folders(a.config.as_deref(), &a.dirs);
         return crate::board_rigs::run(keys, &dirs, a.jobs, a.out.as_deref(), a.only.as_deref());
     }
+    if a.action == "loudness" {
+        // P37.6c: the amps' loudness by gain, as `board/loudness.rs` holds it
+        print!("{}", crate::listen_cmd::loudness_table());
+        return Ok(());
+    }
+    if a.action == "idle" {
+        // P38.2: what each board puts out while you aren't playing (silence, an interface's floor, a guitar's noise)
+        return crate::idle_cmd::run(a.out.as_deref(), a.only.as_deref(), a.dirs.first().cloned());
+    }
+    if a.action == "listen" {
+        // P37.2: every starting board and a matrix of chains on synthetic DI, measured (`listen_cmd`)
+        let out = a.out.clone().unwrap_or_else(|| PathBuf::from("board-listen"));
+        // (--dir: the NAM captures library to read, else the app's)
+        return crate::listen_cmd::run(&out, a.only.as_deref(), a.dirs.first().cloned());
+    }
     if a.action != "render" {
-        anyhow::bail!("unknown action {:?} (list, render, live or rigs)", a.action);
+        anyhow::bail!(
+            "unknown action {:?} (list, render, listen, idle, loudness, live or rigs)",
+            a.action
+        );
     }
     let out = a.out.clone().unwrap_or_else(|| PathBuf::from("board-renders"));
     let riffs: Vec<(&str, Vec<f32>)> = vec![
@@ -454,7 +474,7 @@ fn render_song(keys: &qrs_formats::Keys, song: &Path, a: &Args, out: &Path) -> a
     let boards: Vec<(String, Board)> = arr
         .rig
         .iter()
-        .map(|t| (t.key.clone(), board::rocksmith::board_for(t)))
+        .map(|t| (t.key.clone(), board::rs_gear::board_for(t)))
         .collect();
     for (t, (key, bd)) in arr.rig.iter().zip(&boards) {
         let ids: Vec<&str> = bd.blocks.iter().map(|b| b.def().id).collect();

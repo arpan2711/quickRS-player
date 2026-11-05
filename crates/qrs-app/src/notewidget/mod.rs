@@ -27,7 +27,8 @@ use egui::{
     Align, Align2, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, ViewportBuilder, ViewportCommand,
     ViewportId, pos2, vec2,
 };
-use qrs_analysis::keyguess::{Key, KeyGuess, Mode};
+use qrs_analysis::instrument::Instrument;
+use qrs_analysis::keyguess::{self, Key, KeyGuess, Mode};
 use qrs_analysis::spectrum::Spectra;
 use qrs_formats::model::{Arrangement, GUITAR_OPEN_MIDI};
 use qrs_ui::keys::hls_to_rgb;
@@ -182,6 +183,61 @@ fn marks_rect(i: usize) -> Rect {
     )
 }
 
+/// The KEY box's YOU / SONG switch, segment `i` (only while a song is open): after the KEY caption.
+fn source_rect(i: usize) -> Rect {
+    let b = box_rect(1);
+    Rect::from_min_size(
+        pos2(b.min.x + 42.0 + i as f32 * 34.0, b.min.y + 6.0),
+        vec2(34.0, 15.0),
+    )
+}
+
+/// What the KEY switch's segments mean.
+const SOURCE_TIPS: [&str; 2] = [
+    "YOU: the key you seem to be playing in (a guess, by ear)",
+    "SONG: the open song's own key, from its notes",
+];
+
+/// A switch of segments (ALL / ROOT / OFF, YOU / SONG): one rounded strip, the picked segment lit in the root's
+/// gold, the one under the pointer highlighted. `rects` in the widget's points, `size` the labels' size.
+#[allow(clippy::too_many_arguments)]
+fn draw_switch(
+    p: &egui::Painter,
+    u: f32,
+    at: &impl Fn(f32, f32) -> Pos2,
+    rects: &[Rect],
+    labels: &[&str],
+    on: usize,
+    hot: Option<usize>,
+    size: f32,
+) {
+    let (Some(first), Some(last)) = (rects.first(), rects.last()) else {
+        return;
+    };
+    let wr = Rect::from_min_max(at(first.min.x, first.min.y), at(last.max.x, last.max.y));
+    p.rect_filled(wr, wr.height() / 2.0, SHADE);
+    for (i, (r, label)) in rects.iter().zip(labels).enumerate() {
+        let r = r.shrink(1.5);
+        let sr = Rect::from_min_max(at(r.min.x, r.min.y), at(r.max.x, r.max.y));
+        let col = if i == on {
+            p.rect_filled(sr, sr.height() / 2.0, degree_color("1"));
+            ink(degree_color("1"))
+        } else if hot == Some(i) {
+            p.rect_filled(sr, sr.height() / 2.0, HILITE);
+            FG
+        } else {
+            DIM
+        };
+        pil_text(
+            p,
+            label,
+            sr.center(),
+            Align2::CENTER_CENTER,
+            Style::new(size * u, 800, col),
+        );
+    }
+}
+
 /// The grey of the scale's other notes when only the roots are coloured.
 const GREY_NOTE: Color32 = Color32::from_rgb(0x6b, 0x71, 0x7b);
 
@@ -266,6 +322,8 @@ pub struct NoteWidget {
     last_step: Instant,
     sp: Spectra,
     buf: Vec<f32>,
+    /// What the input plays (P32.5).
+    instrument: Instrument,
     note: Shown,
     deg: Shown,
     status: String,
@@ -319,6 +377,13 @@ pub struct NoteWidget {
     grip_hot: bool,
     heat: HeatStrip,
     last_listen: Option<Instant>,
+    /// The open part's own key (from its chart's notes) and the part it was found for (title, name, notes); the
+    /// KEY switch shows it instead of the guess (SONG, config "note_widget_song_key"); the switch's segment under
+    /// the pointer.
+    song_key: Option<Key>,
+    song_of: Option<(String, String, usize)>,
+    song_mode: bool,
+    source_hot: Option<usize>,
 }
 
 impl Default for NoteWidget {
@@ -332,6 +397,7 @@ impl Default for NoteWidget {
             last_step: Instant::now(),
             sp: Spectra::new(),
             buf: vec![0.0; 4096],
+            instrument: Instrument::Guitar,
             note: Shown::new(),
             deg: Shown::new(),
             status: String::new(),
@@ -365,6 +431,10 @@ impl Default for NoteWidget {
             grip_hot: false,
             heat: HeatStrip::default(),
             last_listen: None,
+            song_key: None,
+            song_of: None,
+            song_mode: false,
+            source_hot: None,
         }
     }
 }
@@ -400,7 +470,9 @@ impl NoteWidget {
             self.zoom = (st.config.f64("note_widget_size", 1.0) as f32).clamp(ZOOM.0, ZOOM.1);
             self.key_pick = key_from_config(&st.config.str("note_widget_chord_key", "auto"));
         }
-        self.set_tuning(arr);
+        self.set_tuning(arr, st.instrument());
+        self.set_song_key(arr);
+        self.song_mode = st.config.bool("note_widget_song_key", false);
         let [w, h] = self.size();
         let now = Instant::now();
         if now >= self.next {
@@ -449,6 +521,7 @@ impl NoteWidget {
         let mut toggle_more = false;
         let mut toggle_fast = false;
         let mut pick_marks: Option<Marks> = None;
+        let mut pick_source: Option<bool> = None;
         let mut save_zoom = false;
         self.marks = Marks::from_config(&st.config.str("note_widget_scale_marks", "all"));
         self.fast = match &st.audio {
@@ -499,14 +572,19 @@ impl NoteWidget {
             self.grip_hot = self.zoom_drag.is_some() || over(self.grip());
             let marks_on = self.show_scale;
             self.marks_hot = (0..3).find(|&i| marks_on && over(marks_rect(i)));
+            let song_open = self.song_key.is_some();
+            self.source_hot = (0..2).find(|&i| !self.big && song_open && over(source_rect(i)));
+            let strip_source = (0..2).find(|&i| drawer_on && song_open && over(chords::source_rect(wide, i)));
             self.hot = (
                 arrow_on && over(chords::arrow_rect(wide)),
                 if drawer_on && over(chords::zoom_rect(wide)) {
                     1
                 } else if drawer_on && over(chords::shapes_rect(wide)) {
                     3
-                } else if drawer_on && over(chords::key_rect(wide)) {
+                } else if drawer_on && over(chords::key_rect(wide, song_open)) {
                     4
+                } else if let Some(i) = strip_source {
+                    5 + i as u8
                 } else if drawer_on && self.chords.zoom && (self.dragging || over(chords::track_rect(wide))) {
                     2
                 } else {
@@ -550,6 +628,28 @@ impl NoteWidget {
                         wctx.set_cursor_icon(CursorIcon::PointingHand);
                     }
                     r.on_hover_text(m.tip());
+                }
+            }
+            // YOU / SONG, in the KEY box and (the drawer out) by the chord strip's KEY picker: one setting
+            if song_open {
+                let mut spots: Vec<(Rect, usize, &str)> = Vec::new();
+                if !self.big {
+                    spots.extend((0..2).map(|i| (source_rect(i), i, "note-widget-source")));
+                }
+                if drawer_on {
+                    spots.extend(
+                        (0..2).map(|i| (chords::source_rect(wide, i), i, "note-widget-strip-source")),
+                    );
+                }
+                for (r, i, name) in spots {
+                    let r = ui.interact(screen(r), egui::Id::new((name, i)), Sense::click());
+                    if r.clicked() {
+                        pick_source = Some(i == 1);
+                    }
+                    if r.hovered() {
+                        wctx.set_cursor_icon(CursorIcon::PointingHand);
+                    }
+                    r.on_hover_text(SOURCE_TIPS[i]);
                 }
             }
             if fast_on {
@@ -604,7 +704,7 @@ impl NoteWidget {
                     toggle_shapes = true;
                 }
                 let k = ui.interact(
-                    screen(chords::key_rect(wide)),
+                    screen(chords::key_rect(wide, song_open)),
                     egui::Id::new("note-widget-key"),
                     Sense::click(),
                 );
@@ -739,6 +839,14 @@ impl NoteWidget {
         if let Some(k) = picked {
             self.key_pick = k;
             st.config.set("note_widget_chord_key", key_to_config(k));
+            // (a key picked from the menu is a choice of yours: the switch goes back to YOU)
+            pick_source = pick_source.or(Some(false));
+        }
+        if let Some(s) = pick_source {
+            self.song_mode = s;
+            st.config.set("note_widget_song_key", s);
+        }
+        if picked.is_some() || pick_source.is_some() {
             st.save_config();
         }
         if toggle_more {
@@ -805,7 +913,7 @@ impl NoteWidget {
     /// Screenshot mode: the widget as it looks with Eb3 a few cents sharp, in Eb major (the scale box on a guitar in
     /// E standard), drawn in the main window with its right edge at `rect`'s. The Python look (D21; the parity
     /// shots) leaves the scale box out, as the Python widget has none. With `more`, the drawer is out, naming the
-    /// Am7 it hears from the notes of x02010.
+    /// Am7 it hears from the notes of x02010, and a song open in G major with the KEY switch on SONG.
     pub fn preview(&mut self, ui: &egui::Ui, rect: Rect, more: bool) {
         self.show_scale = !qrs_ui::theme::classic();
         self.more = more;
@@ -818,11 +926,19 @@ impl NoteWidget {
             self.chords.key = Some((7, Mode::Major));
             self.chords.key_auto = true;
             self.heat.stage(&self.strings);
+            self.song_key = Some((7, Mode::Major));
+            self.song_mode = true;
+            self.chords.song = Some(true);
         }
         self.status = "listening".into();
         self.note.set(Some(note_color(3)), "Eb", "Eb3  +3¢");
         self.deg.set(Some(degree_color("1")), "1", "Eb major");
         self.scale = Some((3, Mode::Major));
+        if more {
+            // (the song's G major: Eb is its flat sixth, outside the key)
+            self.deg.set(Some(OUT_OF_KEY), "♭6", "G major · song");
+            self.scale = self.song_key;
+        }
         self.playing = Some(51);
         let w = width(self.show_scale, more);
         let r = Rect::from_min_size(pos2(rect.max.x - w, rect.min.y), vec2(w, height(more)));
@@ -860,12 +976,56 @@ impl NoteWidget {
         [v.x, v.y]
     }
 
-    /// The neck's strings: the open part's tuning (a bass part's four strings), else a guitar in E standard.
-    fn set_tuning(&mut self, arr: Option<&Arrangement>) {
-        let strings = arr.map_or_else(|| GUITAR_OPEN_MIDI.to_vec(), |a| a.open_string_midi());
+    /// The neck's strings: the open part's tuning (a bass part's four strings), else a guitar in E standard. On a
+    /// bass (P32.5): a 5-string's low B under a bass part's four, and with no part the bass's own strings.
+    fn set_tuning(&mut self, arr: Option<&Arrangement>, inst: Instrument) {
+        let strings = match arr {
+            Some(a) if a.is_bass => inst.strings_for(&a.open_string_midi()),
+            Some(a) => a.open_string_midi(),
+            None if inst.is_bass() => inst.open_strings(),
+            None => GUITAR_OPEN_MIDI.to_vec(),
+        };
         if strings != self.strings {
-            self.tuning = arr.map_or_else(|| "E Standard".into(), |a| a.tuning_name());
+            self.tuning = match arr {
+                Some(a) => a.tuning_name(),
+                None if inst.is_bass() => format!("{} in E Standard", inst.label()),
+                None => "E Standard".into(),
+            };
             self.strings = strings;
+        }
+        if inst != self.instrument {
+            self.instrument = inst;
+            self.buf = vec![0.0; inst.pitch_window(48000)];
+            self.hist.clear();
+        }
+    }
+
+    /// The open part's own key (`keyguess::song_key`), found once a part.
+    fn set_song_key(&mut self, arr: Option<&Arrangement>) {
+        let of = arr.map(|a| (a.title.as_str(), a.name.as_str(), a.notes.len() + a.chords.len()));
+        if self
+            .song_of
+            .as_ref()
+            .map(|(t, n, c)| (t.as_str(), n.as_str(), *c))
+            == of
+        {
+            return;
+        }
+        self.song_of = of.map(|(t, n, c)| (t.to_owned(), n.to_owned(), c));
+        self.song_key = arr.and_then(keyguess::song_key);
+    }
+
+    /// The song's key is what the KEY box, the scale and the chord numbers show (SONG, with a song open).
+    fn song_on(&self) -> bool {
+        self.song_mode && self.song_key.is_some()
+    }
+
+    /// The key shown: the song's (SONG) or the guess from your playing.
+    fn shown_key(&self) -> Option<Key> {
+        if self.song_on() {
+            self.song_key
+        } else {
+            self.key.key
         }
     }
 
@@ -880,7 +1040,7 @@ impl NoteWidget {
         let mut level = 0.0;
         self.status = match &st.audio {
             None => "audio engine off".into(),
-            Some(a) if a.engine.status().input.is_none() => "no guitar input (F2)".into(),
+            Some(a) if a.engine.status().input.is_none() => "no input (F2)".into(),
             Some(a) => {
                 let e = &a.engine;
                 let rate = e.capture().rate();
@@ -895,7 +1055,8 @@ impl NoteWidget {
                         .listen(|b| cap.latest(b).is_some(), rate, &self.strings, t);
                 }
                 if e.meters().level >= 0.002 && e.capture().latest(&mut self.buf).is_some() {
-                    let (hz, clarity) = qrs_analysis::pitch::pitch(&mut self.sp, &self.buf, rate);
+                    let (hz, clarity) =
+                        qrs_analysis::instrument::pitch_for(self.instrument, &mut self.sp, &self.buf, rate);
                     if hz > 0.0 && clarity >= 0.85 {
                         let m = 69.0 + 12.0 * (hz / 440.0).log2();
                         if self.midi.is_some_and(|x| (m - x).abs() > 0.6) {
@@ -933,10 +1094,15 @@ impl NoteWidget {
         } else {
             self.key.add(pc, t);
         }
-        self.scale = self.key.key;
+        self.scale = self.shown_key();
         self.playing = held.map(|m| m.round() as i32);
-        self.chords.key = self.key_pick.or(self.key.key);
+        self.chords.key = if self.song_on() {
+            self.song_key
+        } else {
+            self.key_pick.or(self.key.key)
+        };
         self.chords.key_auto = self.key_pick.is_none();
+        self.chords.song = self.song_key.map(|_| self.song_mode);
         let sounding = held.filter(|_| since < 0.15).map(|m| m.round() as i32);
         let chord = if self.more {
             self.chords.ringing_shape()
@@ -959,13 +1125,14 @@ impl NoteWidget {
                 );
             }
         }
-        match self.key.key {
+        match self.shown_key() {
             None => self.deg.set(None, "?", "listening for a key"),
             Some((tonic, mode)) => {
                 let name = format!(
-                    "{} {}",
+                    "{} {}{}",
                     NOTE_NAMES[tonic as usize % 12],
-                    if mode == Mode::Major { "major" } else { "minor" }
+                    if mode == Mode::Major { "major" } else { "minor" },
+                    if self.song_on() { " · song" } else { "" }
                 );
                 match held {
                     None => {
@@ -1129,36 +1296,19 @@ impl NoteWidget {
                 st(11.0, 500, SUB),
             );
         }
+        // with a song open: whose key the KEY box shows, YOU (the guess) or SONG
+        if !self.big && self.song_key.is_some() {
+            let rects = [source_rect(0), source_rect(1)];
+            let on = self.song_mode as usize;
+            draw_switch(&p, u, &at, &rects, &["YOU", "SONG"], on, self.source_hot, 8.0);
+        }
         if self.show_scale {
             caption("SCALE", box_rect(2));
-            // ALL / ROOT / OFF: one rounded strip, the picked segment lit
-            let whole = Rect::from_min_max(marks_rect(0).min, marks_rect(2).max);
-            let wr = Rect::from_min_max(at(whole.min.x, whole.min.y), at(whole.max.x, whole.max.y));
-            p.rect_filled(wr, 7.5 * u, SHADE);
-            for (i, m) in Marks::ALL.into_iter().enumerate() {
-                let r = marks_rect(i).shrink(1.5);
-                let sr = Rect::from_min_max(at(r.min.x, r.min.y), at(r.max.x, r.max.y));
-                let on = m == self.marks;
-                if on {
-                    p.rect_filled(sr, 6.0 * u, degree_color("1"));
-                } else if self.marks_hot == Some(i) {
-                    p.rect_filled(sr, 6.0 * u, HILITE);
-                }
-                let col = if on {
-                    ink(degree_color("1"))
-                } else if self.marks_hot == Some(i) {
-                    FG
-                } else {
-                    DIM
-                };
-                pil_text(
-                    &p,
-                    m.label(),
-                    sr.center(),
-                    Align2::CENTER_CENTER,
-                    st(8.0, 800, col),
-                );
-            }
+            // ALL / ROOT / OFF
+            let rects: Vec<Rect> = (0..3).map(marks_rect).collect();
+            let labels = Marks::ALL.map(Marks::label);
+            let on = Marks::ALL.iter().position(|&m| m == self.marks).unwrap_or(0);
+            draw_switch(&p, u, &at, &rects, &labels, on, self.marks_hot, 8.0);
             self.draw_scale(&p, u, at);
         }
         if self.more && !self.big {
@@ -1647,8 +1797,24 @@ mod tests {
         assert!(chords::track_rect(w).max.y < strip.max.y - 4.0);
         assert!(chords::zoom_rect(w).max.y < chords::board_rect(w).min.y);
         // ALL SHAPES and KEY in a row left of ZOOM, none over another
-        let (key, all, zoom) = (chords::key_rect(w), chords::shapes_rect(w), chords::zoom_rect(w));
+        let (key, all, zoom) = (
+            chords::key_rect(w, false),
+            chords::shapes_rect(w),
+            chords::zoom_rect(w),
+        );
         assert!(key.max.x < all.min.x && all.max.x < zoom.min.x && key.width() > 200.0);
+        // with a song open, YOU / SONG between KEY and ALL SHAPES, KEY still wide enough for "F# minor · song"
+        let (key, you, song) = (
+            chords::key_rect(w, true),
+            chords::source_rect(w, 0),
+            chords::source_rect(w, 1),
+        );
+        assert!(key.max.x < you.min.x && you.max.x <= song.min.x && song.max.x < all.min.x);
+        assert!(key.width() > 190.0);
+        // and in the KEY box: right of its caption, inside the box, clear of the disc
+        let (bx, r0, r1) = (box_rect(1), source_rect(0), source_rect(1));
+        assert!(r0.min.x > bx.min.x + 34.0 && r1.max.x < bx.max.x - 4.0);
+        assert!(r1.max.y < disc_box(bx).1.min.y);
         assert!(chords::arrow_rect(w).max.x <= w - PAD + 1.0);
         assert!(box_rect(2).min.x >= box_rect(1).max.x + GAP);
         let board = neck_board();

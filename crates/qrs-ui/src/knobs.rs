@@ -16,6 +16,7 @@ use crate::paint::{
 use crate::raster::pg::{self, Surf};
 use crate::raster::{Image, Layers, Mask, mix};
 use crate::theme::{self, t};
+use crate::{glass::State, knob_art};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum KnobStyle {
@@ -397,8 +398,30 @@ impl Default for Scale {
 /// A real knob `size` points across at `center` (`int(center)`), turned to `u` (0..1 over 270 degrees, 7 to 5
 /// o'clock), with its scale printed round it. Returns the knob's rect.
 pub fn knob(p: &Painter, center: Pos2, size: f32, u: f32, sc_: Scale, st: Option<KnobStyle>) -> Rect {
+    knob_in(p, center, size, u, sc_, st, State::Normal)
+}
+
+/// `knob` hovered or held (the dark themes' baked knobs show it: their shadow, body and room; P34.8).
+pub fn knob_in(
+    p: &Painter,
+    center: Pos2,
+    size: f32,
+    u: f32,
+    sc_: Scale,
+    st: Option<KnobStyle>,
+    state: State,
+) -> Rect {
     let ppp = p.pixels_per_point();
-    knob_px(p, (ipx(center.x, ppp), ipx(center.y, ppp)), size, u, sc_, st).to_rect(ppp)
+    knob_px(
+        p,
+        (ipx(center.x, ppp), ipx(center.y, ppp)),
+        size,
+        u,
+        sc_,
+        st,
+        state,
+    )
+    .to_rect(ppp)
 }
 
 /// `knob` centred on whole pixels.
@@ -409,17 +432,18 @@ pub(crate) fn knob_px(
     u: f32,
     sc_: Scale,
     st: Option<KnobStyle>,
+    state: State,
 ) -> PxRect {
     let st = st.unwrap_or_else(style);
     let s = sc(p.pixels_per_point());
     let big_s = pxr(size, s).max(12);
     let u = u.clamp(0.0, 1.0) as f64;
     let deg = -135.0 + 270.0 * u;
+    let small = size < 50.0;
+    let r0 = big_s as f64 / 2.0 + pxr(if small { 5.0 } else { 8.0 }, s) as f64;
+    let r1 = big_s as f64 / 2.0 + pxr(if small { 9.0 } else { 14.0 }, s) as f64;
+    let boxw = (2.0 * r1 + pxr(8.0, s) as f64) as i32;
     if sc_.ticks {
-        let small = size < 50.0;
-        let r0 = big_s as f64 / 2.0 + pxr(if small { 5.0 } else { 8.0 }, s) as f64;
-        let r1 = big_s as f64 / 2.0 + pxr(if small { 9.0 } else { 14.0 }, s) as f64;
-        let boxw = (2.0 * r1 + pxr(8.0, s) as f64) as i32;
         let steps = (sc_.n - 1) as f64;
         let idx = (u * steps).round_ties_even() as i32;
         let z = sc_.zero.map(|z| (z as f64 * steps).round_ties_even() as i32);
@@ -455,6 +479,17 @@ pub(crate) fn knob_px(
             (cy - boxw / 2) as f32,
             Color32::WHITE,
         );
+    }
+    let rect = PxRect {
+        x: cx - big_s / 2,
+        y: cy - big_s / 2,
+        w: big_s,
+        h: big_s,
+    };
+    if knob_art::on() {
+        // the dark themes: the pack's renders, centred where the ticks are
+        knob_art::draw(p, st, big_s, boxw, (cx - boxw / 2, cy - boxw / 2), deg, state);
+        return rect;
     }
     let m = knob_margin(big_s, s);
     let at = ((cx - big_s / 2 - m) as f32, (cy - big_s / 2 - m) as f32);
@@ -511,12 +546,7 @@ pub(crate) fn knob_px(
         let p1 = ((cxf + r_out * a.sin()) as f32, (cyf - r_out * a.cos()) as f32);
         aaline(p, col, p0, p1, w);
     }
-    PxRect {
-        x: cx - big_s / 2,
-        y: cy - big_s / 2,
-        w: big_s,
-        h: big_s,
-    }
+    rect
 }
 
 /// `pygame.draw.aaline(screen, col, p0, p1, w)` (points in the screen's pixels, as f32).
@@ -614,6 +644,34 @@ pub fn ring_gauge(p: &Painter, center: Pos2, radius: f32, width: f32, u: f32, co
         (cy - bh / 2) as f32,
         Color32::WHITE,
     );
+}
+
+/// Where a ring gauge's lit band is, in points: its centre, inner and outer radius, and the share of the turn lit
+/// from 12 o'clock (as `ring_gauge` draws it, quantised the same way; the round end caps lie beyond it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RingBand {
+    pub center: Pos2,
+    pub r_in: f32,
+    pub r_out: f32,
+    pub frac: f32,
+}
+
+/// The lit band `ring_gauge(p, center, radius, width, u, _)` draws.
+pub fn ring_band(ppp: f32, center: Pos2, radius: f32, width: f32, u: f32) -> RingBand {
+    let s = sc(ppp);
+    let (r, w) = (pxr(radius, s), pxr(width, s).max(2));
+    let q = (u.clamp(0.0, 1.0) as f64 * 400.0).round_ties_even() as i32;
+    let boxw = 2 * r + 2 * w + pxr(10.0, s);
+    // the texture's top left is (cx - boxw / 2, cy - boxw / 2) in pixels, the ring's centre boxw / 2.0 into it
+    let at = |c: f32| (ipx(c, ppp) - boxw / 2) as f64 + boxw as f64 / 2.0;
+    let (cx, cy) = (at(center.x), at(center.y));
+    let k = 1.0 / ppp as f64;
+    RingBand {
+        center: Pos2::new((cx * k) as f32, (cy * k) as f32),
+        r_in: (r as f64 * k) as f32,
+        r_out: ((r + w) as f64 * k) as f32,
+        frac: q as f32 / 400.0,
+    }
 }
 
 /// `_arc_band`: the band between radii r0 and r1 from angle a0 to a1 (degrees, clockwise from 12 o'clock), with round
@@ -783,6 +841,66 @@ pub fn led_meter(p: &Painter, peak: f32, rect: Rect, n: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The texture names a knob's shapes use, drawn in a real egui pass.
+    fn drawn_textures(ctx: &egui::Context, st: KnobStyle, state: State) -> Vec<String> {
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let p = ui.ctx().layer_painter(egui::LayerId::background());
+            knob_in(
+                &p,
+                egui::pos2(200.0, 150.0),
+                34.0,
+                0.4,
+                Scale::default(),
+                Some(st),
+                state,
+            );
+        });
+        out.textures_delta.clear();
+        let tm = ctx.tex_manager();
+        let tm = tm.read();
+        out.shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Mesh(m) => {
+                    Some(tm.meta(m.texture_id).map(|x| x.name.clone()).unwrap_or_default())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Daylight and the classic look draw the knobs as they always have; the dark themes the pack's renders (P34.8).
+    #[test]
+    fn only_the_dark_themes_get_the_baked_knobs() {
+        let _lock = crate::raster::THEME_LOCK.lock();
+        let ctx = egui::Context::default();
+        for st in KnobStyle::ALL {
+            theme::set_theme(theme::ThemeName::Daylight);
+            let day = drawn_textures(&ctx, st, State::Hover);
+            assert!(
+                !day.is_empty() && day.iter().all(|n| n.starts_with("neu-")),
+                "{day:?}"
+            );
+            // the old path ignores the state
+            assert_eq!(day, drawn_textures(&ctx, st, State::Pressed));
+            theme::set_theme(theme::ThemeName::Midnight);
+            theme::set_classic(true);
+            let classic = drawn_textures(&ctx, st, State::Normal);
+            theme::set_classic(false);
+            assert!(classic.iter().all(|n| n.starts_with("neu-")), "{classic:?}");
+            let dark = drawn_textures(&ctx, st, State::Normal);
+            assert!(dark.iter().any(|n| n.starts_with("knob-")), "{dark:?}");
+            // the ticks stay code (the old path's texture), the room is the hall's
+            assert!(dark[0].starts_with("neu-"));
+            assert!(dark.iter().any(|n| n.starts_with("hall-")));
+            // hover: the shadow for it and the body's 6 % added
+            let hot = drawn_textures(&ctx, st, State::Hover);
+            assert_eq!(hot.len(), dark.len() + 1);
+            assert!(hot.iter().any(|n| n.contains("Shadow(Hover)")));
+        }
+        theme::set_theme(theme::ThemeName::Midnight);
+    }
 
     /// The knobs' parts against rsplay.neu's own surfaces (QRS_NEU_DUMPS, see keys.rs).
     #[test]

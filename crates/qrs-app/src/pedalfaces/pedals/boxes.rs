@@ -158,14 +158,7 @@ fn squeeze() -> Spec {
             Ks::Mxr,
             below(6.2, 0x111111).gap(3.0),
         ),
-        kn(
-            1,
-            0.5 * MW,
-            0.205 * MH,
-            7.2,
-            Ks::Mxr,
-            below(5.6, 0x111111).gap(2.0),
-        ),
+        kn(1, 0.5 * MW, 0.3 * MH, 7.2, Ks::Mxr, below(5.6, 0x111111).gap(2.0)),
     ];
     s.led = led(0.5 * MW, 0.062 * MH, 2.3);
     s.switch = Sw::Stomp(0.5 * MW, 0.82 * MH, 16.5);
@@ -378,7 +371,7 @@ fn echo_pre_art(pr: &Pr) {
     pr.t(
         "ECHO",
         EW / 2.0,
-        0.627 * EH,
+        0.622 * EH,
         Align2::CENTER_CENTER,
         15.0,
         BROWN,
@@ -388,7 +381,7 @@ fn echo_pre_art(pr: &Pr) {
     pr.t(
         "PRE",
         EW / 2.0,
-        0.685 * EH,
+        0.692 * EH,
         Align2::CENTER_CENTER,
         15.0,
         BROWN,

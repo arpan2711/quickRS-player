@@ -391,7 +391,7 @@ pub fn generation() -> usize {
     GENERATION.load(Ordering::Relaxed)
 }
 
-/// Rocksmith string colours, low string first: E red, A yellow, D blue, G orange, B green, e purple.
+/// RS string colours, low string first: E red, A yellow, D blue, G orange, B green, e purple.
 pub const STRING_PALETTE: [Color32; 6] = [
     c(235, 60, 60),
     c(240, 205, 30),
@@ -410,7 +410,7 @@ pub fn string_colors_on() -> bool {
     STRING_COLORS.load(Ordering::Relaxed)
 }
 
-/// A string's colour: its Rocksmith colour when they're on, else the neutral caption grey.
+/// A string's colour: its RS colour when they're on, else the neutral caption grey.
 pub fn string_color(string: usize) -> Color32 {
     if string_colors_on() {
         STRING_PALETTE[string % 6]

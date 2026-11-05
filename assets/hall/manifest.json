@@ -1,0 +1,2056 @@
+{
+ "scale": 6,
+ "scale_note": "every sprite/map here is 6x of app size (sprite_px_per_app_px per entry; glass_key stays 3x)",
+ "room": {
+  "probe": {
+   "file": "room_probe.jpg",
+   "px": 1024,
+   "bytes": "clamp(2.5 * linear_radiance), 8-bit; upload as an UNORM (non-sRGB) texture, or as egui ColorImage bytes as-is: the bytes are what gets added",
+   "E_T": 2.5,
+   "filter": "linear, clamp; mipmaps recommended (the arris minifies it ~10x)",
+   "jpeg": "quality 96, 4:4:4 (no chroma subsampling)"
+  },
+  "probe_blur": {
+   "file": "room_probe_blur.jpg",
+   "px": 256,
+   "bytes": "same encoding, the room blurred ~6 deg",
+   "use": "GPU: the thumb (satin dish); CPU: the per-vertex local radiance L for every surface",
+   "jpeg": "quality 95, 4:4:4"
+  },
+  "cpu_copy": "decode room_probe_blur.jpg once (256x256x3 u8); L_rgb(uv) = bilinear(bytes)/255/2.5",
+  "srgb_mix_texture": "for the mix surfaces derive once at load: t = srgb_encode(min(1, 1.7 * bytes/255/2.5)) from room_probe.jpg (and from room_probe_blur.jpg for the thumb); upload as bytes",
+  "pitch_deg": 36.0,
+  "pitch_note": "already baked into the probe (the reflection centre looks 36 deg up into the hall); the app needs no rotation"
+ },
+ "geometry": {
+  "frame": "screen frame: x right, y up, z toward the viewer; app px; sprite/app coords have y DOWN",
+  "eye": "E = (W/2, H/2, D) with D = window width in app px (1440 for the 1440 x 900 window: 60 cm from a 60 cm screen); use the window's current size",
+  "view": "v = normalize(Px - W/2, H/2 - Py, -D)",
+  "reflect": "R = v - 2 (v.n) n",
+  "sphere_map": "m = 2 sqrt(2 (1 + Rz)); u = 0.5 + Rx/m; v = 0.5 - Ry/m"
+ },
+ "blend": {
+  "additive": {
+   "surfaces": [
+    "glass_key",
+    "gem",
+    "resin"
+   ],
+   "vertex": "Color32 grey c (r=g=b per channel), alpha 0 (egui premultiplied: additive)",
+   "c": "c_ch = clamp(G * m * S_ch / E_T, 0, 1),  S_ch = (srgb(lin(base_ch) + x_ch) - base_ch) / x_ch,  x_ch = max(G * m * L_ch, 1e-5); base = the sprite colour under the vertex (sRGB 0..1, over the panel), L = CPU blurred probe at the vertex uv",
+   "srgb_lin": "IEC sRGB (lin(c) = c<=0.04045 ? c/12.92 : ((c+0.055)/1.055)^2.4)"
+  },
+  "mix": {
+   "surfaces": [
+    "go_stone",
+    "thumb"
+   ],
+   "vertex": "premultiplied (a, a, a, a)",
+   "a": "a = min(0.5, 1.85 * m)",
+   "texture": "the srgb_mix_texture (thumb: from the blurred probe)",
+   "result": "out = fb (1 - a) + a * t"
+  },
+  "order": "base sprite, room mesh, gem-light deltas (reflect pack), icon/label"
+ },
+ "gains": {
+  "glass_key": 2.6,
+  "gem": 6.0,
+  "resin": 2.5,
+  "go_stone_mix_k": 1.85,
+  "thumb_mix_k": 1.85,
+  "mix_amax": 0.5,
+  "glass_key_state_factor": {
+   "normal": 1.0,
+   "hover": 1.18,
+   "pressed": 0.6
+  },
+  "gem_table_facet_m_factor": 0.08
+ },
+ "glass_key": {
+  "sprites": {
+   "normal": "glass_normal.png",
+   "hover": "glass_hover.png",
+   "pressed": "glass_pressed.png"
+  },
+  "sprite_px_per_app_px": 3,
+  "canvas_app_px": [
+   256,
+   70
+  ],
+  "plate_app_px": [
+   232,
+   46
+  ],
+  "plate_at": [
+   12,
+   12
+  ],
+  "corner_radius": 7.0,
+  "nine_slice_insets_app_px": {
+   "l": 22,
+   "r": 22,
+   "t": 22,
+   "b": 22
+  },
+  "sprite_encoding": "straight-alpha RGBA over the panel colour (23,38,52): black at alpha where it darkens (contact shadow, dimple), the lightened colour where it brightens; the rubber margin fades to 0 at the canvas edge. Studio reflections removed (key light kept at 15 %).",
+  "hover_pressed_note": "hover/pressed derived on the CPU: round 2's renders minus their studio share (x1.18 / x0.6 of normal's), not re-rendered",
+  "label": {
+   "font": "Manrope Bold, 16 px (52 px keys) / 14.5 px (49 px keys) / 15 px (46 px keys); centred",
+   "supersample": 4,
+   "passes": [
+    {
+     "what": "dark (the shaded upper wall)",
+     "rgb": [
+      8,
+      13,
+      18
+     ],
+     "offset_app_px": [
+      -0.6,
+      -0.6
+     ]
+    },
+    {
+     "what": "light (the lit lower wall)",
+     "rgb": [
+      51,
+      80,
+      106
+     ],
+     "offset_app_px": [
+      0.6,
+      0.6
+     ]
+    },
+    {
+     "what": "ink",
+     "rgb_white": [
+      214,
+      220,
+      226
+     ],
+     "rgb_amber_main_action": [
+      246,
+      190,
+      84
+     ],
+     "offset_app_px": [
+      0,
+      0
+     ]
+    }
+   ],
+   "ghost": {
+    "rgb": "the ink colour",
+    "alpha": 0.05,
+    "blur_app_px": 0.45,
+    "offset_app_px": [
+     1.1,
+     1.7
+    ]
+   },
+   "under_glass": "labels drawn at 94 % over the sprite; pressed: blend 8 % toward the panel colour",
+   "order": "glass sprite, label, room mesh"
+  },
+  "reflection_mesh": {
+   "rings": [
+    {
+     "inset_px": -0.5,
+     "tilt_deg": 0.0,
+     "m": 0.0
+    },
+    {
+     "inset_px": 0.0,
+     "tilt_deg": 35.95,
+     "m": 0.02868
+    },
+    {
+     "inset_px": 0.2,
+     "tilt_deg": 64.57,
+     "m": 0.05117
+    },
+    {
+     "inset_px": 0.45,
+     "tilt_deg": 60.04,
+     "m": 0.06236
+    },
+    {
+     "inset_px": 0.8,
+     "tilt_deg": 50.29,
+     "m": 0.08234
+    },
+    {
+     "inset_px": 1.25,
+     "tilt_deg": 39.54,
+     "m": 0.08631
+    },
+    {
+     "inset_px": 1.8,
+     "tilt_deg": 28.26,
+     "m": 0.08343
+    },
+    {
+     "inset_px": 2.5,
+     "tilt_deg": 15.52,
+     "m": 0.08192
+    },
+    {
+     "inset_px": 3.4,
+     "tilt_deg": 3.01,
+     "m": 0.08167
+    },
+    {
+     "inset_px": 4.6,
+     "tilt_deg": 0.0,
+     "m": 0.08158
+    }
+   ],
+   "face_m": 0.08178,
+   "face_rings_inset_px": [
+    7,
+    11,
+    16,
+    "h/2 (the mid-line)"
+   ],
+   "per_corner_segments": 6,
+   "side_spacing_app_px": 24,
+   "normal": "per ring vertex: outward unit direction o (sprite space, y down) tilted by tilt_deg: n = (o.x sin t, -o.y sin t, cos t)",
+   "feather": "the ring at inset -0.5 px has m = 0 (egui-style AA edge)",
+   "triangles": "quads between consecutive rings (same vertex count per ring)"
+  },
+  "note_hq": "unchanged from the 3x pack (sprite_px_per_app_px 3): not re-rendered"
+ },
+ "gem": {
+  "sprites": {
+   "lit_pause": "gem_lit_pause.png",
+   "dark_play": "gem_dark_play.png"
+  },
+  "sprite_px_per_app_px": 6,
+  "canvas_app_px": 96,
+  "R_app_px": 31.5,
+  "cut": "girdle 16-gon at R (vertices every 22.5 deg from 0), table octagon at 0.5R (22.5 + 45j), stars at 0.76R; screen angles y down",
+  "facets_order": "for j = 0..7: kite, upper girdle a, upper girdle b, star; then the table",
+  "mesh": "one fan per facet (centroid + its vertices), the facet's n, m, base on all of them",
+  "facets": {
+   "lit_pause": [
+    {
+     "facet": "kite0",
+     "n": [
+      0.5032,
+      -0.2084,
+      0.8387
+     ],
+     "m": 0.04363,
+     "base_srgb": [
+      38,
+      2,
+      5
+     ]
+    },
+    {
+     "facet": "upper_girdle0a",
+     "n": [
+      0.5279,
+      -0.3527,
+      0.7726
+     ],
+     "m": 0.04865,
+     "base_srgb": [
+      21,
+      1,
+      2
+     ]
+    },
+    {
+     "facet": "upper_girdle0b",
+     "n": [
+      0.3527,
+      -0.5279,
+      0.7726
+     ],
+     "m": 0.04865,
+     "base_srgb": [
+      24,
+      1,
+      3
+     ]
+    },
+    {
+     "facet": "star0",
+     "n": [
+      0.285,
+      -0.285,
+      0.9152
+     ],
+     "m": 0.04086,
+     "base_srgb": [
+      41,
+      2,
+      6
+     ]
+    },
+    {
+     "facet": "kite1",
+     "n": [
+      0.2084,
+      -0.5032,
+      0.8387
+     ],
+     "m": 0.04363,
+     "base_srgb": [
+      23,
+      1,
+      2
+     ]
+    },
+    {
+     "facet": "upper_girdle1a",
+     "n": [
+      0.1239,
+      -0.6227,
+      0.7726
+     ],
+     "m": 0.04865,
+     "base_srgb": [
+      19,
+      1,
+      2
+     ]
+    },
+    {
+     "facet": "upper_girdle1b",
+     "n": [
+      -0.1239,
+      -0.6227,
+      0.7726
+     ],
+     "m": 0.04868,
+     "base_srgb": [
+      19,
+      1,
+      2
+     ]
+    },
+    {
+     "facet": "star1",
+     "n": [
+      0.0,
+      -0.4031,
+      0.9152
+     ],
+     "m": 0.04085,
+     "base_srgb": [
+      50,
+      3,
+      9
+     ]
+    },
+    {
+     "facet": "kite2",
+     "n": [
+      -0.2084,
+      -0.5032,
+      0.8387
+     ],
+     "m": 0.04362,
+     "base_srgb": [
+      36,
+      1,
+      5
+     ]
+    },
+    {
+     "facet": "upper_girdle2a",
+     "n": [
+      -0.3527,
+      -0.5279,
+      0.7726
+     ],
+     "m": 0.04865,
+     "base_srgb": [
+      35,
+      1,
+      5
+     ]
+    },
+    {
+     "facet": "upper_girdle2b",
+     "n": [
+      -0.5279,
+      -0.3527,
+      0.7726
+     ],
+     "m": 0.04862,
+     "base_srgb": [
+      61,
+      4,
+      13
+     ]
+    },
+    {
+     "facet": "star2",
+     "n": [
+      -0.285,
+      -0.285,
+      0.9152
+     ],
+     "m": 0.04086,
+     "base_srgb": [
+      45,
+      2,
+      7
+     ]
+    },
+    {
+     "facet": "kite3",
+     "n": [
+      -0.5032,
+      -0.2084,
+      0.8387
+     ],
+     "m": 0.04361,
+     "base_srgb": [
+      59,
+      4,
+      12
+     ]
+    },
+    {
+     "facet": "upper_girdle3a",
+     "n": [
+      -0.6227,
+      -0.1239,
+      0.7726
+     ],
+     "m": 0.04865,
+     "base_srgb": [
+      71,
+      5,
+      16
+     ]
+    },
+    {
+     "facet": "upper_girdle3b",
+     "n": [
+      -0.6227,
+      0.1239,
+      0.7726
+     ],
+     "m": 0.04865,
+     "base_srgb": [
+      70,
+      5,
+      16
+     ]
+    },
+    {
+     "facet": "star3",
+     "n": [
+      -0.4031,
+      0.0,
+      0.9152
+     ],
+     "m": 0.04086,
+     "base_srgb": [
+      78,
+      6,
+      19
+     ]
+    },
+    {
+     "facet": "kite4",
+     "n": [
+      -0.5032,
+      0.2084,
+      0.8387
+     ],
+     "m": 0.04362,
+     "base_srgb": [
+      87,
+      44,
+      48
+     ]
+    },
+    {
+     "facet": "upper_girdle4a",
+     "n": [
+      -0.5279,
+      0.3527,
+      0.7726
+     ],
+     "m": 0.04863,
+     "base_srgb": [
+      94,
+      9,
+      25
+     ]
+    },
+    {
+     "facet": "upper_girdle4b",
+     "n": [
+      -0.3527,
+      0.5279,
+      0.7726
+     ],
+     "m": 0.04866,
+     "base_srgb": [
+      251,
+      246,
+      246
+     ]
+    },
+    {
+     "facet": "star4",
+     "n": [
+      -0.285,
+      0.285,
+      0.9152
+     ],
+     "m": 0.04086,
+     "base_srgb": [
+      97,
+      66,
+      69
+     ]
+    },
+    {
+     "facet": "kite5",
+     "n": [
+      -0.2084,
+      0.5032,
+      0.8387
+     ],
+     "m": 0.04362,
+     "base_srgb": [
+      102,
+      79,
+      80
+     ]
+    },
+    {
+     "facet": "upper_girdle5a",
+     "n": [
+      -0.1239,
+      0.6227,
+      0.7726
+     ],
+     "m": 0.04867,
+     "base_srgb": [
+      78,
+      6,
+      19
+     ]
+    },
+    {
+     "facet": "upper_girdle5b",
+     "n": [
+      0.1239,
+      0.6227,
+      0.7726
+     ],
+     "m": 0.04868,
+     "base_srgb": [
+      67,
+      5,
+      15
+     ]
+    },
+    {
+     "facet": "star5",
+     "n": [
+      0.0,
+      0.403,
+      0.9152
+     ],
+     "m": 0.04086,
+     "base_srgb": [
+      76,
+      42,
+      45
+     ]
+    },
+    {
+     "facet": "kite6",
+     "n": [
+      0.2084,
+      0.5032,
+      0.8387
+     ],
+     "m": 0.04362,
+     "base_srgb": [
+      84,
+      43,
+      47
+     ]
+    },
+    {
+     "facet": "upper_girdle6a",
+     "n": [
+      0.3527,
+      0.5279,
+      0.7726
+     ],
+     "m": 0.04865,
+     "base_srgb": [
+      63,
+      4,
+      14
+     ]
+    },
+    {
+     "facet": "upper_girdle6b",
+     "n": [
+      0.5279,
+      0.3527,
+      0.7726
+     ],
+     "m": 0.04866,
+     "base_srgb": [
+      51,
+      3,
+      9
+     ]
+    },
+    {
+     "facet": "star6",
+     "n": [
+      0.285,
+      0.285,
+      0.9151
+     ],
+     "m": 0.04085,
+     "base_srgb": [
+      66,
+      4,
+      15
+     ]
+    },
+    {
+     "facet": "kite7",
+     "n": [
+      0.5032,
+      0.2084,
+      0.8387
+     ],
+     "m": 0.04363,
+     "base_srgb": [
+      58,
+      4,
+      12
+     ]
+    },
+    {
+     "facet": "upper_girdle7a",
+     "n": [
+      0.6227,
+      0.1239,
+      0.7726
+     ],
+     "m": 0.04865,
+     "base_srgb": [
+      58,
+      4,
+      12
+     ]
+    },
+    {
+     "facet": "upper_girdle7b",
+     "n": [
+      0.6227,
+      -0.1239,
+      0.7726
+     ],
+     "m": 0.04864,
+     "base_srgb": [
+      45,
+      2,
+      7
+     ]
+    },
+    {
+     "facet": "star7",
+     "n": [
+      0.403,
+      0.0,
+      0.9152
+     ],
+     "m": 0.04085,
+     "base_srgb": [
+      63,
+      4,
+      14
+     ]
+    },
+    {
+     "facet": "table",
+     "n": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "m": 0.04007,
+     "base_srgb": [
+      80,
+      7,
+      20
+     ]
+    }
+   ],
+   "dark_play": [
+    {
+     "facet": "kite0",
+     "n": [
+      0.5032,
+      -0.2084,
+      0.8387
+     ],
+     "m": 0.04361,
+     "base_srgb": [
+      9,
+      1,
+      2
+     ]
+    },
+    {
+     "facet": "upper_girdle0a",
+     "n": [
+      0.5279,
+      -0.3527,
+      0.7726
+     ],
+     "m": 0.04865,
+     "base_srgb": [
+      4,
+      1,
+      1
+     ]
+    },
+    {
+     "facet": "upper_girdle0b",
+     "n": [
+      0.3527,
+      -0.5279,
+      0.7726
+     ],
+     "m": 0.04866,
+     "base_srgb": [
+      5,
+      1,
+      1
+     ]
+    },
+    {
+     "facet": "star0",
+     "n": [
+      0.285,
+      -0.285,
+      0.9152
+     ],
+     "m": 0.04085,
+     "base_srgb": [
+      11,
+      1,
+      3
+     ]
+    },
+    {
+     "facet": "kite1",
+     "n": [
+      0.2084,
+      -0.5032,
+      0.8387
+     ],
+     "m": 0.04362,
+     "base_srgb": [
+      5,
+      1,
+      1
+     ]
+    },
+    {
+     "facet": "upper_girdle1a",
+     "n": [
+      0.1239,
+      -0.6227,
+      0.7726
+     ],
+     "m": 0.04868,
+     "base_srgb": [
+      4,
+      0,
+      1
+     ]
+    },
+    {
+     "facet": "upper_girdle1b",
+     "n": [
+      -0.1239,
+      -0.6227,
+      0.7726
+     ],
+     "m": 0.04867,
+     "base_srgb": [
+      4,
+      0,
+      1
+     ]
+    },
+    {
+     "facet": "star1",
+     "n": [
+      0.0,
+      -0.4031,
+      0.9152
+     ],
+     "m": 0.04086,
+     "base_srgb": [
+      14,
+      2,
+      4
+     ]
+    },
+    {
+     "facet": "kite2",
+     "n": [
+      -0.2084,
+      -0.5032,
+      0.8387
+     ],
+     "m": 0.04362,
+     "base_srgb": [
+      9,
+      1,
+      2
+     ]
+    },
+    {
+     "facet": "upper_girdle2a",
+     "n": [
+      -0.3527,
+      -0.5279,
+      0.7726
+     ],
+     "m": 0.04864,
+     "base_srgb": [
+      8,
+      1,
+      2
+     ]
+    },
+    {
+     "facet": "upper_girdle2b",
+     "n": [
+      -0.5279,
+      -0.3527,
+      0.7726
+     ],
+     "m": 0.04866,
+     "base_srgb": [
+      19,
+      3,
+      5
+     ]
+    },
+    {
+     "facet": "star2",
+     "n": [
+      -0.285,
+      -0.285,
+      0.9152
+     ],
+     "m": 0.04085,
+     "base_srgb": [
+      12,
+      2,
+      3
+     ]
+    },
+    {
+     "facet": "kite3",
+     "n": [
+      -0.5032,
+      -0.2084,
+      0.8387
+     ],
+     "m": 0.04361,
+     "base_srgb": [
+      18,
+      3,
+      5
+     ]
+    },
+    {
+     "facet": "upper_girdle3a",
+     "n": [
+      -0.6227,
+      -0.1239,
+      0.7726
+     ],
+     "m": 0.04866,
+     "base_srgb": [
+      23,
+      4,
+      7
+     ]
+    },
+    {
+     "facet": "upper_girdle3b",
+     "n": [
+      -0.6227,
+      0.1239,
+      0.7726
+     ],
+     "m": 0.04866,
+     "base_srgb": [
+      23,
+      4,
+      7
+     ]
+    },
+    {
+     "facet": "star3",
+     "n": [
+      -0.4031,
+      0.0,
+      0.9152
+     ],
+     "m": 0.04085,
+     "base_srgb": [
+      27,
+      5,
+      8
+     ]
+    },
+    {
+     "facet": "kite4",
+     "n": [
+      -0.5032,
+      0.2084,
+      0.8387
+     ],
+     "m": 0.04362,
+     "base_srgb": [
+      43,
+      33,
+      34
+     ]
+    },
+    {
+     "facet": "upper_girdle4a",
+     "n": [
+      -0.5279,
+      0.3527,
+      0.7726
+     ],
+     "m": 0.04866,
+     "base_srgb": [
+      33,
+      7,
+      12
+     ]
+    },
+    {
+     "facet": "upper_girdle4b",
+     "n": [
+      -0.3527,
+      0.5279,
+      0.7726
+     ],
+     "m": 0.04865,
+     "base_srgb": [
+      197,
+      196,
+      196
+     ]
+    },
+    {
+     "facet": "star4",
+     "n": [
+      -0.285,
+      0.285,
+      0.9152
+     ],
+     "m": 0.04084,
+     "base_srgb": [
+      57,
+      51,
+      52
+     ]
+    },
+    {
+     "facet": "kite5",
+     "n": [
+      -0.2084,
+      0.5032,
+      0.8387
+     ],
+     "m": 0.04362,
+     "base_srgb": [
+      65,
+      61,
+      62
+     ]
+    },
+    {
+     "facet": "upper_girdle5a",
+     "n": [
+      -0.1239,
+      0.6227,
+      0.7726
+     ],
+     "m": 0.04866,
+     "base_srgb": [
+      27,
+      5,
+      8
+     ]
+    },
+    {
+     "facet": "upper_girdle5b",
+     "n": [
+      0.1239,
+      0.6227,
+      0.7726
+     ],
+     "m": 0.04868,
+     "base_srgb": [
+      22,
+      3,
+      6
+     ]
+    },
+    {
+     "facet": "star5",
+     "n": [
+      0.0,
+      0.403,
+      0.9152
+     ],
+     "m": 0.04085,
+     "base_srgb": [
+      39,
+      31,
+      32
+     ]
+    },
+    {
+     "facet": "kite6",
+     "n": [
+      0.2084,
+      0.5032,
+      0.8387
+     ],
+     "m": 0.04361,
+     "base_srgb": [
+      42,
+      33,
+      34
+     ]
+    },
+    {
+     "facet": "upper_girdle6a",
+     "n": [
+      0.3527,
+      0.5279,
+      0.7726
+     ],
+     "m": 0.04866,
+     "base_srgb": [
+      20,
+      3,
+      6
+     ]
+    },
+    {
+     "facet": "upper_girdle6b",
+     "n": [
+      0.5279,
+      0.3527,
+      0.7726
+     ],
+     "m": 0.04866,
+     "base_srgb": [
+      15,
+      2,
+      4
+     ]
+    },
+    {
+     "facet": "star6",
+     "n": [
+      0.285,
+      0.285,
+      0.9151
+     ],
+     "m": 0.04086,
+     "base_srgb": [
+      21,
+      3,
+      6
+     ]
+    },
+    {
+     "facet": "kite7",
+     "n": [
+      0.5032,
+      0.2084,
+      0.8387
+     ],
+     "m": 0.04361,
+     "base_srgb": [
+      18,
+      3,
+      5
+     ]
+    },
+    {
+     "facet": "upper_girdle7a",
+     "n": [
+      0.6227,
+      0.1239,
+      0.7726
+     ],
+     "m": 0.04866,
+     "base_srgb": [
+      18,
+      3,
+      5
+     ]
+    },
+    {
+     "facet": "upper_girdle7b",
+     "n": [
+      0.6227,
+      -0.1239,
+      0.7726
+     ],
+     "m": 0.04865,
+     "base_srgb": [
+      13,
+      2,
+      3
+     ]
+    },
+    {
+     "facet": "star7",
+     "n": [
+      0.403,
+      0.0,
+      0.9152
+     ],
+     "m": 0.04086,
+     "base_srgb": [
+      20,
+      3,
+      6
+     ]
+    },
+    {
+     "facet": "table",
+     "n": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "m": 0.04002,
+     "base_srgb": [
+      27,
+      5,
+      8
+     ]
+    }
+   ]
+  }
+ },
+ "go_stone": {
+  "sprite": "stone_base.png",
+  "sprite_px_per_app_px": 6,
+  "canvas_app_px": 64,
+  "R_app_px": 23.5,
+  "radial": [
+   {
+    "r_px": 0.0,
+    "n_r": -0.0,
+    "n_z": 1.0,
+    "m": 0.08357,
+    "base_srgb": [
+     183,
+     180,
+     174
+    ]
+   },
+   {
+    "r_px": 1.042,
+    "n_r": 0.0175,
+    "n_z": 0.9998,
+    "m": 0.08398,
+    "base_srgb": [
+     189,
+     187,
+     181
+    ]
+   },
+   {
+    "r_px": 2.084,
+    "n_r": 0.0349,
+    "n_z": 0.9994,
+    "m": 0.08401,
+    "base_srgb": [
+     189,
+     186,
+     180
+    ]
+   },
+   {
+    "r_px": 3.127,
+    "n_r": 0.0524,
+    "n_z": 0.9986,
+    "m": 0.08396,
+    "base_srgb": [
+     189,
+     186,
+     180
+    ]
+   },
+   {
+    "r_px": 4.169,
+    "n_r": 0.0702,
+    "n_z": 0.9975,
+    "m": 0.08396,
+    "base_srgb": [
+     188,
+     186,
+     180
+    ]
+   },
+   {
+    "r_px": 5.211,
+    "n_r": 0.0883,
+    "n_z": 0.9961,
+    "m": 0.08399,
+    "base_srgb": [
+     189,
+     186,
+     180
+    ]
+   },
+   {
+    "r_px": 6.253,
+    "n_r": 0.1068,
+    "n_z": 0.9943,
+    "m": 0.08403,
+    "base_srgb": [
+     189,
+     186,
+     180
+    ]
+   },
+   {
+    "r_px": 7.295,
+    "n_r": 0.126,
+    "n_z": 0.992,
+    "m": 0.0841,
+    "base_srgb": [
+     188,
+     186,
+     179
+    ]
+   },
+   {
+    "r_px": 8.337,
+    "n_r": 0.1458,
+    "n_z": 0.9893,
+    "m": 0.08418,
+    "base_srgb": [
+     188,
+     186,
+     180
+    ]
+   },
+   {
+    "r_px": 9.38,
+    "n_r": 0.1662,
+    "n_z": 0.9861,
+    "m": 0.08404,
+    "base_srgb": [
+     187,
+     184,
+     178
+    ]
+   },
+   {
+    "r_px": 10.422,
+    "n_r": 0.188,
+    "n_z": 0.9822,
+    "m": 0.08418,
+    "base_srgb": [
+     188,
+     186,
+     180
+    ]
+   },
+   {
+    "r_px": 11.464,
+    "n_r": 0.2109,
+    "n_z": 0.9775,
+    "m": 0.0841,
+    "base_srgb": [
+     187,
+     185,
+     179
+    ]
+   },
+   {
+    "r_px": 12.506,
+    "n_r": 0.235,
+    "n_z": 0.972,
+    "m": 0.08419,
+    "base_srgb": [
+     189,
+     186,
+     181
+    ]
+   },
+   {
+    "r_px": 13.548,
+    "n_r": 0.261,
+    "n_z": 0.9653,
+    "m": 0.08427,
+    "base_srgb": [
+     188,
+     186,
+     181
+    ]
+   },
+   {
+    "r_px": 14.59,
+    "n_r": 0.2895,
+    "n_z": 0.9572,
+    "m": 0.08458,
+    "base_srgb": [
+     188,
+     186,
+     180
+    ]
+   },
+   {
+    "r_px": 15.633,
+    "n_r": 0.3208,
+    "n_z": 0.9472,
+    "m": 0.08484,
+    "base_srgb": [
+     186,
+     183,
+     177
+    ]
+   },
+   {
+    "r_px": 16.675,
+    "n_r": 0.3555,
+    "n_z": 0.9347,
+    "m": 0.08513,
+    "base_srgb": [
+     185,
+     183,
+     178
+    ]
+   },
+   {
+    "r_px": 17.717,
+    "n_r": 0.3946,
+    "n_z": 0.9188,
+    "m": 0.08586,
+    "base_srgb": [
+     184,
+     182,
+     177
+    ]
+   },
+   {
+    "r_px": 18.759,
+    "n_r": 0.44,
+    "n_z": 0.898,
+    "m": 0.08678,
+    "base_srgb": [
+     181,
+     179,
+     174
+    ]
+   },
+   {
+    "r_px": 19.801,
+    "n_r": 0.4939,
+    "n_z": 0.8695,
+    "m": 0.08868,
+    "base_srgb": [
+     176,
+     174,
+     169
+    ]
+   },
+   {
+    "r_px": 20.843,
+    "n_r": 0.5598,
+    "n_z": 0.8286,
+    "m": 0.09241,
+    "base_srgb": [
+     167,
+     165,
+     160
+    ]
+   },
+   {
+    "r_px": 21.886,
+    "n_r": 0.6445,
+    "n_z": 0.7646,
+    "m": 0.10126,
+    "base_srgb": [
+     159,
+     157,
+     152
+    ]
+   },
+   {
+    "r_px": 22.928,
+    "n_r": 0.7639,
+    "n_z": 0.6454,
+    "m": 0.13177,
+    "base_srgb": [
+     148,
+     146,
+     141
+    ]
+   },
+   {
+    "r_px": 23.97,
+    "n_r": 0.9673,
+    "n_z": 0.2498,
+    "m": 0.48673,
+    "base_srgb": [
+     94,
+     94,
+     93
+    ]
+   }
+  ],
+  "mesh": "polar grid, 64 segments, radii at the table rows plus a feather ring 0.5 px outside (m 0); n = (n_r cos phi, -n_r sin phi, n_z) normalised, phi in sprite space (y down); the forward key mirrors x and n.x"
+ },
+ "thumb": {
+  "sprite": "thumb_base.png",
+  "nm_map": "thumb_nm.png (240 px = 6x of the 40 px canvas; RGB = n*0.5+0.5 screen frame, A = m)",
+  "canvas_app_px": 40,
+  "R_app_px": 13.2,
+  "mesh": "polar grid, 56 segments x 19 radii to 13.2 px, plus a feather ring; sample nm_map at each vertex",
+  "sprite_px_per_app_px": 6
+ },
+ "resin": {
+  "profile": [
+   {
+    "y_from_groove_px": -4.833,
+    "n": [
+     0.0024,
+     0.9837,
+     0.1796
+    ],
+    "m": 0.01016,
+    "base_srgb": [
+     72,
+     61,
+     30
+    ]
+   },
+   {
+    "y_from_groove_px": -4.167,
+    "n": [
+     0.0158,
+     0.5429,
+     0.8397
+    ],
+    "m": 0.07855,
+    "base_srgb": [
+     241,
+     181,
+     60
+    ]
+   },
+   {
+    "y_from_groove_px": -3.833,
+    "n": [
+     0.0205,
+     0.3129,
+     0.9496
+    ],
+    "m": 0.08444,
+    "base_srgb": [
+     253,
+     204,
+     115
+    ]
+   },
+   {
+    "y_from_groove_px": -3.5,
+    "n": [
+     0.0232,
+     0.1107,
+     0.9936
+    ],
+    "m": 0.08424,
+    "base_srgb": [
+     240,
+     180,
+     63
+    ]
+   },
+   {
+    "y_from_groove_px": -3.167,
+    "n": [
+     0.0208,
+     0.0472,
+     0.9987
+    ],
+    "m": 0.08421,
+    "base_srgb": [
+     231,
+     171,
+     48
+    ]
+   },
+   {
+    "y_from_groove_px": -2.833,
+    "n": [
+     0.0208,
+     0.0421,
+     0.9989
+    ],
+    "m": 0.08424,
+    "base_srgb": [
+     230,
+     170,
+     48
+    ]
+   },
+   {
+    "y_from_groove_px": -2.5,
+    "n": [
+     0.0208,
+     0.0371,
+     0.9991
+    ],
+    "m": 0.08425,
+    "base_srgb": [
+     230,
+     170,
+     47
+    ]
+   },
+   {
+    "y_from_groove_px": -2.167,
+    "n": [
+     0.0204,
+     0.032,
+     0.9993
+    ],
+    "m": 0.08424,
+    "base_srgb": [
+     229,
+     169,
+     46
+    ]
+   },
+   {
+    "y_from_groove_px": -1.833,
+    "n": [
+     0.0192,
+     0.0269,
+     0.9995
+    ],
+    "m": 0.08422,
+    "base_srgb": [
+     228,
+     168,
+     46
+    ]
+   },
+   {
+    "y_from_groove_px": -1.5,
+    "n": [
+     0.0177,
+     0.0219,
+     0.9996
+    ],
+    "m": 0.08427,
+    "base_srgb": [
+     228,
+     169,
+     45
+    ]
+   },
+   {
+    "y_from_groove_px": -1.167,
+    "n": [
+     0.0161,
+     0.0168,
+     0.9997
+    ],
+    "m": 0.08423,
+    "base_srgb": [
+     227,
+     168,
+     45
+    ]
+   },
+   {
+    "y_from_groove_px": -0.833,
+    "n": [
+     0.0143,
+     0.0117,
+     0.9998
+    ],
+    "m": 0.08424,
+    "base_srgb": [
+     228,
+     169,
+     44
+    ]
+   },
+   {
+    "y_from_groove_px": -0.5,
+    "n": [
+     0.0123,
+     0.0066,
+     0.9999
+    ],
+    "m": 0.08422,
+    "base_srgb": [
+     226,
+     167,
+     44
+    ]
+   },
+   {
+    "y_from_groove_px": -0.167,
+    "n": [
+     0.0102,
+     0.0015,
+     0.9999
+    ],
+    "m": 0.08426,
+    "base_srgb": [
+     227,
+     168,
+     43
+    ]
+   },
+   {
+    "y_from_groove_px": 0.167,
+    "n": [
+     0.0079,
+     -0.0036,
+     1.0
+    ],
+    "m": 0.08425,
+    "base_srgb": [
+     227,
+     169,
+     43
+    ]
+   },
+   {
+    "y_from_groove_px": 0.5,
+    "n": [
+     0.0059,
+     -0.0087,
+     0.9999
+    ],
+    "m": 0.08424,
+    "base_srgb": [
+     228,
+     169,
+     43
+    ]
+   },
+   {
+    "y_from_groove_px": 0.833,
+    "n": [
+     0.0043,
+     -0.0138,
+     0.9999
+    ],
+    "m": 0.08425,
+    "base_srgb": [
+     227,
+     169,
+     42
+    ]
+   },
+   {
+    "y_from_groove_px": 1.167,
+    "n": [
+     0.0033,
+     -0.019,
+     0.9998
+    ],
+    "m": 0.08424,
+    "base_srgb": [
+     225,
+     167,
+     42
+    ]
+   },
+   {
+    "y_from_groove_px": 1.5,
+    "n": [
+     0.0027,
+     -0.0241,
+     0.9997
+    ],
+    "m": 0.08425,
+    "base_srgb": [
+     224,
+     166,
+     41
+    ]
+   },
+   {
+    "y_from_groove_px": 1.833,
+    "n": [
+     0.0027,
+     -0.0292,
+     0.9996
+    ],
+    "m": 0.08425,
+    "base_srgb": [
+     223,
+     166,
+     41
+    ]
+   },
+   {
+    "y_from_groove_px": 2.167,
+    "n": [
+     0.0032,
+     -0.0343,
+     0.9994
+    ],
+    "m": 0.08421,
+    "base_srgb": [
+     224,
+     167,
+     41
+    ]
+   },
+   {
+    "y_from_groove_px": 2.5,
+    "n": [
+     0.0047,
+     -0.0395,
+     0.9992
+    ],
+    "m": 0.08429,
+    "base_srgb": [
+     224,
+     167,
+     41
+    ]
+   },
+   {
+    "y_from_groove_px": 2.833,
+    "n": [
+     0.0091,
+     -0.0446,
+     0.999
+    ],
+    "m": 0.08418,
+    "base_srgb": [
+     221,
+     165,
+     40
+    ]
+   },
+   {
+    "y_from_groove_px": 3.167,
+    "n": [
+     0.0186,
+     -0.052,
+     0.9985
+    ],
+    "m": 0.08421,
+    "base_srgb": [
+     218,
+     163,
+     39
+    ]
+   },
+   {
+    "y_from_groove_px": 3.5,
+    "n": [
+     0.0209,
+     -0.2011,
+     0.9793
+    ],
+    "m": 0.08428,
+    "base_srgb": [
+     206,
+     154,
+     34
+    ]
+   },
+   {
+    "y_from_groove_px": 3.833,
+    "n": [
+     0.0172,
+     -0.428,
+     0.9036
+    ],
+    "m": 0.08486,
+    "base_srgb": [
+     182,
+     136,
+     40
+    ]
+   },
+   {
+    "y_from_groove_px": 4.167,
+    "n": [
+     0.0129,
+     -0.6586,
+     0.7524
+    ],
+    "m": 0.01402,
+    "base_srgb": [
+     148,
+     109,
+     29
+    ]
+   }
+  ],
+  "mesh": "a grid along the fill: columns every 8 px plus t-1.2, t, t+1.2 at every beat cut, rows = these profile rows (y relative to the groove centre line); vertex m = profile m x the fill's coverage at that column (0 in cuts and past the lead end)"
+ },
+ "reference": {
+  "files": [
+   "ref_key_at720_120_2x.png",
+   "ref_key_at300_780_2x.png",
+   "*_layer.png (layer x4)",
+   "ref_key_verts.json"
+  ],
+  "setup": "blank glass key, canvas 256x70 app px centred at the screen point, 1440x900 window, 2 px per app px, glass_normal.png over the panel colour (23,38,52), no label, gain 2.6, the pack's probes; raster: pixel centres, bilinear, clamp"
+ },
+ "glass_r16": {
+  "sprites": {
+   "normal": "glass_r16_normal.png",
+   "hover": "glass_r16_hover.png",
+   "pressed": "glass_r16_pressed.png"
+  },
+  "sprite_px_per_app_px": 6,
+  "canvas_app_px": [
+   256,
+   70
+  ],
+  "plate_app_px": [
+   232,
+   46
+  ],
+  "plate_at": [
+   12,
+   12
+  ],
+  "corner_radius": 16.0,
+  "thickness_px": 5.0,
+  "arris_px": 4.4,
+  "shadow": "soft drop shadow only (no contact line, no dark rim ring): offset (1.0, 1.6) px, blur 2.2 px, 22 % (hover (1.6, 2.6), 3.2, 20 %; pressed (0.5, 0.8), 1.3, 24 % + the dimple)",
+  "sprite_encoding": "as glass_key: straight alpha over the panel colour (23,38,52), margin fades out",
+  "label": "as glass_key.label (same passes, colours, offsets, ghost)",
+  "reflection_mesh": {
+   "rings": [
+    {
+     "inset_px": -0.5,
+     "tilt_deg": 0.0,
+     "m": 0.0
+    },
+    {
+     "inset_px": 0.0,
+     "tilt_deg": 39.93,
+     "m": 0.03415
+    },
+    {
+     "inset_px": 0.2,
+     "tilt_deg": 72.65,
+     "m": 0.059
+    },
+    {
+     "inset_px": 0.45,
+     "tilt_deg": 64.34,
+     "m": 0.04557
+    },
+    {
+     "inset_px": 0.8,
+     "tilt_deg": 55.23,
+     "m": 0.04868
+    },
+    {
+     "inset_px": 1.25,
+     "tilt_deg": 45.97,
+     "m": 0.09347
+    },
+    {
+     "inset_px": 1.8,
+     "tilt_deg": 36.38,
+     "m": 0.08587
+    },
+    {
+     "inset_px": 2.5,
+     "tilt_deg": 25.72,
+     "m": 0.08261
+    },
+    {
+     "inset_px": 3.4,
+     "tilt_deg": 13.23,
+     "m": 0.0815
+    },
+    {
+     "inset_px": 4.4,
+     "tilt_deg": 2.53,
+     "m": 0.08156
+    },
+    {
+     "inset_px": 5.6,
+     "tilt_deg": 0.0,
+     "m": 0.08172
+    }
+   ],
+   "face_m": 0.08165,
+   "feather": "inset -0.5 ring, m = 0",
+   "normal": "n = (o.x sin t, -o.y sin t, cos t), o = the outward direction (y down)",
+   "table_vs_per_pixel_rms_8bit": [
+    5.36,
+    4.67
+   ],
+   "face_rings_inset_px": [
+    7,
+    11,
+    16,
+    "h/2"
+   ],
+   "per_corner_segments": 10,
+   "side_spacing_app_px": 24
+  },
+  "reference": [
+   "ref_r16_at720_120_2x.png",
+   "ref_r16_at300_780_2x.png"
+  ],
+  "app_gain_note": "the owner tones reflections down: G = 2.6 x 0.3 in the app (references use 2.6)",
+  "nine_slice_insets_app_px": {
+   "l": 30,
+   "r": 30,
+   "t": 30,
+   "b": 30
+  },
+  "texture": "hq: faint micro-scratches (a height map, bump 0.8, 0.07-0.15 app px wide sleeks) and a slow waviness (noise bump 0.02) in the top face; corners 32 segments a quarter"
+ },
+ "glass_disc": {
+  "sprites": {
+   "normal": "glass_disc_normal.png",
+   "hover": "glass_disc_hover.png",
+   "pressed": "glass_disc_pressed.png"
+  },
+  "sprite_px_per_app_px": 6,
+  "canvas_app_px": [
+   72,
+   72
+  ],
+  "plate_app_px": [
+   48,
+   48
+  ],
+  "plate_at": [
+   12,
+   12
+  ],
+  "corner_radius": 23.98,
+  "thickness_px": 5.0,
+  "arris_px": 3.4,
+  "shadow": "soft drop shadow only (no contact line, no dark rim ring): offset (1.0, 1.6) px, blur 2.2 px, 22 % (hover (1.6, 2.6), 3.2, 20 %; pressed (0.5, 0.8), 1.3, 24 % + the dimple)",
+  "sprite_encoding": "as glass_key: straight alpha over the panel colour (23,38,52), margin fades out",
+  "label": "as glass_key.label (same passes, colours, offsets, ghost)",
+  "reflection_mesh": {
+   "rings": [
+    {
+     "inset_px": -0.5,
+     "tilt_deg": -0.0,
+     "m": 0.0
+    },
+    {
+     "inset_px": 0.0,
+     "tilt_deg": 47.99,
+     "m": 0.04142
+    },
+    {
+     "inset_px": 0.2,
+     "tilt_deg": 69.79,
+     "m": 0.05468
+    },
+    {
+     "inset_px": 0.45,
+     "tilt_deg": 59.89,
+     "m": 0.04278
+    },
+    {
+     "inset_px": 0.8,
+     "tilt_deg": 49.55,
+     "m": 0.08596
+    },
+    {
+     "inset_px": 1.25,
+     "tilt_deg": 38.94,
+     "m": 0.08702
+    },
+    {
+     "inset_px": 1.8,
+     "tilt_deg": 27.82,
+     "m": 0.08302
+    },
+    {
+     "inset_px": 2.5,
+     "tilt_deg": 15.11,
+     "m": 0.08189
+    },
+    {
+     "inset_px": 3.4,
+     "tilt_deg": 2.38,
+     "m": 0.08178
+    },
+    {
+     "inset_px": 4.4,
+     "tilt_deg": -0.0,
+     "m": 0.08162
+    },
+    {
+     "inset_px": 5.6,
+     "tilt_deg": -0.0,
+     "m": 0.08159
+    }
+   ],
+   "face_m": 0.08139,
+   "feather": "inset -0.5 ring, m = 0",
+   "normal": "n = (o.x sin t, -o.y sin t, cos t), o = the outward direction (y down)",
+   "table_vs_per_pixel_rms_8bit": [
+    5.74,
+    5.63
+   ],
+   "segments": 64,
+   "face_rings_inset_px": [
+    8,
+    14,
+    19
+   ],
+   "centre": "fan"
+  },
+  "reference": [
+   "ref_disc_at720_120_2x.png",
+   "ref_disc_at300_780_2x.png"
+  ],
+  "app_gain_note": "the owner tones reflections down: G = 2.6 x 0.3 in the app (references use 2.6)",
+  "scaling": "draw at 32..64 app px: scale the sprite and the mesh together (insets scale too)",
+  "texture": "hq: faint micro-scratches (a height map, bump 0.8, 0.07-0.15 app px wide sleeks) and a slow waviness (noise bump 0.02) in the top face; corners 32 segments a quarter"
+ }
+}

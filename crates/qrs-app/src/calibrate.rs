@@ -1,4 +1,4 @@
-//! Input calibration (owner request, D33; reworked the way Rocksmith 2014 does it in P23.10): each guitar input
+//! Input calibration (owner request, D33; reworked the way RS2014 does it in P23.10): each guitar input
 //! gets its own trim, pluck sensitivity and kind, so the pedalboard works on anyone's interface. The boards are
 //! voiced for a guitar peaking near -12 dBFS (the owner's Scarlett). Calibrate asks for the guitar's volume and tone
 //! knobs all the way up, listens to two seconds with the hands off the strings (the noise floor, and any mains
@@ -9,11 +9,17 @@
 //! both afterwards; the recommendation is kept so "Back to recommended" can restore it.
 //!
 //! config.json `input_cal` = {input id: {trim_db, onset, kind ("auto" | "dry" | "modeller" | "mic"), peak_db,
-//! floor_db, soft_db, rec_trim_db, rec_onset}}; the input id is the one `tone_by_input` uses
+//! floor_db, soft_db, rec_trim_db, rec_onset, instrument}}; the input id is the one `tone_by_input` uses
 //! ("Asio:Focusrite USB ASIO").
+//!
+//! The instrument (P32.1, D89): "guitar" (the default, and what an input without the key is), "bass" or "bass5".
+//! It is written only for a bass, so a guitar's entry is as it always was. An input never set takes config.json
+//! `instrument` (what the first-time setup asked), else a guitar. A bass is calibrated by its own rules (P32.2):
+//! plucked rather than strummed, its soft notes taken further under its playing level.
 
 use std::time::Instant;
 
+use qrs_analysis::instrument::Instrument;
 use qrs_library::Config;
 use serde_json::{Map, Value, json};
 
@@ -23,8 +29,9 @@ use crate::state::AppState;
 pub const TARGET_DB: f32 = -12.0;
 /// The loudest single hit, after the trim, stays under this (dBFS): headroom for a harder hit than the test's.
 pub const HEADROOM_DB: f32 = -3.0;
-/// The trim's range (dB).
-pub const TRIM: (f32, f32) = (-12.0, 24.0);
+/// The trim's range (dB): down to -24 so a device that sends a full-scale signal still fits the boards' level
+/// with headroom (P36.3; -12 before).
+pub const TRIM: (f32, f32) = (-24.0, 24.0);
 /// The pluck threshold's range (RMS): -56.5 .. -30.5 dBFS.
 pub const ONSET: (f32, f32) = (0.0015, 0.03);
 /// The pluck threshold (RMS) for a guitar input and a microphone, uncalibrated.
@@ -32,6 +39,9 @@ pub const ONSET_GUITAR: f32 = 0.004;
 pub const ONSET_MIC: f32 = 0.012;
 /// A soft pluck sits about this far under your hardest strumming's level (dB), and the threshold this far under that.
 pub const SOFT_BELOW_DB: f32 = 20.0;
+/// A bass's soft notes sit further under its playing level (P32.2): its strong fundamental keeps its level (RMS)
+/// nearer its peaks than a guitar's, and a finger's soft notes and ghost notes are softer than a soft pick stroke.
+pub const SOFT_BELOW_DB_BASS: f32 = 24.0;
 pub const SOFT_MARGIN_DB: f32 = 6.0;
 /// The threshold stays this far over the noise floor (dB).
 pub const NOISE_MARGIN_DB: f32 = 10.0;
@@ -91,6 +101,12 @@ pub struct InputCal {
     /// What it recommended (the sliders can move away from it; "Back to recommended" restores it).
     pub rec_trim_db: Option<f32>,
     pub rec_onset: Option<f32>,
+    /// What it plays (P32.1): a guitar unless set.
+    pub instrument: Instrument,
+    /// The last calibration's verdict (`Verdict::key`; None: an older config, read as good), and whether a verdict
+    /// that asked for another go was kept anyway ("Keep these settings anyway", P36.3).
+    pub verdict: Option<String>,
+    pub kept: bool,
 }
 
 impl Default for InputCal {
@@ -104,11 +120,32 @@ impl Default for InputCal {
             soft_db: None,
             rec_trim_db: None,
             rec_onset: None,
+            instrument: Instrument::Guitar,
+            verdict: None,
+            kept: false,
         }
     }
 }
 
 impl InputCal {
+    /// Whether it counts as calibrated (P36.3): measured, and the verdict didn't ask for another go (or it was
+    /// kept anyway). A config from before the verdict was saved reads as good.
+    pub fn calibrated(&self) -> bool {
+        self.peak_db.is_some()
+            && (self.kept || !self.verdict.as_deref().is_some_and(|v| Verdict::parse(v).retry()))
+    }
+
+    /// Calibrated, but with a verdict worth a word ("kept although it clipped", "a hot device").
+    pub fn caveat(&self) -> Option<&'static str> {
+        let v = Verdict::parse(self.verdict.as_deref()?);
+        match v {
+            _ if self.kept && v.retry() => Some("kept although it asked for another go"),
+            Verdict::HotDevice => Some("a hot device, turned down to fit"),
+            Verdict::Hot => Some("a little hot"),
+            _ => None,
+        }
+    }
+
     /// Whether there's a recommendation to go back to.
     pub fn has_recommendation(&self) -> bool {
         self.rec_trim_db.is_some()
@@ -154,9 +191,17 @@ pub fn onset_of(u: f32) -> f32 {
     lin((d * 2.0).round() / 2.0).clamp(ONSET.0, ONSET.1)
 }
 
+/// The instrument an input not set plays: what the first-time setup asked (config.json `instrument`), else a guitar.
+pub fn default_instrument(cfg: &Config) -> Instrument {
+    Instrument::parse(cfg.get("instrument").and_then(Value::as_str).unwrap_or(""))
+}
+
 pub fn load(cfg: &Config, id: &str) -> InputCal {
     let Some(m) = cfg.get("input_cal").and_then(|m| m.get(id)) else {
-        return InputCal::default();
+        return InputCal {
+            instrument: default_instrument(cfg),
+            ..InputCal::default()
+        };
     };
     let f = |k: &str| m.get(k).and_then(Value::as_f64).map(|v| v as f32);
     InputCal {
@@ -168,6 +213,12 @@ pub fn load(cfg: &Config, id: &str) -> InputCal {
         soft_db: f("soft_db"),
         rec_trim_db: f("rec_trim_db").map(|v| v.clamp(TRIM.0, TRIM.1)),
         rec_onset: f("rec_onset").filter(|v| *v > 0.0),
+        instrument: match m.get("instrument").and_then(Value::as_str) {
+            Some(i) => Instrument::parse(i),
+            None => default_instrument(cfg),
+        },
+        verdict: m.get("verdict").and_then(Value::as_str).map(str::to_string),
+        kept: m.get("kept").and_then(Value::as_bool).unwrap_or(false),
     }
 }
 
@@ -197,6 +248,16 @@ pub fn save(cfg: &mut Config, id: &str, c: &InputCal) {
     }
     if let Some(o) = c.rec_onset {
         v["rec_onset"] = json!(o);
+    }
+    if let Some(x) = &c.verdict {
+        v["verdict"] = json!(x);
+    }
+    if c.kept {
+        v["kept"] = json!(true);
+    }
+    // (a guitar's entry stays as it was, unless the setup's default is a bass: then it says guitar)
+    if c.instrument.is_bass() || default_instrument(cfg).is_bass() {
+        v["instrument"] = json!(c.instrument.key());
     }
     all.insert(id.to_string(), v);
     cfg.set("input_cal", Value::Object(all));
@@ -228,6 +289,14 @@ pub fn auto_kind(st: &AppState, name: &str) -> Kind {
     }
 }
 
+/// What the input now listening plays (a guitar with none).
+pub fn instrument(st: &AppState) -> Instrument {
+    match current_input(st) {
+        Some((id, _)) => load(&st.config, &id).instrument,
+        None => default_instrument(&st.config),
+    }
+}
+
 /// The guitar input now listening: (its id, its name).
 pub fn current_input(st: &AppState) -> Option<(String, String)> {
     let e = st.audio.as_ref()?.engine.clone();
@@ -247,6 +316,31 @@ pub fn apply(st: &AppState) {
         .unwrap_or_default();
     a.engine.set_input_gain_db(cal.trim_db);
     a.engine.set_onset_floor(cal.onset_or_default(mic));
+    // (P41.1, D163: the gates' threshold from this input's measured noise, after the input boost)
+    qrs_audio::board::set_noise_floor(cal.floor_db.map(|f| f + cal.trim_db));
+}
+
+/// Learn the input's noise (P41.1, D163; the room's "Learn noise"): `levels` are the input's level (dBFS, after the
+/// input boost) over a couple of seconds with the hands off the strings. Its median, less the boost, is kept as the
+/// input's noise floor (`floor_db`, as Calibrate measures it), and the gates take their threshold from it. Returns the
+/// floor after the boost, or None when nothing was heard or the input isn't known.
+pub fn learn_noise(st: &mut AppState, levels: &[f32]) -> Option<f32> {
+    let mut v: Vec<f32> = levels
+        .iter()
+        .copied()
+        .filter(|l| l.is_finite() && *l > -140.0)
+        .collect();
+    if v.len() < 5 {
+        return None;
+    }
+    let (id, _) = current_input(st)?;
+    let median = percentile(&mut v, 50);
+    let mut cal = load(&st.config, &id);
+    cal.floor_db = Some(((median - cal.trim_db) * 10.0).round() / 10.0);
+    save(&mut st.config, &id, &cal);
+    st.save_config();
+    apply(st);
+    Some(median)
 }
 
 /// Whether the pedalboard tile belongs on screen: not on an amp modeller (the MG-300 has its own tone), unless you
@@ -297,6 +391,8 @@ pub enum Verdict {
     VeryQuiet,
     /// Close to the top, or a clip or two on the hardest hits.
     Hot,
+    /// A modeller (or another digital device) sending at full scale: turned down to fit, not a failure (P36.3).
+    HotDevice,
     /// Mains hum while the hands were off the strings.
     Hum,
     /// A noisy input (a mic in a room, hum).
@@ -312,6 +408,7 @@ impl Verdict {
             Verdict::Clipping => "Too loud: your interface clipped",
             Verdict::VeryQuiet => "Very quiet",
             Verdict::Hot => "Calibrated, a little hot",
+            Verdict::HotDevice => "Calibrated: your device sends a very hot signal",
             Verdict::Hum => "Calibrated, with some hum",
             Verdict::Noisy => "Calibrated, a noisy input",
             Verdict::Good => "Calibrated",
@@ -321,6 +418,36 @@ impl Verdict {
     /// Whether it asks for another go after changing something on the interface.
     pub fn retry(self) -> bool {
         matches!(self, Verdict::Nothing | Verdict::Clipping | Verdict::VeryQuiet)
+    }
+
+    /// Its word in config.json (`input_cal[id].verdict`).
+    pub fn key(self) -> &'static str {
+        match self {
+            Verdict::Nothing => "nothing",
+            Verdict::Clipping => "clipping",
+            Verdict::VeryQuiet => "veryquiet",
+            Verdict::Hot => "hot",
+            Verdict::HotDevice => "hotdevice",
+            Verdict::Hum => "hum",
+            Verdict::Noisy => "noisy",
+            Verdict::Good => "good",
+        }
+    }
+
+    /// From its word (anything else: good, as configs before P36.3 have none).
+    pub fn parse(s: &str) -> Verdict {
+        [
+            Verdict::Nothing,
+            Verdict::Clipping,
+            Verdict::VeryQuiet,
+            Verdict::Hot,
+            Verdict::HotDevice,
+            Verdict::Hum,
+            Verdict::Noisy,
+        ]
+        .into_iter()
+        .find(|v| v.key() == s)
+        .unwrap_or(Verdict::Good)
     }
 }
 
@@ -369,6 +496,20 @@ fn percentile(v: &mut [f32], q: usize) -> f32 {
 ///   never within 10 dB of the noise floor, 0.0015..0.03 RMS;
 /// - clipping: in 3 windows or more (or 5% of them), or the loudest playing over -1 dBFS; once or twice is "hot".
 pub fn recommend(m: &Measure, kind: Kind) -> Outcome {
+    recommend_for(m, kind, Instrument::Guitar)
+}
+
+/// `recommend` for an instrument: a bass's soft notes are taken `SOFT_BELOW_DB_BASS` under its playing (P32.2),
+/// and the words say bass; a guitar's is `recommend`'s, unchanged.
+pub fn recommend_for(m: &Measure, kind: Kind, inst: Instrument) -> Outcome {
+    recommend_device(m, kind, inst, kind)
+}
+
+/// `recommend_for` knowing what the device is (`device`: the kind, Automatic resolved): on an amp modeller a
+/// full-scale signal is its USB send level, not an interface clipping, so it's turned down to fit and called a
+/// hot device (P36.3) instead of asking for a gain knob it hasn't got.
+pub fn recommend_device(m: &Measure, kind: Kind, inst: Instrument, device: Kind) -> Outcome {
+    let w = if inst.is_bass() { "bass" } else { "guitar" };
     let mut q = m.quiet.clone();
     let floor = if q.is_empty() {
         1e-5
@@ -383,12 +524,15 @@ pub fn recommend(m: &Measure, kind: Kind) -> Outcome {
         return Outcome {
             cal: None,
             verdict: Verdict::Nothing,
-            message: "Nothing heard while strumming: is the guitar plugged in, its volume up, and the interface's \
-                      instrument (INST / Hi-Z) input on?"
-                .into(),
-            advice: "Is the guitar plugged in, its volume up, and the interface's instrument (INST or Hi-Z) input \
-                     on? Check the input channel too, then try again."
-                .into(),
+            message: format!(
+                "Nothing heard while {}: is the {w} plugged in, its volume up, and the interface's instrument \
+                 (INST / Hi-Z) input on?",
+                if inst.is_bass() { "playing" } else { "strumming" }
+            ),
+            advice: format!(
+                "Is the {w} plugged in, its volume up, and the interface's instrument (INST or Hi-Z) input on? \
+                 Check the input channel too, then try again."
+            ),
             ok: false,
             found: Found {
                 floor_db,
@@ -407,7 +551,12 @@ pub fn recommend(m: &Measure, kind: Kind) -> Outcome {
         loud * 0.35 // (a strum's level sits about 9 dB under its peaks)
     };
     let (loud_db, max_db) = (db(loud), db(max));
-    let soft_db = db(level) - SOFT_BELOW_DB;
+    let soft_db = db(level)
+        - if inst.is_bass() {
+            SOFT_BELOW_DB_BASS
+        } else {
+            SOFT_BELOW_DB
+        };
     // the trim: the loudest playing to the boards' level, with headroom over the loudest hit
     let want = TARGET_DB - loud_db;
     let cap = HEADROOM_DB - max_db;
@@ -428,6 +577,9 @@ pub fn recommend(m: &Measure, kind: Kind) -> Outcome {
         soft_db: Some(soft_db),
         rec_trim_db: Some(trim),
         rec_onset: Some(onset),
+        instrument: inst,
+        verdict: None,
+        kept: false,
     };
     let n = playing.len();
     let clips = m.clip_windows.min(n);
@@ -442,13 +594,26 @@ pub fn recommend(m: &Measure, kind: Kind) -> Outcome {
     };
     let set = format!("trim {trim:+.1} dB");
     let hum = m.hum.is_some_and(|h| h > 0.5) && floor_db > -66.0;
-    let (verdict, message, advice) = if clips >= 3 || clips * 20 > n || loud_db > -1.0 {
+    let clipping = clips >= 3 || clips * 20 > n || loud_db > -1.0;
+    let (verdict, message, advice) = if clipping && device == Kind::Modeller {
+        (
+            Verdict::HotDevice,
+            format!("Calibrated: your device sends a very hot signal, turned down to fit ({set})"),
+            "Your modeller sends at the top of the scale over USB. quickRS turned it down to fit; if you can, \
+             lower its USB (record) level in its app or menu so its loudest notes stay just under the top."
+                .to_string(),
+        )
+    } else if clipping {
         (
             Verdict::Clipping,
-            format!("Your interface clipped: turn its gain knob down a little and calibrate again ({set} for now)"),
-            "Turn the gain knob on your interface down a little, so its light stays off on your hardest strum, then \
-             calibrate again."
-                .to_string(),
+            format!(
+                "Your interface clipped: turn its gain knob down a little and calibrate again ({set} for now)"
+            ),
+            format!(
+                "Turn the gain knob on your interface down a little, so its light stays off on your hardest {}, \
+                 then calibrate again.",
+                if inst.is_bass() { "note" } else { "strum" }
+            ),
         )
     } else if want > TRIM.1 {
         (
@@ -457,9 +622,10 @@ pub fn recommend(m: &Measure, kind: Kind) -> Outcome {
                 "Very quiet (peaks at {loud_db:.0} dB): turn the gain up on your interface and calibrate again \
                  ({set}, the most)"
             ),
-            "Turn the gain knob on your interface up (and the guitar's volume, if it isn't all the way up), then \
-             calibrate again: the trim can add 24 dB, no more."
-                .to_string(),
+            format!(
+                "Turn the gain knob on your interface up (and the {w}'s volume, if it isn't all the way up), then \
+                 calibrate again: the trim can add 24 dB, no more."
+            ),
         )
     } else if clips > 0 || loud_db > -4.0 || max_db > -1.0 {
         (
@@ -478,8 +644,9 @@ pub fn recommend(m: &Measure, kind: Kind) -> Outcome {
         (
             Verdict::Hum,
             format!("Calibrated, {set}; mains hum at {floor_db:.0} dB: plucks are counted above it"),
-            "Some mains hum with your hands off the strings: move away from the computer and screen, or try \
-             another socket. Plucks are counted above it."
+            "Some mains hum with your hands off the strings. Plug your amp or interface into the same power strip \
+             as the computer; a USB-powered modeller hums through the USB ground, and a USB isolator or a ground \
+             lift stops it; sit facing away from the screen. Plucks are counted above it."
                 .to_string(),
         )
     } else if floor_db > -50.0 {
@@ -504,6 +671,8 @@ pub fn recommend(m: &Measure, kind: Kind) -> Outcome {
             "A good level: your loudest playing has room to spare and soft notes still count.".to_string(),
         )
     };
+    let mut cal = cal;
+    cal.verdict = Some(verdict.key().to_string());
     Outcome {
         cal: Some(cal),
         verdict,
@@ -596,6 +765,9 @@ pub struct Run {
     clips_seen: u32,
     loudest: f32,
     kind: Kind,
+    inst: Instrument,
+    /// What the device is (the kind, Automatic resolved): a modeller's full-scale signal is a hot device.
+    pub device: Kind,
     /// Screenshots: a made-up run, held at (its phase, how far).
     staged: Option<(Phase, f32)>,
     last_t: f64,
@@ -603,6 +775,11 @@ pub struct Run {
 
 impl Run {
     pub fn new(id: String, clips: u32, kind: Kind) -> Run {
+        Run::for_instrument(id, clips, kind, Instrument::Guitar)
+    }
+
+    /// A run for an instrument: a bass is asked to pluck its open strings hard rather than strum (P32.2).
+    pub fn for_instrument(id: String, clips: u32, kind: Kind, inst: Instrument) -> Run {
         Run {
             id,
             phase: Phase::Quiet,
@@ -618,6 +795,8 @@ impl Run {
             clips_seen: clips,
             loudest: 0.0,
             kind,
+            inst,
+            device: kind,
             staged: None,
             last_t: 0.0,
         }
@@ -660,6 +839,7 @@ impl Run {
             None => (self.phase, self.frac(self.last_t)),
         };
         let since = self.last_t - self.phase_at;
+        let bass = self.inst.is_bass();
         match phase {
             Phase::Quiet => Prompt {
                 phase,
@@ -670,8 +850,16 @@ impl Run {
             },
             Phase::Count => Prompt {
                 phase,
-                head: "Get ready to strum",
-                sub: "Hard, on all strings, again and again, until the bar fills.",
+                head: if bass {
+                    "Get ready to play"
+                } else {
+                    "Get ready to strum"
+                },
+                sub: if bass {
+                    "Pluck the open strings hard, one after another, until the bar fills."
+                } else {
+                    "Hard, on all strings, again and again, until the bar fills."
+                },
                 count: Some(match self.staged {
                     Some((_, f)) => (3.0 - f * 3.0).ceil().max(1.0) as u32,
                     None => (COUNT_S - since).ceil().max(1.0) as u32,
@@ -680,9 +868,19 @@ impl Run {
             },
             Phase::Strum => Prompt {
                 phase,
-                head: "Go! Strum as hard as you can",
+                head: if bass {
+                    "Go! Pluck as hard as you can"
+                } else {
+                    "Go! Strum as hard as you can"
+                },
                 sub: if self.staged.is_none() && self.played == 0 && since > 3.0 {
-                    "Nothing heard yet: is the guitar's volume up, and the right input and channel picked?"
+                    if bass {
+                        "Nothing heard yet: is the bass's volume up, and the right input and channel picked?"
+                    } else {
+                        "Nothing heard yet: is the guitar's volume up, and the right input and channel picked?"
+                    }
+                } else if bass {
+                    "Every string, really hard, again and again, until the bar fills."
                 } else {
                     "All strings, really loud, again and again, until the bar fills."
                 },
@@ -762,7 +960,7 @@ impl Run {
                     self.win_start = t;
                 }
                 let done = self.played >= STRUM_NEED || t - self.phase_at >= STRUM_MAX_S;
-                done.then(|| recommend(&self.m, self.kind))
+                done.then(|| recommend_device(&self.m, self.kind, self.inst, self.device))
             }
         }
     }
@@ -942,6 +1140,56 @@ mod tests {
         assert!((db(onset_of(0.0)) - db(ONSET.1)).abs() < 0.1);
     }
 
+    /// P32.1 / P32.2: the instrument is kept per input (a guitar's entry has no key, as before), an input never set
+    /// takes the setup's default, and a bass gets its own pluck threshold from the same playing; a guitar's
+    /// calibration is what it was.
+    #[test]
+    fn the_instrument_is_kept_and_a_bass_is_calibrated_by_its_rules() {
+        let mut cfg = Config::default();
+        let id = "Asio:Focusrite USB ASIO";
+        let g = recommend(&measure(-75.0, -15.0, 0, None), Kind::Dry).cal.unwrap();
+        assert_eq!(g.instrument, Instrument::Guitar);
+        save(&mut cfg, id, &g);
+        let raw = cfg.get("input_cal").and_then(|m| m.get(id)).cloned().unwrap();
+        assert!(raw.get("instrument").is_none(), "{raw}");
+        assert_eq!(load(&cfg, id), g);
+        // the same playing on a bass: the same trim, the threshold 4 dB lower, the words a bass's
+        let m = measure(-75.0, -15.0, 0, None);
+        let b = recommend_for(&m, Kind::Dry, Instrument::Bass);
+        let bc = b.cal.clone().unwrap();
+        assert_eq!(bc.trim_db, g.trim_db);
+        assert!(
+            (db(g.onset.unwrap()) - db(bc.onset.unwrap()) - 4.0).abs() < 0.6,
+            "{g:?} {bc:?}"
+        );
+        assert_eq!(
+            recommend_for(&m, Kind::Dry, Instrument::Guitar),
+            recommend(&m, Kind::Dry)
+        );
+        let none = recommend_for(&measure(-80.0, -85.0, 0, None), Kind::Dry, Instrument::Bass5);
+        assert!(none.message.contains("bass") && !none.message.contains("guitar"));
+        save(&mut cfg, id, &bc);
+        assert_eq!(load(&cfg, id).instrument, Instrument::Bass);
+        // the setup said bass: inputs never set are basses; one set to guitar says so
+        assert_eq!(load(&cfg, "Wasapi:other").instrument, Instrument::Guitar);
+        cfg.set("instrument", json!("bass5"));
+        assert_eq!(load(&cfg, "Wasapi:other").instrument, Instrument::Bass5);
+        let mut c = load(&cfg, "Wasapi:other");
+        c.instrument = Instrument::Guitar;
+        save(&mut cfg, "Wasapi:other", &c);
+        assert_eq!(load(&cfg, "Wasapi:other").instrument, Instrument::Guitar);
+        // a bass's run asks it to pluck
+        let r = Run::for_instrument(String::new(), 0, Kind::Dry, Instrument::Bass);
+        assert!(r.prompt().head.contains("Hands off"));
+        let mut r = r;
+        let mut t = 0.0;
+        while r.phase != Phase::Count {
+            r.feed_at(t, lin(-80.0), lin(-70.0), 0);
+            t += 0.02;
+        }
+        assert!(r.prompt().sub.contains("Pluck"));
+    }
+
     #[test]
     fn hum_is_told_from_noise() {
         let rate = 48_000;
@@ -1010,5 +1258,54 @@ mod tests {
         let mut s = Run::staged(Phase::Strum, 0.6, -14.0);
         assert!(s.feed_at(100.0, 0.5, 0.5, 9).is_none());
         assert_eq!(s.prompt().frac, 0.6);
+    }
+
+    #[test]
+    fn a_hot_modeller_is_turned_down_not_failed() {
+        // a modeller over USB peaking at full scale: the "interface clipped" in every window
+        let m = measure(-80.0, -0.2, 40, None);
+        let o = recommend_device(&m, Kind::Auto, Instrument::Guitar, Kind::Modeller);
+        assert_eq!(o.verdict, Verdict::HotDevice);
+        assert!(!o.verdict.retry());
+        let c = o.cal.clone().unwrap();
+        assert!(c.trim_db <= -12.0, "{}", c.trim_db);
+        assert!(c.calibrated());
+        assert!(o.advice.contains("USB") && !o.advice.contains("gain knob"));
+        // a dry guitar with real clip windows still clips
+        let o = recommend_device(&m, Kind::Dry, Instrument::Guitar, Kind::Dry);
+        assert_eq!(o.verdict, Verdict::Clipping);
+        assert!(o.advice.contains("gain knob"));
+    }
+
+    #[test]
+    fn a_failed_calibration_is_not_calibrated_unless_kept() {
+        let mut cfg = Config::default();
+        let o = recommend(&measure(-80.0, -0.2, 40, None), Kind::Dry);
+        assert_eq!(o.verdict, Verdict::Clipping);
+        let mut c = o.cal.unwrap();
+        save(&mut cfg, "W:clip", &c);
+        let back = load(&cfg, "W:clip");
+        assert_eq!(back.verdict.as_deref(), Some("clipping"));
+        assert!(!back.calibrated());
+        c.kept = true;
+        save(&mut cfg, "W:clip", &c);
+        let back = load(&cfg, "W:clip");
+        assert!(back.kept && back.calibrated());
+        assert!(back.caveat().is_some());
+        // a good one, and one saved before verdicts were (read as good)
+        let good = recommend(&measure(-75.0, -15.0, 0, None), Kind::Dry).cal.unwrap();
+        assert!(good.calibrated() && good.caveat().is_none());
+        let mut old = good.clone();
+        old.verdict = None;
+        save(&mut cfg, "W:old", &old);
+        assert!(load(&cfg, "W:old").calibrated());
+        for v in [
+            Verdict::Clipping,
+            Verdict::HotDevice,
+            Verdict::Good,
+            Verdict::VeryQuiet,
+        ] {
+            assert_eq!(Verdict::parse(v.key()), v);
+        }
     }
 }

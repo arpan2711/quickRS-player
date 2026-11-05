@@ -2,7 +2,7 @@
 //!
 //! wgpu's own choice on Windows is Vulkan first. Some Intel integrated-graphics drivers crash inside their Vulkan
 //! driver (igvk64.dll) before the first frame, so the window flashes and the process is gone (a 0.1.0 user's report,
-//! 2026-10-16). Windows draws with DirectX 12 instead, as Rocksmith and most games do. A start that dies before its
+//! 2026-10-16). Windows draws with DirectX 12 instead, as RS and most games do. A start that dies before its
 //! first frame leaves a marker behind, and the next start falls back to OpenGL. `QUICKRS_GPU` (or wgpu's own
 //! `WGPU_BACKEND`): `dx12`, `vulkan`, `gl` or a comma list picks it by hand. Other systems keep wgpu's choice.
 

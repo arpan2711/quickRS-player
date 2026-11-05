@@ -247,6 +247,12 @@ impl Pedal for Multiband {
 
 // -- Noise Gate ------------------------------------------------------------------------------------------------------
 
+/// The noise gate (P41.1, D162): it listens to its key and turns down what passes through it. Keyed on the board's
+/// input (the DI, `Key` = Input, the default), it can sit after the amp: the amp's sustain and hiss fade together over
+/// the release, as the NAM plugin's and Neural DSP's gates work, instead of a fade at the input that a high-gain amp
+/// squashes into a chop. `Key` = Here listens to what reaches it (every gate saved before P41.1, so they sound as they
+/// did). Range is how far it turns down when closed (-90: all the way, as before; -30: a gentle gate). The key keeps
+/// its 800 Hz band-pass (hum doesn't hold it open), 6 dB of hysteresis and a 30 ms hold.
 struct Gate {
     rate: f32,
     env: f32,
@@ -257,8 +263,12 @@ struct Gate {
     held: usize,
     open: bool,
     gain: f32,
+    /// The gain when closed (from Range).
+    floor: f32,
     att_c: f32,
     rel_c: f32,
+    /// Keyed on the board's input (else on its own input).
+    keyed: bool,
     key: Svf,
 }
 
@@ -273,49 +283,157 @@ pub fn gate(rate: f32) -> Box<dyn Pedal> {
         held: 0,
         open: false,
         gain: 0.0,
+        floor: 0.0,
         att_c: coef_ms(rate, 0.6),
         rel_c: coef_ms(rate, 80.0),
+        keyed: true,
         key: Svf::new(rate, 800.0, 0.5),
     })
+}
+
+impl Gate {
+    #[inline]
+    fn step(&mut self, k_in: f32) -> f32 {
+        // the key ignores the lowest hum: a band-pass around the guitar's body
+        let k = self.key.tick(k_in).bp;
+        let a = k.abs().max(k_in.abs() * 0.5);
+        self.env = flush(self.env + (a - self.env) * if a > self.env { 0.5 } else { self.env_c });
+        if self.env > self.open_thr {
+            self.open = true;
+            self.held = self.hold;
+        } else if self.env < self.close_thr {
+            if self.held > 0 {
+                self.held -= 1;
+            } else {
+                self.open = false;
+            }
+        }
+        let target = if self.open { 1.0 } else { self.floor };
+        let c = if target > self.gain {
+            self.att_c
+        } else {
+            self.rel_c
+        };
+        self.gain = flush(self.gain + (target - self.gain) * c);
+        self.gain
+    }
 }
 
 impl Pedal for Gate {
     fn process(&mut self, x: &mut [f32]) {
         for v in x.iter_mut() {
-            // the key ignores the lowest hum: a band-pass around the guitar's body
-            let k = self.key.tick(*v).bp;
-            let a = k.abs().max(v.abs() * 0.5);
-            self.env = flush(self.env + (a - self.env) * if a > self.env { 0.5 } else { self.env_c });
-            if self.env > self.open_thr {
-                self.open = true;
-                self.held = self.hold;
-            } else if self.env < self.close_thr {
-                if self.held > 0 {
-                    self.held -= 1;
-                } else {
-                    self.open = false;
-                }
-            }
-            let target = if self.open { 1.0 } else { 0.0 };
-            let c = if target > self.gain {
-                self.att_c
-            } else {
-                self.rel_c
-            };
-            self.gain = flush(self.gain + (target - self.gain) * c);
-            *v *= self.gain;
+            let g = self.step(*v);
+            *v *= g;
+        }
+    }
+    fn process_keyed(&mut self, x: &mut [f32], key: &[f32]) {
+        if !self.keyed || key.len() < x.len() {
+            self.process(x);
+            return;
+        }
+        for (v, &k) in x.iter_mut().zip(key) {
+            let g = self.step(k);
+            *v *= g;
         }
     }
     fn set(&mut self, v: &[f32; MAX_KNOBS]) {
         self.open_thr = db_to_gain(v[0]);
         self.close_thr = db_to_gain(v[0] - 6.0);
         self.rel_c = coef_ms(self.rate, v[1]);
+        // (Range at its bottom is all the way down, as the gate always was)
+        self.floor = if v[2] <= -89.9 { 0.0 } else { db_to_gain(v[2]) };
+        self.keyed = v[3] < 0.5;
     }
     fn reset(&mut self) {
         self.env = 0.0;
-        self.gain = 0.0;
+        self.gain = self.floor;
         self.open = false;
         self.key.reset();
+    }
+}
+
+// -- Opto: a light-cell compressor (P37.2) ------------------------------------------------------------------------
+
+/// The LA-2A's T4 cell: the gain reduction is two parts, one quick (charges in ~10 ms, lets go in ~60 ms) and one
+/// slow (charges over about a second of compressing, lets go over a couple): after a single note it recovers
+/// quickly, after a long loud phrase slowly. That is the programme-dependent release fingerstyle and Motown bass
+/// players like it for. Peak reduction sets the threshold; Limit raises the ratio from about 3 to 10.
+struct Opto {
+    rate: f32,
+    thr: f32,
+    ratio: f32,
+    fast: f32,
+    slow: f32,
+    env: f32,
+    c: [f32; 5],
+    makeup: Smooth,
+    mix: Smooth,
+}
+
+pub fn opto(rate: f32) -> Box<dyn Pedal> {
+    Box::new(Opto {
+        rate,
+        thr: -20.0,
+        ratio: 3.0,
+        fast: 0.0,
+        slow: 0.0,
+        env: 0.0,
+        c: [
+            coef_ms(rate, 10.0),
+            coef_ms(rate, 60.0),
+            coef_ms(rate, 900.0),
+            coef_ms(rate, 2200.0),
+            coef_ms(rate, 5.0),
+        ],
+        makeup: Smooth::new(rate, 30.0, 1.0),
+        mix: Smooth::new(rate, 30.0, 1.0),
+    })
+}
+
+impl Opto {
+    /// dB of gain reduction now.
+    #[inline]
+    fn reduction(&mut self, x: f32) -> f32 {
+        let a = x.abs();
+        // the cell sees an averaged level (a light, not a peak)
+        self.env = flush(self.env + (a - self.env) * if a > self.env { self.c[4] } else { self.c[1] });
+        let lvl = 20.0 * (self.env + 1e-9).log10();
+        let over = (lvl - self.thr).max(0.0);
+        let want = over * (1.0 - 1.0 / self.ratio);
+        let step = |s: &mut f32, up: f32, down: f32| {
+            *s = flush(*s + (want - *s) * if want > *s { up } else { down });
+        };
+        step(&mut self.fast, self.c[0], self.c[1]);
+        step(&mut self.slow, self.c[2], self.c[3]);
+        0.6 * self.fast + 0.4 * self.slow
+    }
+}
+
+impl Pedal for Opto {
+    fn process(&mut self, x: &mut [f32]) {
+        for v in x.iter_mut() {
+            let r = self.reduction(*v);
+            let y = *v * db_to_gain(-r) * self.makeup.tick();
+            let m = self.mix.tick();
+            *v = *v * (1.0 - m) + y * m;
+        }
+    }
+    fn set(&mut self, v: &[f32; MAX_KNOBS]) {
+        let (peak, gain) = (unit10(v[0]), v[1]);
+        self.thr = -6.0 - 34.0 * peak;
+        self.ratio = if v[2] >= 0.5 { 10.0 } else { 3.0 };
+        // makeup: half the reduction the threshold would give a hard note, then the Gain knob about noon
+        let auto = (-12.0 - self.thr).max(0.0) * (1.0 - 1.0 / self.ratio) * 0.5;
+        self.makeup.target = db_to_gain(auto + (gain - 5.0) * 2.4);
+        self.mix.target = (v[3] / 100.0).clamp(0.0, 1.0);
+        let _ = self.rate;
+    }
+    fn reset(&mut self) {
+        self.fast = 0.0;
+        self.slow = 0.0;
+        self.env = 0.0;
+        self.makeup.snap();
+        self.mix.snap();
     }
 }
 

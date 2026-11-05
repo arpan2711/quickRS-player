@@ -2,7 +2,8 @@
 //! [`View`]. Two blends, as the game: alpha for solid things, additive (premultiplied colour with alpha 0) for
 //! light (lit lines, halos, flashes).
 
-use eframe::egui::{Align2, Color32, Mesh, Painter, Pos2, Shape, Stroke, pos2, vec2};
+use eframe::egui::epaint::Vertex;
+use eframe::egui::{Align2, Color32, Mesh, Painter, Pos2, Rect, Shape, Stroke, TextureId, pos2, vec2};
 use qrs_ui::text::{self, Style};
 
 use super::view::{V3, View};
@@ -43,6 +44,10 @@ pub fn smooth(u: f32) -> f32 {
 pub struct Pen<'a> {
     pub p: &'a Painter,
     pub v: &'a View,
+    /// The song's note material's colours (skin.rs).
+    pub pal: &'a Pal,
+    /// The note material's atlas (6 gems in a row, low E first), when the skin is loaded.
+    pub gems: Option<TextureId>,
 }
 
 impl Pen<'_> {
@@ -188,6 +193,43 @@ impl Pen<'_> {
         Some(size)
     }
 
+    /// A round additive glow of radius r px: `inner` at the centre falling to `outer` at the rim.
+    pub fn glow(&self, c: Pos2, r: f32, inner: Color32, outer: Color32) {
+        if r < 0.5 {
+            return;
+        }
+        let mut m = Mesh::default();
+        m.colored_vertex(c, inner);
+        let n = 32;
+        for k in 0..=n {
+            let a = k as f32 / n as f32 * std::f32::consts::TAU;
+            m.colored_vertex(c + vec2(a.cos(), a.sin()) * r, outer);
+            if k > 0 {
+                m.add_triangle(0, k, k + 1);
+            }
+        }
+        self.p.add(Shape::mesh(m));
+    }
+
+    /// A textured quad (corners tl tr br bl) with `uv`, tinted by `tint` (premultiplied; alpha 0 adds light).
+    pub fn tex_quad(&self, q: [V3; 4], tex: TextureId, uv: Rect, tint: Color32) {
+        let Some(s) = self.pts(&q) else {
+            return;
+        };
+        let mut m = Mesh::with_texture(tex);
+        let uvs = [uv.left_top(), uv.right_top(), uv.right_bottom(), uv.left_bottom()];
+        for (p, t) in s.iter().zip(uvs) {
+            m.vertices.push(Vertex {
+                pos: *p,
+                uv: t,
+                color: tint,
+            });
+        }
+        m.add_triangle(0, 1, 2);
+        m.add_triangle(0, 2, 3);
+        self.p.add(Shape::mesh(m));
+    }
+
     /// A soft additive halo `w` px wide around a convex screen polygon.
     pub fn halo(&self, s: &[Pos2], w: f32, col: Color32) {
         if w < 0.5 || s.len() < 3 {
@@ -271,7 +313,7 @@ pub fn text_sharp(p: &Painter, s: &str, pos: Pos2, st: Style) -> f32 {
     x - pos.x
 }
 
-// Colours, low E (string 0) first. Measured on Rocksmith (research/spec 02, 04, 05), sRGB as decoded.
+// Colours, low E (string 0) first. Measured on RS (research/spec 02, 04, 05), sRGB as decoded.
 
 /// The game's own string hues (`ActorGuitarString.EnabledColors`).
 pub const STR_GAME: [Color32; 6] = [
@@ -332,6 +374,149 @@ pub const STR_LIT: [Color32; 6] = [
     rgb(64, 181, 26),
     rgb(185, 62, 206),
 ];
+/// A note material's colours: strings and stems, gem faces, rims, lit strings (low E first).
+pub struct Pal {
+    pub str_game: [Color32; 6],
+    pub rim: [Color32; 6],
+    pub face_top: [Color32; 6],
+    pub face_mid: [Color32; 6],
+    pub face_bot: [Color32; 6],
+    pub top_face: [Color32; 6],
+    pub str_lit: [Color32; 6],
+}
+
+/// RS's measured colours (the highway without its skin).
+pub static GAME: Pal = Pal {
+    str_game: STR_GAME,
+    rim: RIM,
+    face_top: FACE_TOP,
+    face_mid: FACE_MID,
+    face_bot: FACE_BOT,
+    top_face: TOP_FACE,
+    str_lit: STR_LIT,
+};
+
+/// Bakelite (the owner's pick m5): maroon, butterscotch, navy, tangerine, bottle green, grape; strings lifted so the
+/// dark ones still read.
+pub static BAKELITE: Pal = Pal {
+    str_game: [
+        rgb(214, 72, 72),
+        rgb(236, 192, 86),
+        rgb(86, 120, 226),
+        rgb(242, 132, 58),
+        rgb(62, 176, 100),
+        rgb(160, 96, 226),
+    ],
+    rim: [
+        rgb(235, 215, 215),
+        rgb(245, 235, 210),
+        rgb(215, 220, 240),
+        rgb(245, 225, 210),
+        rgb(215, 235, 220),
+        rgb(230, 215, 240),
+    ],
+    face_top: [
+        rgb(170, 52, 60),
+        rgb(240, 200, 100),
+        rgb(60, 76, 160),
+        rgb(244, 140, 70),
+        rgb(46, 130, 80),
+        rgb(140, 70, 200),
+    ],
+    face_mid: [
+        rgb(122, 22, 34),
+        rgb(227, 178, 60),
+        rgb(31, 42, 112),
+        rgb(232, 112, 28),
+        rgb(18, 90, 46),
+        rgb(94, 34, 144),
+    ],
+    face_bot: [
+        rgb(80, 14, 22),
+        rgb(170, 128, 36),
+        rgb(18, 26, 74),
+        rgb(170, 76, 16),
+        rgb(10, 58, 28),
+        rgb(62, 20, 98),
+    ],
+    top_face: [
+        rgb(100, 20, 28),
+        rgb(190, 148, 50),
+        rgb(26, 34, 92),
+        rgb(190, 92, 24),
+        rgb(14, 74, 38),
+        rgb(78, 28, 120),
+    ],
+    str_lit: [
+        rgb(232, 104, 96),
+        rgb(244, 208, 120),
+        rgb(120, 150, 240),
+        rgb(250, 158, 92),
+        rgb(96, 200, 128),
+        rgb(184, 130, 240),
+    ],
+};
+
+/// The tube-amp colours, for patina copper and worn paint: brick, sand, slate blue, ochre, olive, mauve.
+pub static TUBE: Pal = Pal {
+    str_game: [
+        rgb(216, 104, 82),
+        rgb(232, 196, 120),
+        rgb(110, 160, 196),
+        rgb(228, 156, 96),
+        rgb(160, 184, 104),
+        rgb(184, 138, 176),
+    ],
+    rim: [
+        rgb(240, 200, 185),
+        rgb(245, 230, 200),
+        rgb(205, 222, 235),
+        rgb(245, 215, 190),
+        rgb(220, 230, 195),
+        rgb(230, 205, 225),
+    ],
+    face_top: [
+        rgb(214, 116, 92),
+        rgb(240, 210, 140),
+        rgb(124, 168, 194),
+        rgb(232, 174, 109),
+        rgb(173, 190, 126),
+        rgb(184, 142, 174),
+    ],
+    face_mid: [
+        rgb(184, 86, 62),
+        rgb(220, 182, 110),
+        rgb(94, 138, 164),
+        rgb(212, 144, 79),
+        rgb(143, 160, 96),
+        rgb(154, 112, 144),
+    ],
+    face_bot: [
+        rgb(120, 56, 40),
+        rgb(143, 118, 72),
+        rgb(61, 90, 107),
+        rgb(138, 94, 51),
+        rgb(93, 104, 62),
+        rgb(100, 73, 94),
+    ],
+    top_face: [
+        rgb(138, 64, 46),
+        rgb(165, 136, 82),
+        rgb(70, 104, 123),
+        rgb(159, 108, 59),
+        rgb(107, 120, 72),
+        rgb(115, 84, 108),
+    ],
+    str_lit: [
+        rgb(240, 130, 108),
+        rgb(246, 214, 146),
+        rgb(140, 186, 220),
+        rgb(244, 180, 122),
+        rgb(186, 208, 130),
+        rgb(208, 164, 200),
+    ],
+};
+
 /// Gaussian core σ and halo τ per string (gaps).
 pub const STR_SIGMA: [f32; 6] = [0.052, 0.039, 0.040, 0.036, 0.027, 0.030];
 pub const STR_TAU: [f32; 6] = [0.27, 0.25, 0.17, 0.23, 0.20, 0.26];

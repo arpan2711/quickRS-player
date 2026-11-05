@@ -11,7 +11,7 @@ workspace = true
 
 [features]
 default = []
-# the `lessons check` command (off in the shared build with the app's Lessons page, D50)
+# the `lessons check` command (off by default with the app's Lessons page, D152)
 lessons = []
 # the pedalboard's real brand names (off in the shared build, D58)
 brands = ["qrs-audio/brands"]

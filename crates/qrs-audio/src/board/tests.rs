@@ -1,5 +1,5 @@
 //! The board's tests: every model at its defaults and at every knob's extremes stays finite, bounded and quiet on
-//! silence; the levels; the running board's in-place commands; JSON; the Rocksmith mapping; speed.
+//! silence; the levels; the running board's in-place commands; JSON; the RS mapping; speed.
 
 use super::*;
 use crate::rt::ToneProcessor;
@@ -190,7 +190,8 @@ fn the_running_board_follows_edits_in_place() {
     let want: Vec<u32> = next.blocks.iter().map(|b| b.uid).collect();
     assert_eq!(order, want);
     assert!(!p.slots[0].on);
-    assert!((p.slots[2].v[0] - 8.0).abs() < 1e-6, "the amp's gain");
+    let gain = next.blocks[2].def().knob_index("gain").expect("the amp's gain");
+    assert!((p.slots[2].v[gain] - 8.0).abs() < 1e-6, "the amp's gain");
     // a whole new board is a swap, not an edit
     assert!(diff(&next, &presets()[3].1, RATE).is_none());
 }
@@ -246,7 +247,7 @@ fn bypass_fades_rather_than_cuts() {
 }
 
 #[test]
-fn rocksmith_gear_becomes_a_board() {
+fn rs_gear_becomes_a_board() {
     use qrs_formats::rig::RigTone;
     let v: serde_json::Value = serde_json::from_str(
         r#"{"Key":"AudBe_cleanlead","Name":"AudBe_cleanlead","ToneDescriptors":["$[1]CLEAN","$[2]LEAD"],"Volume":-16,
@@ -260,7 +261,7 @@ fn rocksmith_gear_becomes_a_board() {
     )
     .unwrap();
     let t = RigTone::from_json(&v).unwrap();
-    let b = rocksmith::board_for(&t);
+    let b = rs_gear::board_for(&t);
     let ids: Vec<&str> = b.blocks.iter().map(|x| x.def().id).collect();
     assert_eq!(
         ids,
@@ -272,13 +273,19 @@ fn rocksmith_gear_becomes_a_board() {
     assert_eq!(b.blocks[3].get("mic"), Some(7.0));
     assert_eq!(b.blocks[4].get("hi_freq"), Some(2000.0));
     assert_eq!(b.blocks[4].get("treble_freq"), Some(5000.0));
-    assert!(b.level_db > 0.0 && b.level_db < 3.0);
+    // (P41.1, D161: levelled to the song tones' loudness, then RS's volume within 3 dB)
+    let at = super::level::board_lufs(&b, false) + b.level_db;
+    assert!(
+        (at - super::level::TARGET_LUFS - super::level::rs_trim(t.volume_db)).abs() < 0.3,
+        "{at} LUFS at level {}",
+        b.level_db
+    );
     // a Marshall by name; a 4x12 by layout
     let jcm: serde_json::Value = serde_json::from_str(
         r#"{"Key":"x_dist","ToneDescriptors":["$[1]DISTORTION"],"GearList":{"Amp":{"Key":"Amp_MarshallJCM800","KnobValues":{"Amp_MarshallJCM800_Gain":35}},"Cabinet":{"Key":"Cab_Marshall1960a_57_Edge"}}}"#,
     )
     .unwrap();
-    let b = rocksmith::board_for(&RigTone::from_json(&jcm).unwrap());
+    let b = rs_gear::board_for(&RigTone::from_json(&jcm).unwrap());
     let ids: Vec<&str> = b
         .blocks
         .iter()
@@ -294,25 +301,21 @@ fn rocksmith_gear_becomes_a_board() {
             .get("mic"),
         Some(2.5)
     );
-    // the clean tone hisses little and gets no gate; a cranked Marshall gets one, first
+    // the clean tone hisses little and gets no gate; a cranked Marshall gets one, right after the amp (P41.1: keyed
+    // on the input there, D162)
     assert!(t.descriptors.iter().any(|d| d == "CLEAN"));
-    assert!(
-        !rocksmith::board_for(&t)
-            .blocks
-            .iter()
-            .any(|x| x.def().id == "gate")
-    );
+    assert!(!rs_gear::board_for(&t).blocks.iter().any(|x| x.def().id == "gate"));
     let loud: serde_json::Value = serde_json::from_str(
         r#"{"Key":"x_lead","ToneDescriptors":["$[1]HIGH GAIN"],"GearList":{"Amp":{"Key":"Amp_MarshallJCM800","KnobValues":{"Amp_MarshallJCM800_Gain":90}},"Cabinet":{"Key":"Cab_Marshall1960a_57_Edge"}}}"#,
     )
     .unwrap();
-    let b = rocksmith::board_for(&RigTone::from_json(&loud).unwrap());
+    let b = rs_gear::board_for(&RigTone::from_json(&loud).unwrap());
     assert_eq!(
-        b.blocks[0].def().id,
-        "gate",
-        "{:?}",
-        b.blocks.iter().map(|x| x.def().id).collect::<Vec<_>>()
+        b.blocks.iter().map(|x| x.def().id).collect::<Vec<_>>(),
+        vec!["amp_lead", "gate", "cab_4x12"]
     );
+    assert_eq!(b.blocks[1].get("key"), Some(0.0), "keyed on the input");
+    assert_eq!(b.blocks[1].get("range"), Some(-60.0), "a firm gate on high gain");
     assert!(hiss_gain_db(&b) < 0.0, "the gate shuts on idle hiss");
 }
 
@@ -320,7 +323,8 @@ fn rocksmith_gear_becomes_a_board() {
 fn high_gain_starting_boards_are_gated_and_quiet_between_notes() {
     for (name, b) in presets() {
         let g = hiss_gain_db(&b);
-        assert!(g < 30.0, "{name}: idle hiss raised {g:.0} dB");
+        // (P38.2: 20, where idle noise is plainly heard: Crunch and Blues got a gentle gate)
+        assert!(g < GATE_HISS_DB, "{name}: idle hiss raised {g:.0} dB");
     }
 }
 
@@ -363,10 +367,16 @@ fn a_heavy_board_runs_much_faster_than_real_time() {
     let took = t0.elapsed().as_secs_f64();
     let speed = 5.0 / took;
     eprintln!("heavy board: {speed:.0}x real time");
-    assert!(
-        speed > if cfg!(debug_assertions) { 2.0 } else { 20.0 },
-        "{speed:.1}x"
-    );
+    // (a debug build's speed on a loaded machine only warns, unless QUICKRS_STRICT_RT=1; release always asserts)
+    let strict = !cfg!(debug_assertions) || std::env::var("QUICKRS_STRICT_RT").is_ok_and(|v| v == "1");
+    let limit = if cfg!(debug_assertions) { 2.0 } else { 20.0 };
+    if strict {
+        assert!(speed > limit, "{speed:.1}x");
+    } else if speed <= limit {
+        eprintln!(
+            "heavy board only {speed:.1}x real time (a loaded machine? QUICKRS_STRICT_RT=1 makes this fail)"
+        );
+    }
 }
 
 // -- nothing allocates on the audio thread ----------------------------------------------------------------------------
@@ -646,4 +656,220 @@ fn an_old_board_without_the_new_controls_loads_with_each_models_defaults() {
     // and a round trip keeps the new knobs
     let again = Board::from_json(&b.to_json());
     assert_eq!(again.blocks[1].get("sag"), Some(5.0));
+}
+
+// -- P37.2: guitar sound unchanged ------------------------------------------------------------------------------------
+
+/// A fingerprint of a rendering: its energy and two weighted sums (catch a changed sample anywhere).
+fn fingerprint(y: &[f32]) -> [f64; 3] {
+    let e: f64 = y.iter().map(|&v| v as f64 * v as f64).sum();
+    let a: f64 = y
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| v as f64 * ((i % 977) as f64 - 488.0))
+        .sum();
+    let b: f64 = y
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| v as f64 * ((i * 7919 % 1009) as f64))
+        .sum();
+    [e, a, b]
+}
+
+/// Every model of ours at its defaults and every starting board, on the test guitar, against the fingerprints taken
+/// before P37.2 (`tests/data/guitar_fingerprints.json`; bless with `QRS_BLESS=1`). New knobs default to "as before",
+/// so the old models and the guitar presets sound exactly as they did; models and presets new since have no entry.
+#[test]
+fn guitar_sound_is_unchanged_by_the_new_controls() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/guitar_fingerprints.json");
+    let x = guitar(2.0);
+    let mut now = serde_json::Map::new();
+    for (i, m) in MODELS.iter().enumerate().filter(|(_, m)| !m.file) {
+        now.insert(
+            format!("model:{}", m.id),
+            serde_json::json!(fingerprint(&run(i, m.defaults(), &x))),
+        );
+    }
+    for (name, b) in presets() {
+        now.insert(
+            format!("preset:{name}"),
+            serde_json::json!(fingerprint(&render(&b, RATE, &x))),
+        );
+    }
+    if std::env::var("QRS_BLESS").is_ok() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string_pretty(&now).unwrap()).unwrap();
+        return;
+    }
+    let old: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("fingerprints")).unwrap();
+    // changed on purpose in P37.2 (bass): the SVT's and the Bass Driver's high-passes moved down for a low B (and the
+    // board using the SVT), the octaver's tracker (22 Hz, follows the note, a floor)
+    // (P38.2: Crunch and Blues got a gentle gate: their energy is within 0.05%, only the silences between notes moved)
+    // (P41.1, D162: the gate's Range, -30 dB by default (it was all the way down); Lead, Metal and Fuzz have their gate
+    // after the amp, keyed on the input, with a -60 dB range: energy within 0.05%, the silences between notes moved)
+    // (P41.2, D166/D168: the Rectifier, the JCM800 and the tweed's low end revoiced toward the owner's captures and
+    // the Rectifier quieter turned down, the acoustic sim revoiced; with the presets on them. The Twin's knobs were
+    // put in its panel's order with the same sound: its fingerprint holds.)
+    const CHANGED: [&str; 15] = [
+        "model:gate",
+        "preset:Fuzz",
+        "model:amp_bass",
+        "model:bass_drive",
+        "model:octaver",
+        "preset:Bass",
+        "preset:Crunch",
+        "preset:Blues",
+        "model:amp_tweed",
+        "model:amp_lead",
+        "model:amp_modern",
+        "model:acoustic",
+        "preset:Lead",
+        "preset:Metal",
+        "preset:Acoustic",
+    ];
+    let mut bad = Vec::new();
+    for (k, want) in old.iter().filter(|(k, _)| !CHANGED.contains(&k.as_str())) {
+        let Some(got) = now.get(k) else {
+            bad.push(format!("{k}: gone"));
+            continue;
+        };
+        for j in 0..3 {
+            let (w, g) = (want[j].as_f64().unwrap(), got[j].as_f64().unwrap());
+            if (w - g).abs() > 1e-6 * (1.0 + w.abs()) {
+                bad.push(format!("{k}[{j}]: {w} -> {g}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "changed:\n{}", bad.join("\n"));
+}
+
+// -- P41.2: the new guitar voices --------------------------------------------------------------------------------------
+
+/// Shares of a rendering's energy in six bands (under 150 Hz, 150-400, 400-1k, 1-2.5k, 2.5-5k, over 5k), from the
+/// energy each band's filter passes.
+fn shape(y: &[f32]) -> [f32; 6] {
+    let edges = [150.0f32, 400.0, 1000.0, 2500.0, 5000.0];
+    let band = |lo: Option<f32>, hi: Option<f32>| {
+        let mut fs: Vec<dsp::Biquad> = Vec::new();
+        if let Some(f) = lo {
+            fs.push(dsp::Biquad::new(RATE as f32, dsp::Filter::HighPass { f, q: 0.7 }));
+            fs.push(dsp::Biquad::new(RATE as f32, dsp::Filter::HighPass { f, q: 0.7 }));
+        }
+        if let Some(f) = hi {
+            fs.push(dsp::Biquad::new(RATE as f32, dsp::Filter::LowPass { f, q: 0.7 }));
+            fs.push(dsp::Biquad::new(RATE as f32, dsp::Filter::LowPass { f, q: 0.7 }));
+        }
+        y.iter()
+            .map(|&v| {
+                let mut s = v;
+                for b in fs.iter_mut() {
+                    s = b.tick(s);
+                }
+                s * s
+            })
+            .sum::<f32>()
+    };
+    let mut e = [0.0f32; 6];
+    for (k, o) in e.iter_mut().enumerate() {
+        let lo = (k > 0).then(|| edges[k - 1]);
+        let hi = (k < 5).then(|| edges[k]);
+        *o = band(lo, hi);
+    }
+    let tot: f32 = e.iter().sum::<f32>().max(1e-12);
+    e.map(|v| v / tot)
+}
+
+#[test]
+fn the_new_guitar_voices_are_their_own_and_their_panels_work() {
+    // every guitar amp at the same gain on the test guitar: no two the same shape (summed band differences)
+    let x = guitar(3.0);
+    let ids = [
+        "amp_crunch",
+        "amp_lead",
+        "amp_modern",
+        "amp_cali",
+        "amp_snake",
+        "amp_tangerine",
+        "amp_surrey",
+    ];
+    let shapes: Vec<[f32; 6]> = ids
+        .iter()
+        .map(|id| {
+            let (m, v) = with(id, &[("gain", 7.0)]);
+            shape(&run(m, v, &x))
+        })
+        .collect();
+    for i in 0..ids.len() {
+        eprintln!(
+            "{:>14}: {:?}",
+            ids[i],
+            shapes[i].map(|v| (v * 1000.0).round() / 10.0)
+        );
+        for j in i + 1..ids.len() {
+            let d: f32 = shapes[i].iter().zip(&shapes[j]).map(|(a, b)| (a - b).abs()).sum();
+            assert!(d > 0.04, "{} and {} sound alike ({d:.3})", ids[i], ids[j]);
+        }
+    }
+    // distortion on a held note at each one's default: the hot-rodded heads past the 800, the Hiwatt the cleanest
+    let note = sine(196.0, 0.1, 1.6);
+    let dist = |id: &str, knobs: &[(&str, f32)]| {
+        let (m, v) = with(id, knobs);
+        thd(&run(m, v, &note), 196.0)
+    };
+    let (lead, snake, cali, surrey) = (
+        dist("amp_lead", &[("gain", 6.0)]),
+        dist("amp_snake", &[("gain", 6.0)]),
+        dist("amp_cali", &[("gain", 6.0)]),
+        dist("amp_surrey", &[]),
+    );
+    eprintln!("THD: 800 {lead:.3}, SLO {snake:.3}, Mark {cali:.3}, Hiwatt {surrey:.3}");
+    assert!(snake > lead, "SLO {snake} vs 800 {lead}");
+    assert!(surrey < lead * 0.5 && surrey < cali * 0.5, "Hiwatt {surrey}");
+    // each one's gain knob drives it harder (the Hiwatt's Normal and Brilliant volumes together), on a soft note
+    let soft = sine(196.0, 0.01, 1.6);
+    for (id, keys) in [
+        ("amp_cali", &["gain"][..]),
+        ("amp_snake", &["gain"][..]),
+        ("amp_tangerine", &["gain"][..]),
+        ("amp_surrey", &["gain", "brilliant"][..]),
+    ] {
+        let at = |g: f32| {
+            let kv: Vec<(&str, f32)> = keys.iter().map(|k| (*k, g)).collect();
+            let (m, v) = with(id, &kv);
+            thd(&run(m, v, &soft), 196.0)
+        };
+        let (lo, hi) = (at(1.0), at(9.0));
+        eprintln!("{id}: THD at 1 {lo:.3}, at 9 {hi:.3}");
+        assert!(hi > lo * 1.5, "{id}: {lo} -> {hi}");
+    }
+    // the Mark's graphic EQ: each slider lifts its own band
+    let band_of = |k: usize, db: f32| {
+        let key = ["eq80", "eq240", "eq750", "eq2200", "eq6600"][k];
+        let (m, v) = with("amp_cali", &[("gain", 3.0), (key, db)]);
+        let f = amp::GEQ_HZ[k];
+        let y = run(m, v, &x);
+        let mut bp = dsp::Biquad::new(RATE as f32, dsp::Filter::Peak { f, q: 4.0, db: 24.0 });
+        let all = rms(&y);
+        let lifted: Vec<f32> = y.iter().map(|&s| bp.tick(s)).collect();
+        rms(&lifted) / all.max(1e-9)
+    };
+    for k in 0..5 {
+        let (down, up) = (band_of(k, -12.0), band_of(k, 12.0));
+        eprintln!("Mark EQ band {k}: {down:.3} -> {up:.3}");
+        assert!(up > down * 1.08, "EQ band {k}: {down} -> {up}");
+    }
+}
+
+#[test]
+fn the_guitar_4x10_is_brighter_and_lighter_than_the_4x12() {
+    let x = guitar(3.0);
+    let at = |id: &str| {
+        let (m, v) = with(id, &[]);
+        shape(&run(m, v, &x))
+    };
+    let (ten, twelve) = (at("cab_4x10_open"), at("cab_4x12"));
+    eprintln!("4x10 {ten:?}\n4x12 {twelve:?}");
+    assert!(ten[0] < twelve[0], "lows {} vs {}", ten[0], twelve[0]);
+    assert!(ten[3] + ten[4] > twelve[3] + twelve[4], "upper mids");
 }

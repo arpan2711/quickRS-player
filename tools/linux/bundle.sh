@@ -51,7 +51,7 @@ cat > "$app/quickrs.desktop" <<EOF
 Type=Application
 Name=quickRS
 GenericName=Guitar practice player
-Comment=Play your own Rocksmith 2014 songs with your real guitar
+Comment=Play your own RS2014 songs with your real guitar
 Exec=quickrs %f
 Icon=quickrs
 Terminal=false

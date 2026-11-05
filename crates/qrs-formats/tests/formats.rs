@@ -254,7 +254,7 @@ fn xml_rejects_vocals_and_garbage() {
         parse_xml(b"<html/>", 1.0)
             .unwrap_err()
             .to_string()
-            .contains("not a Rocksmith")
+            .contains("not an RS")
     );
 }
 
@@ -642,7 +642,7 @@ fn high_density_chords_from_sng_and_xml() {
 }
 
 #[test]
-fn visual_density_from_the_manifest_and_rocksmiths_ladder() {
+fn visual_density_from_the_manifest_and_rs_ladder() {
     let dir = tempfile::tempdir().unwrap();
     let song = write_tmp(dir.path(), "demo_p.psarc", &demo_psarc(Some(&TEST_PSARC_KEY)));
     let arr = load_arrangement(&song, Some("lead"), &test_keys()).unwrap();
@@ -651,7 +651,7 @@ fn visual_density_from_the_manifest_and_rocksmiths_ladder() {
         (arr.visual_density_at(0.0), arr.visual_density_at(1.0)),
         (5.0, 2.0)
     );
-    // none given: Rocksmith's ladder, 5.0 at the easiest down to 1.3 at full difficulty
+    // none given: RS's ladder, 5.0 at the easiest down to 1.3 at full difficulty
     let plain = Arrangement::new("Lead");
     assert_eq!(
         (plain.visual_density_at(0.0), plain.visual_density_at(1.0)),

@@ -1,6 +1,6 @@
 //! Album covers. Port of rsplay/preview.py's ArtCache extraction, for psarc and feedpak songs.
 //!
-//! psarc: gfxassets/album_art/album_<key>_{64,128,256}.dds textures (DXT1 in Rocksmith's own songs; DXT3/DXT5 or
+//! psarc: gfxassets/album_art/album_<key>_{64,128,256}.dds textures (DXT1 in RS's own songs; DXT3/DXT5 or
 //! uncompressed in some custom songs), decoded as Pillow decodes them. feedpak: the manifest's `cover` (PNG, JPEG
 //! or WebP).
 //! Covers are decoded once and cached as PNGs, named like the Python app's cache (`<song id>.png` and

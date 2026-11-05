@@ -1,13 +1,18 @@
 //! What the pedalboard's editor says about each model (PLAN.md P21.4): an About card (the real unit it's after,
 //! its era, what it is, famous records), a plain-English tip for every knob with its sweet spot, and a few named
 //! starting points. New code (no Python source). Data only; keyed by the catalogue's model ids and knob keys,
-//! which never change (D26).
+//! which never change (D26). `info` holds the amp room's "i" dot text (P37.14): the real unit each model is
+//! inspired by (brand only in the `brands` build), its era, about, players and a line per front control.
 
 #[cfg(test)]
 use qrs_audio::board::{MODELS, Unit};
 use qrs_audio::board::{ModelDef, catalog};
 
 mod data;
+mod info;
+
+#[allow(unused_imports)] // (the room's "i" dot reads them, P37.14)
+pub use info::{INFO, Info, info};
 
 /// A knob's tip: what it does, where it usually sits.
 #[derive(Clone, Copy, Debug)]
@@ -66,12 +71,25 @@ pub fn about(id: &str) -> Option<&'static About> {
 
 /// A knob's tip (the controls behind the panel have theirs apart, in `data::BACK`).
 pub fn tip(id: &str, key: &str) -> Option<&'static KnobTip> {
-    about(id)?.tips.iter().find(|t| t.key == key).or_else(|| {
-        data::BACK
-            .iter()
-            .find(|(m, _)| *m == id)
-            .and_then(|(_, tips)| tips.iter().find(|t| t.key == key))
-    })
+    about(id)?
+        .tips
+        .iter()
+        .find(|t| t.key == key)
+        .or_else(|| {
+            data::BACK
+                .iter()
+                .find(|(m, _)| *m == id)
+                .and_then(|(_, tips)| tips.iter().find(|t| t.key == key))
+        })
+        .or_else(|| {
+            // (P37.2's controls: the model's own, then the ones every model with that knob shares)
+            [id, "*"].into_iter().find_map(|m| {
+                data::NEW_TIPS
+                    .iter()
+                    .find(|(x, _)| *x == m)
+                    .and_then(|(_, tips)| tips.iter().find(|t| t.key == key))
+            })
+        })
 }
 
 /// The real unit as the build may show it: its name with brands on, else the plain description.

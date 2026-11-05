@@ -1,12 +1,12 @@
-//! Wwise Vorbis audio (.wem, as Rocksmith 2014 ships it) to a standard Ogg Vorbis file, losslessly.
+//! Wwise Vorbis audio (.wem, as RS2014 ships it) to a standard Ogg Vorbis file, losslessly.
 //! Port of rs-open-format/rsfeedpak/wem.py (itself a port of ww2ogg, BSD-3-Clause, (c) 2002 Xiph.org
 //! Foundation, (c) 2009-2016 Adam Gashlin; see assets/wem/LICENSE-ww2ogg.txt, plus revorb's granule pass).
 //!
 //! Wwise keeps the Vorbis audio packets but stores the three header packets in a compact form (codebooks as ids
 //! into a shared library, narrower fields) and strips each audio packet's packet-type and window bits. This
 //! rebuilds both and wraps the packets in Ogg pages with correct granule positions. Nothing is decoded or
-//! re-encoded, so the audio is exactly what Rocksmith plays. It handles the layouts without a header triad, which
-//! covers every Rocksmith 2014 song ("vorb" inside "fmt ", 2-byte packet headers, modified packets, external
+//! re-encoded, so the audio is exactly what RS plays. It handles the layouts without a header triad, which
+//! covers every RS2014 song ("vorb" inside "fmt ", 2-byte packet headers, modified packets, external
 //! aoTuV 6.03 codebooks); anything else is an error. The output is byte-identical to the Python port's.
 
 use std::collections::HashMap;
@@ -338,7 +338,7 @@ pub fn parse_wem(data: &[u8]) -> Result<WemInfo> {
             le32(data, vorb_off + 0x1C)?,
             vorb_off + 0x2C,
         ),
-        // 0x28 / 0x2C: the old layout with a full header triad, which Rocksmith doesn't use
+        // 0x28 / 0x2C: the old layout with a full header triad, which RS doesn't use
         _ => {
             return Err(werr(format!(
                 "unsupported Wwise Vorbis layout (vorb size {vorb_size:#x})"

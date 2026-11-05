@@ -3,7 +3,7 @@
 //! Each note (or chord) in the chart becomes a NoteGroup. A pluck is found by the engine's onset detector; the
 //! audio just after it is checked for the expected pitches (fundamental or 2nd harmonic of every expected note).
 //! Hammer-ons, pull-offs and taps don't make a clear pluck, so for those the live signal is checked directly.
-//! A chord (D46, new in quickRS) counts with half its notes, as Rocksmith's do: see `need` and `group_matches_in`.
+//! A chord (D46, new in quickRS) counts with half its notes, as RS's do: see `need` and `group_matches_in`.
 //!
 //! Judgement, relative to the chart time:
 //!   |dt| <= PERFECT   hit   (green)
@@ -13,11 +13,18 @@
 //!
 //! Note by note (P15.2, new in quickRS): the player holds the song at a note still to be played and `wait_on`
 //! checks every pluck against that note alone, whenever it came, until one is right.
+//!
+//! Bass mode (P32.3, D89): `Scorer::set_instrument` with a bass reads every note over `window_for_inst`'s bass
+//! window, judges a single note by the chord's tests (`explain_bass`), and on a guitar part also takes the note an
+//! octave down (a bass's 2nd harmonic is the guitar's note).
+//! A guitar on a bass part needs nothing new: its note an octave up is the bass note's 2nd harmonic, which
+//! `notes_present` already takes. With a guitar (the default) nothing here differs from before.
 
 use std::collections::{BTreeSet, HashSet};
 
 use qrs_formats::model::{Arrangement, Note, Techs};
 
+use crate::instrument::Instrument;
 use crate::pitch::midi_to_hz;
 use crate::spectrum::{Spectra, median};
 
@@ -26,6 +33,11 @@ pub const LATE: f64 = 0.35;
 pub const PERFECT: f64 = 0.10;
 /// Seconds after the pluck before analysing (skips the pick noise).
 pub const ATTACK_SKIP: f64 = 0.015;
+
+/// The score multiplier for a streak: x2 at 10 notes, x3 at 20, x4 from 30 (the streak tiers' first steps, D113).
+pub fn multiplier(streak: u32) -> u32 {
+    (1 + streak / 10).min(4)
+}
 const LEGATO: Techs = Techs(Techs::HAMMER_ON.0 | Techs::PULL_OFF.0 | Techs::TAP.0);
 /// Natural harmonic fret → semitones above the open string.
 const HARMONIC_SEMITONES: [(i32, i32); 9] = [
@@ -411,7 +423,7 @@ pub fn group_matches(sp: &mut Spectra, x: &[f32], rate: u32, g: &NoteGroup, befo
 }
 
 /// How many of a group's pitches must sound (D46). A single note: itself; two (a double stop, a power chord's root
-/// and fifth): both; a chord of three or more: half of them, at least two. Rocksmith counts a chord whose strings
+/// and fifth): both; a chord of three or more: half of them, at least two. RS counts a chord whose strings
 /// weren't all struck (its developers eased off requiring every note; players get chords with a few strings), and
 /// a strum's upstroke often catches only the top two or three strings.
 pub fn need(g: &NoteGroup) -> usize {
@@ -455,7 +467,11 @@ impl Verdict {
 /// The group's pitches that are present (and got louder, unless a repeat), as `group_matches_in` counts them: for
 /// a chord each must be a real peak.
 pub fn group_present_in(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>) -> Vec<i32> {
-    let chord = g.midis.len() >= 2;
+    group_present_as(mag, binhz, g, prev, g.midis.len() >= 2)
+}
+
+/// `group_present_in`, each pitch a real peak when `chord` (a chord's test; a bass's for every note).
+fn group_present_as(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>, chord: bool) -> Vec<i32> {
     match Level::of(mag, binhz) {
         None => vec![],
         Some(level) => g
@@ -475,8 +491,20 @@ pub fn enough(g: &NoteGroup, present: &[i32]) -> bool {
 }
 
 pub fn explain(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>) -> Verdict {
-    let present = group_present_in(mag, binhz, g, prev);
-    let foreign = if g.midis.len() >= 2 {
+    explain_as(mag, binhz, g, prev, false)
+}
+
+/// `explain` as a bass's notes are judged (P32.3, D89): a single note by the chord's tests too. Its pitch must be a
+/// real peak (low down a semitone is 2-4 Hz, inside even a 170 ms window's main lobe, so a note a semitone away
+/// reaches into the band), and a peak only a note just played explains must not have got louder (it was played
+/// again instead of this one).
+pub fn explain_bass(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>) -> Verdict {
+    explain_as(mag, binhz, g, prev, true)
+}
+
+fn explain_as(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>, strict: bool) -> Verdict {
+    let present = group_present_as(mag, binhz, g, prev, strict || g.midis.len() >= 2);
+    let foreign = if strict || g.midis.len() >= 2 {
         foreign_impl(mag, binhz, &g.midis, &g.ringing, prev)
     } else {
         foreign_share_in(mag, binhz, &g.midis, &g.ringing)
@@ -498,6 +526,20 @@ pub fn window_for(g: &NoteGroup, rate: u32) -> usize {
     let w = if g.midis.len() >= 2 { 0.11 } else { 0.085 };
     (rate as f64 * if low < 40 { 0.17 } else { w }) as usize
 }
+
+/// `window_for` for an instrument: a guitar's is `window_for`'s. A bass's: 170 ms under E2 (as before), and 120 ms
+/// above it (a bass note has fewer partials over its fundamental to tell a semitone by than a guitar's, and a
+/// longer window parts them better; 120 ms still ends before the next sixteenth note at 120 bpm).
+pub fn window_for_inst(g: &NoteGroup, rate: u32, inst: Instrument) -> usize {
+    if !inst.is_bass() {
+        return window_for(g, rate);
+    }
+    let low = g.midis.iter().copied().min().unwrap_or(60);
+    (rate as f64 * if low < 40 { 0.17 } else { BASS_WINDOW }) as usize
+}
+
+/// A bass note's window over E2 (s).
+pub const BASS_WINDOW: f64 = 0.12;
 
 /// The guitar recording, addressed by absolute sample index (the engine's capture ring implements this).
 pub trait SampleSource {
@@ -566,6 +608,10 @@ pub struct Scorer {
     /// Capture index up to which plucks belong to the strum that just played a chord (a slow strum's later strings
     /// can make a pluck of their own, which mustn't go on to the next chord).
     strum_end: u64,
+    /// The instrument heard (P32.3), and whether a note an octave down also counts (a bass on a guitar part).
+    inst: Instrument,
+    part_is_bass: bool,
+    octave_down: bool,
 }
 
 /// Seconds after a chord's pluck that further plucks are taken as the same strum.
@@ -612,7 +658,49 @@ impl Scorer {
             held_check: f64::NEG_INFINITY,
             shift: 0,
             strum_end: 0,
+            inst: Instrument::Guitar,
+            part_is_bass: arr.is_bass,
+            octave_down: false,
         }
+    }
+
+    /// The instrument the input plays (P32.3, a guitar by default): a bass's notes are read over its own window,
+    /// and on a guitar part a note an octave down counts too.
+    pub fn set_instrument(&mut self, inst: Instrument) {
+        self.inst = inst;
+        self.octave_down = inst.is_bass() && !self.part_is_bass;
+    }
+
+    pub fn instrument(&self) -> Instrument {
+        self.inst
+    }
+
+    /// The analysis window for group `gi`.
+    fn window(&self, gi: usize, rate: u32) -> usize {
+        window_for_inst(&self.groups[gi], rate, self.inst)
+    }
+
+    /// Whether `x` (with `before`) plays group `g`; a bass on a guitar part may play it an octave down.
+    fn matches(&mut self, x: &[f32], rate: u32, g: &NoteGroup, before: Option<&[f32]>) -> bool {
+        if !self.inst.is_bass() {
+            return group_matches(&mut self.sp, x, rate, g, before);
+        }
+        let (mag, binhz) = self.sp.spectrum(x, rate);
+        let prev = before
+            .filter(|b| b.len() == x.len())
+            .map(|b| self.sp.spectrum(b, rate).0);
+        if explain_bass(&mag, binhz, g, prev.as_deref()).ok {
+            return true;
+        }
+        if !self.octave_down {
+            return false;
+        }
+        let mut low = g.clone();
+        for m in low.midis.iter_mut().chain(low.ringing.iter_mut()) {
+            *m -= 12;
+        }
+        low.repeats = g.repeats.iter().map(|m| m - 12).collect();
+        explain_bass(&mag, binhz, &low, prev.as_deref()).ok
     }
 
     /// Expect every note `semitones` from where it's charted (the song plays pitch-shifted, and the player follows
@@ -671,7 +759,30 @@ impl Scorer {
     }
 
     pub fn multiplier(&self) -> u32 {
-        (1 + self.streak / 10).min(4)
+        multiplier(self.streak)
+    }
+
+    /// The streak and best streak worked out again from the judgements as they stand, in time order (a hit adds one,
+    /// a miss breaks it, late and early leave it, as `judge` / `miss` count them): for judgements set from outside
+    /// (screenshot staging).
+    pub fn recount_streak(&mut self) {
+        let mut order: Vec<usize> = (0..self.groups.len())
+            .filter(|&i| self.groups[i].state.is_some())
+            .collect();
+        order.sort_by(|&a, &b| self.groups[a].t.total_cmp(&self.groups[b].t));
+        let (mut run, mut best) = (0u32, 0u32);
+        for i in order {
+            match self.groups[i].state {
+                Some(Judgement::Hit) => {
+                    run += 1;
+                    best = best.max(run);
+                }
+                Some(Judgement::Miss) => run = 0,
+                _ => {}
+            }
+        }
+        self.streak = run;
+        self.best_streak = best;
     }
 
     /// Plucks heard (song times already shifted by the guitar-timing offset). Kept until their audio is in.
@@ -812,7 +923,7 @@ impl Scorer {
             return Check::Yes;
         }
         let rate = src.rate();
-        let n = window_for(&self.groups[gi], rate);
+        let n = self.window(gi, rate);
         let skip = (ATTACK_SKIP * rate as f64) as u64;
         self.buf.resize(n, 0.0);
         if !src.read(index + skip, &mut self.buf) {
@@ -827,7 +938,7 @@ impl Scorer {
         let g = self.groups[gi].clone();
         let x = std::mem::take(&mut self.buf);
         let before = std::mem::take(&mut self.before);
-        let ok = group_matches(&mut self.sp, &x, rate, &g, have_before.then_some(&before[..]));
+        let ok = self.matches(&x, rate, &g, have_before.then_some(&before[..]));
         self.buf = x;
         self.before = before;
         if ok { Check::Yes } else { Check::No }
@@ -928,12 +1039,12 @@ impl Scorer {
         }
         if now_wall - self.held_check >= 0.02 && live.level > 0.002 {
             self.held_check = now_wall;
-            let n = window_for(&self.groups[gi], live.source.rate());
+            let n = self.window(gi, live.source.rate());
             self.buf.resize(n, 0.0);
             if live.source.latest(&mut self.buf) {
                 let g = self.groups[gi].clone();
                 let x = std::mem::take(&mut self.buf);
-                let ok = group_matches(&mut self.sp, &x, live.source.rate(), &g, None);
+                let ok = self.matches(&x, live.source.rate(), &g, None);
                 self.buf = x;
                 if ok {
                     self.judge(gi, 0.0, now_wall);
@@ -955,12 +1066,12 @@ impl Scorer {
                 continue;
             }
             self.groups[gi].last_check = now;
-            let n = window_for(&self.groups[gi], rate);
+            let n = self.window(gi, rate);
             self.buf.resize(n, 0.0);
             if live.level > 0.002 && live.source.latest(&mut self.buf) {
                 let g = self.groups[gi].clone();
                 let x = std::mem::take(&mut self.buf);
-                let ok = group_matches(&mut self.sp, &x, rate, &g, None);
+                let ok = self.matches(&x, rate, &g, None);
                 self.buf = x;
                 if ok {
                     let heard_at = now - live.latency - n as f64 / rate as f64 / 2.0;
@@ -1377,6 +1488,181 @@ mod tests {
         assert_eq!(s, vec![Some(Judgement::Hit), Some(Judgement::Hit)]);
     }
 
+    // -- bass mode (P32.3, D89) ------------------------------------------------------------------------------
+
+    use crate::instrument::Instrument;
+    use crate::testsig;
+
+    /// A bass part: (time, string, fret), its strings tuned by `tuning` (semitones from E standard).
+    fn bass_part(notes: &[(f64, i32, i32)], tuning: i32) -> Arrangement {
+        let mut a = arr(notes);
+        a.is_bass = true;
+        a.tuning = vec![tuning; 4];
+        a
+    }
+
+    /// Score plucked notes (midi, at) against `a` with `inst`: the judgements. `ks`: a Karplus-Strong string with a
+    /// finger's attack, else soft additive notes whose 2nd harmonic is louder than the fundamental. Each note stops
+    /// the one before (a 5 ms fade), in hiss at -74 dBFS.
+    fn score_played(
+        a: &Arrangement,
+        inst: Instrument,
+        played: &[(f64, f64)],
+        amp: f32,
+        ks: bool,
+    ) -> Vec<Option<Judgement>> {
+        let rate = 48000;
+        let end = played.iter().map(|p| p.1).fold(0.0, f64::max) + 2.0;
+        let mut x = vec![0.0f32; (end * rate as f64) as usize];
+        for (k, &(m, at)) in played.iter().enumerate() {
+            let note = if ks {
+                testsig::ks_pluck(m, rate, 1.0, amp, 0.75, k as u32)
+            } else {
+                testsig::additive_pluck(m, rate, 1.0, amp, &[0.4, 1.0, 0.5, 0.3, 0.1], 0.01, 1.5)
+            };
+            let a0 = (at * rate as f64) as usize;
+            for (i, v) in x.iter_mut().skip(a0).enumerate() {
+                *v *= 1.0 - (i as f32 / 240.0).min(1.0);
+            }
+            testsig::mix_at(&mut x, a0, &note);
+        }
+        let hiss = testsig::hiss(x.len(), 0.0002, 4);
+        testsig::mix_at(&mut x, 0, &hiss);
+        let mut s = Scorer::new(a);
+        s.set_instrument(inst);
+        let src = Rec { rate, x };
+        s.feed(played.iter().map(|&(_, t)| Pluck {
+            index: (t * rate as f64) as u64,
+            song_time: t,
+        }));
+        let live = Live {
+            source: &src,
+            level: 0.1,
+            latency: 0.0,
+        };
+        s.update(end + 5.0, Some(&live), end + 5.0);
+        s.groups.iter().map(|g| g.state).collect()
+    }
+
+    /// A bass part on a bass, every string and down to a low B (B standard), soft to loud, two timbres: the right
+    /// notes are hits, a note a semitone off (either way) is a miss.
+    #[test]
+    fn bass_notes_are_scored_on_a_bass() {
+        let hit = Some(Judgement::Hit);
+        let miss = Some(Judgement::Miss);
+        for tuning in [0, -5] {
+            // open, 3rd, 5th, 7th fret on each string, a note every 0.4 s
+            let chart: Vec<(f64, i32, i32)> = (0..16)
+                .map(|k| (1.0 + 0.4 * k as f64, (k / 4) as i32, [0, 3, 5, 7][k % 4]))
+                .collect();
+            let a = bass_part(&chart, tuning);
+            let opens = a.open_string_midi();
+            let right: Vec<(f64, f64)> = chart
+                .iter()
+                .map(|&(t, st, f)| ((opens[st as usize] + f) as f64, t))
+                .collect();
+            for ks in [true, false] {
+                for amp in [0.01f32, 0.1, 0.5] {
+                    let got = score_played(&a, Instrument::Bass, &right, amp, ks);
+                    assert_eq!(got, vec![hit; 16], "tuning {tuning} ks {ks} amp {amp}");
+                    // every note a semitone off: up on even notes, down on odd
+                    let wrong: Vec<(f64, f64)> = right
+                        .iter()
+                        .enumerate()
+                        .map(|(k, &(m, t))| (m + if k % 2 == 0 { 1.0 } else { -1.0 }, t))
+                        .collect();
+                    let got = score_played(&a, Instrument::Bass, &wrong, amp, ks);
+                    let misses = got.iter().filter(|g| **g == miss).count();
+                    assert_eq!(misses, 16, "tuning {tuning} ks {ks} amp {amp}: {got:?}");
+                }
+            }
+        }
+    }
+
+    /// A guitar can play a bass part (an octave up, on its low strings): hits, as before. A bass on a guitar part
+    /// (the user's choice): the note an octave down counts in bass mode, not with a guitar set.
+    #[test]
+    fn a_guitar_on_a_bass_part_and_a_bass_on_a_guitar_part() {
+        let hit = Some(Judgement::Hit);
+        let chart: Vec<(f64, i32, i32)> = (0..8i32)
+            .map(|k| (1.0 + 0.4 * k as f64, k / 2, 2 * (k % 2) + 3))
+            .collect();
+        let a = bass_part(&chart, 0);
+        let opens = a.open_string_midi();
+        let up: Vec<(f64, f64)> = chart
+            .iter()
+            .map(|&(t, st, f)| ((opens[st as usize] + f + 12) as f64, t))
+            .collect();
+        assert_eq!(score_played(&a, Instrument::Guitar, &up, 0.2, true), vec![hit; 8]);
+        // the guitar part, played an octave down on a bass
+        let g = arr(&chart);
+        let gopens = g.open_string_midi();
+        let down: Vec<(f64, f64)> = chart
+            .iter()
+            .map(|&(t, st, f)| ((gopens[st as usize] + f - 12) as f64, t))
+            .collect();
+        assert_eq!(score_played(&g, Instrument::Bass, &down, 0.2, true), vec![hit; 8]);
+        let on_guitar = score_played(&g, Instrument::Guitar, &down, 0.2, true);
+        assert!(
+            on_guitar.iter().filter(|j| **j == hit).count() <= 2,
+            "{on_guitar:?}"
+        );
+        // and at pitch on a bass, too
+        let same: Vec<(f64, f64)> = chart
+            .iter()
+            .map(|&(t, st, f)| ((gopens[st as usize] + f) as f64, t))
+            .collect();
+        assert_eq!(score_played(&g, Instrument::Bass, &same, 0.2, true), vec![hit; 8]);
+    }
+
+    /// With a guitar (the default), the scorer is what it was: the same windows, the same verdicts and timings on
+    /// guitar notes, chords and strums, set or not.
+    #[test]
+    fn guitar_scoring_is_unchanged() {
+        let shapes = chords(&[(1.0, &BM), (2.0, &E_OPEN), (3.0, &A5)]);
+        let single = arr(&[(1.0, 0, 0), (2.0, 5, 12)]);
+        for g in build_groups(&shapes).iter().chain(build_groups(&single).iter()) {
+            assert_eq!(
+                window_for_inst(g, 48000, Instrument::Guitar),
+                window_for(g, 48000)
+            );
+        }
+        let rate = 48000;
+        let mut x = vec![0.0f32; rate as usize * 6];
+        add_strum(&mut x, rate, 1.0, &BM[..4], 0.03);
+        add_strum(&mut x, rate, 2.0, &E_OPEN, 0.02);
+        add_strum(&mut x, rate, 3.0, &A5, 0.02);
+        add_note(&mut x, rate, 4.0, 43, 0.3);
+        let a = chords(&[(1.0, &BM), (2.0, &BM), (3.0, &A5), (4.0, &[(0, 3)])]);
+        let plucks = [1.0, 2.0, 3.0, 4.0];
+        let run = |set: bool| {
+            let mut s = Scorer::new(&a);
+            if set {
+                s.set_instrument(Instrument::Guitar);
+            }
+            let src = Rec { rate, x: x.clone() };
+            s.feed(plucks.iter().map(|&t| Pluck {
+                index: (t * rate as f64) as u64,
+                song_time: t,
+            }));
+            let live = Live {
+                source: &src,
+                level: 0.1,
+                latency: 0.0,
+            };
+            s.update(30.0, Some(&live), 30.0);
+            s.groups
+                .iter()
+                .map(|g| (g.state, g.dt.to_bits()))
+                .collect::<Vec<_>>()
+        };
+        let before = run(false);
+        assert_eq!(before, run(true));
+        let states: Vec<_> = before.iter().map(|b| b.0).collect();
+        let (hit, miss) = (Some(Judgement::Hit), Some(Judgement::Miss));
+        assert_eq!(states, vec![hit, miss, hit, hit]);
+    }
+
     #[test]
     fn reset_from_clears_later_judgements() {
         let a = arr(&[(1.0, 0, 3), (2.0, 0, 5)]);
@@ -1386,5 +1672,26 @@ mod tests {
         s.reset_from(1.8);
         assert_eq!(s.counts().miss, 1);
         assert_eq!(s.streak, 0);
+    }
+
+    #[test]
+    fn the_multiplier_steps_every_ten_to_four() {
+        assert_eq!(
+            [0, 9, 10, 19, 20, 29, 30, 500].map(multiplier),
+            [1, 1, 2, 2, 3, 3, 4, 4]
+        );
+    }
+
+    #[test]
+    fn the_streak_recounts_from_judgements_set_outside() {
+        let a = arr(&[(1.0, 0, 3), (2.0, 0, 5), (3.0, 0, 7), (4.0, 0, 3), (5.0, 0, 5)]);
+        let mut s = Scorer::new(&a);
+        let [h, l, m] = [Judgement::Hit, Judgement::Late, Judgement::Miss];
+        for (g, j) in s.groups.iter_mut().zip([h, h, l, m, h]) {
+            g.state = Some(j);
+        }
+        s.recount_streak();
+        // late keeps the streak going without adding (as judging does), the miss breaks it
+        assert_eq!((s.streak, s.best_streak), (1, 2));
     }
 }

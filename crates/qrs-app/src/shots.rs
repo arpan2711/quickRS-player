@@ -50,6 +50,8 @@ pub enum Page {
     Lib(&'static str),
     /// The player in a state (see `PlayerView::prepare_shot`).
     PlayerAt(&'static str),
+    /// Home with the "run the setup again?" card of a start after an update (P37.15).
+    HomeNew,
     /// Home with the AMP ROOM button staged: "play" (a level and a note), "hot" (clipping), "hover" (P22.1).
     HomeAmp(&'static str),
     /// The amp room (P22.2-P22.3): "rig", "sounds", "save", "editor", "jam"; recording (P23.9): "rec",
@@ -161,7 +163,7 @@ impl Shots {
             ("13g_zoom", Page::PlayerAt("zoom")),
             ("13h_back_tip", Page::PlayerAt("back_tip")),
             ("14_controls", Page::PlayerControls),
-            ("14b_controls_more", Page::PlayerAt("controls_more")),
+            ("14b_controls_sound", Page::PlayerAt("controls_sound")),
             ("15_paused", Page::PlayerAt("paused")),
             ("16_toast", Page::PlayerAt("toast")),
             ("17_slowing_down", Page::PlayerAt("slowing")),
@@ -174,7 +176,71 @@ impl Shots {
             ("31_results_practice", Page::PlayerAt("results_practice")),
             ("32_no_audio", Page::PlayerAt("no_audio")),
         ];
-        let own: [(&str, Page, ThemeName); 67] = [
+        let own: [(&str, Page, ThemeName); 118] = [
+            // the highway's streak readout (D144): x4 on a 60-note streak, and Daylight
+            ("13o_highway_streak", Page::PlayerAt("highway_streak"), mid),
+            (
+                "13o_highway_streak-daylight",
+                Page::PlayerAt("highway_streak"),
+                ThemeName::Daylight,
+            ),
+            // the highway's techniques (P37.6d): the notes ahead given one family each, to judge how they read
+            ("13m_highway_bends", Page::PlayerAt("hwtech_bends"), mid),
+            ("13m_highway_slides", Page::PlayerAt("hwtech_slides"), mid),
+            ("13m_highway_mutes", Page::PlayerAt("hwtech_mutes"), mid),
+            ("13m_highway_harmonics", Page::PlayerAt("hwtech_harmonics"), mid),
+            ("13m_highway_tremolo", Page::PlayerAt("hwtech_tremolo"), mid),
+            ("13m_highway_slap", Page::PlayerAt("hwtech_slap"), mid),
+            ("13m_highway_taps", Page::PlayerAt("hwtech_taps"), mid),
+            // the note size (D143): further, and closer
+            ("13n_highway_size85", Page::PlayerAt("highway_size85"), mid),
+            ("13n_highway_size150", Page::PlayerAt("highway_size150"), mid),
+            ("13n_highway_size180", Page::PlayerAt("highway_size180"), mid),
+            // the lamps' row centred under the tab, with the count-in lamp on and off (P37.11)
+            ("37d_lamps_row", Page::PlayerAt("lamps"), mid),
+            ("37e_lamps_countin_off", Page::PlayerAt("countin_off"), mid),
+            (
+                "37d_lamps_row-daylight",
+                Page::PlayerAt("lamps"),
+                ThemeName::Daylight,
+            ),
+            (
+                "37e_lamps_countin_off-daylight",
+                Page::PlayerAt("countin_off"),
+                ThemeName::Daylight,
+            ),
+            // the footer's restart and review keys (P37.8), hovered, and the review key's menu
+            ("37_restart_hover", Page::PlayerAt("restart_hover"), mid),
+            ("37b_review_key_menu", Page::PlayerAt("review_key"), mid),
+            ("37c_review_key_none", Page::PlayerAt("review_key_none"), mid),
+            (
+                "37_restart_hover-daylight",
+                Page::PlayerAt("restart_hover"),
+                ThemeName::Daylight,
+            ),
+            (
+                "37b_review_key_menu-daylight",
+                Page::PlayerAt("review_key"),
+                ThemeName::Daylight,
+            ),
+            (
+                "37c_review_key_none-daylight",
+                Page::PlayerAt("review_key_none"),
+                ThemeName::Daylight,
+            ),
+            // the controls' View tab (P35.1; Practise is 14_controls, Sound 14b), and the three in Daylight
+            ("14c_controls_view", Page::PlayerAt("controls_view"), mid),
+            ("14_controls-daylight", Page::PlayerControls, ThemeName::Daylight),
+            (
+                "14b_controls_sound-daylight",
+                Page::PlayerAt("controls_sound"),
+                ThemeName::Daylight,
+            ),
+            (
+                "14c_controls_view-daylight",
+                Page::PlayerAt("controls_view"),
+                ThemeName::Daylight,
+            ),
             // the run's review (P29.1)
             ("33_review", Page::PlayerAt("review"), mid),
             ("34_review_spot", Page::PlayerAt("review_spot"), mid),
@@ -191,6 +257,40 @@ impl Shots {
             ("20b_settings_input_level", Page::Settings("audio_level"), mid),
             ("20d_settings_low_latency", Page::Settings("audio_lowlat"), mid),
             ("20c_settings_updates", Page::Settings("updates"), mid),
+            // the settings redesign (P35, D92): the new pages, and each in Daylight
+            ("20_settings_timing", Page::Settings("timing"), mid),
+            ("20e_settings_tone_knobs", Page::Settings("tone_knobs"), mid),
+            ("20_settings_about", Page::Settings("about"), mid),
+            (
+                "20_settings_sound-daylight",
+                Page::Settings("sound"),
+                ThemeName::Daylight,
+            ),
+            (
+                "20_settings_timing-daylight",
+                Page::Settings("timing"),
+                ThemeName::Daylight,
+            ),
+            (
+                "20_settings_tone-daylight",
+                Page::Settings("tone"),
+                ThemeName::Daylight,
+            ),
+            (
+                "20_settings_display-daylight",
+                Page::Settings("display"),
+                ThemeName::Daylight,
+            ),
+            (
+                "20_settings_library-daylight",
+                Page::Settings("library"),
+                ThemeName::Daylight,
+            ),
+            (
+                "20_settings_about-daylight",
+                Page::Settings("about"),
+                ThemeName::Daylight,
+            ),
             ("18_indicators", Page::PlayerAt("indicators"), mid),
             ("19_shortcuts", Page::PlayerAt("shortcuts"), mid),
             ("13h_tab_tools", Page::PlayerAt("tab_tools"), mid),
@@ -225,6 +325,26 @@ impl Shots {
             ("72b_board_sounds", Page::PlayerAt("board_sounds"), mid),
             ("04_search", Page::Search, mid),
             ("42_saved_licks", Page::Lib("licks"), mid),
+            // the rank badges and the Random keys (P37.10)
+            ("50_library_ranks", Page::Lib("best"), mid),
+            ("51_library_difficulty", Page::Lib("difficulty"), mid),
+            ("51b_library_easy", Page::Lib("easy"), mid),
+            (
+                "50_library_ranks-daylight",
+                Page::Lib("best"),
+                ThemeName::Daylight,
+            ),
+            ("50b_library_playlist", Page::Lib("playlist"), mid),
+            (
+                "50c_library_favourites-daylight",
+                Page::Lib("fav"),
+                ThemeName::Daylight,
+            ),
+            (
+                "50d_saved_licks-daylight",
+                Page::Lib("licks"),
+                ThemeName::Daylight,
+            ),
             ("43_lessons", Page::Lib("lessons"), mid),
             ("44_ear_mode", Page::PlayerAt("ear"), mid),
             ("49_note_by_note", Page::PlayerAt("nbn"), mid),
@@ -269,6 +389,25 @@ impl Shots {
                 ThemeName::Graphite,
             ),
             ("95c_room_rec_saved", Page::Room("rec_saved"), ThemeName::Graphite),
+            // the room as one screen (P37.1): a capture as the silver unit, an empty one, the gear drawer, a bass
+            // input, a modeller input, the room in a song's context, song tone explained; Daylight
+            ("94ra_room_unit_silver", Page::Room("silver"), ThemeName::Graphite),
+            (
+                "94rb_room_no_capture",
+                Page::Room("silver_empty"),
+                ThemeName::Graphite,
+            ),
+            ("94rc_room_gear", Page::Room("gear"), ThemeName::Graphite),
+            ("94rd_room_bass", Page::Room("bass"), ThemeName::Graphite),
+            ("94re_room_modeller", Page::Room("modeller"), ThemeName::Graphite),
+            ("94rf_room_song", Page::PlayerAt("room_song"), mid),
+            ("94rg_room_song_explained", Page::PlayerAt("room_explain"), mid),
+            ("94rh_room-daylight", Page::Room("rig"), ThemeName::Daylight),
+            (
+                "94ri_room_silver-daylight",
+                Page::Room("silver"),
+                ThemeName::Daylight,
+            ),
             ("96_player_recording", Page::PlayerAt("recording"), mid),
             ("96b_player_rec_paused", Page::PlayerAt("rec_paused"), mid),
             ("96c_player_rec_saved", Page::PlayerAt("rec_saved"), mid),
@@ -326,6 +465,75 @@ impl Shots {
                 pointer: None,
             });
         }
+        // Settings > Neural Amp Modeler (P37.15): not set up (its setup, each step), set up (the management page),
+        // and Home's card after an update; Midnight and Daylight
+        if crate::captures::ON {
+            let nam: [(&str, Page); 10] = [
+                ("20n_settings_nam", Page::Settings("nam_about")),
+                ("20n_settings_nam_songs", Page::Settings("nam_songs")),
+                ("20n_settings_nam_songs_yes", Page::Settings("nam_songs_yes")),
+                ("20n_settings_nam_account", Page::Settings("nam_account")),
+                ("20n_settings_nam_suggest", Page::Settings("nam_suggest")),
+                ("20n_settings_nam_files", Page::Settings("nam_files")),
+                ("20n_settings_nam_done", Page::Settings("nam_done")),
+                ("20n_settings_nam_manage", Page::Settings("nam_manage")),
+                ("20n_settings_nam_manage_open", Page::Settings("nam_manage_open")),
+                ("20n_settings_nam_manage_low", Page::Settings("nam_manage_low")),
+            ];
+            for th in [mid, ThemeName::Daylight] {
+                for (name, page) in nam {
+                    plan.push(Shot {
+                        name: if th == mid {
+                            name.to_string()
+                        } else {
+                            format!("{name}-{}", th.key())
+                        },
+                        theme: th,
+                        page,
+                        pointer: None,
+                    });
+                }
+            }
+        }
+        // TONE3000 downloads you can see (P38.3): waiting, coming in (a queue), measuring and done, failed; the
+        // room's badge, folded and opened
+        if crate::captures::ON {
+            let dl: [(&str, Page); 7] = [
+                ("20t_downloads_waiting", Page::Settings("nam_manage")),
+                ("20t_downloads_rows", Page::Settings("nam_manage_low")),
+                ("20t_downloads_progress", Page::Settings("nam_manage")),
+                ("20t_downloads_done", Page::Home),
+                ("20t_downloads_failed", Page::Settings("nam_manage")),
+                ("20t_downloads_room", Page::Room("rig")),
+                ("20t_downloads_room_open", Page::Room("rig")),
+            ];
+            for th in [mid, ThemeName::Daylight] {
+                for (name, page) in dl {
+                    plan.push(Shot {
+                        name: if th == mid {
+                            name.to_string()
+                        } else {
+                            format!("{name}-{}", th.key())
+                        },
+                        theme: th,
+                        page,
+                        pointer: None,
+                    });
+                }
+            }
+        }
+        for th in [mid, ThemeName::Daylight] {
+            plan.push(Shot {
+                name: if th == mid {
+                    "00w_home_whats_new".to_string()
+                } else {
+                    format!("00w_home_whats_new-{}", th.key())
+                },
+                theme: th,
+                page: Page::HomeNew,
+                pointer: None,
+            });
+        }
         // the guided guitar setup (P23.8): each step in Settings > Audio, and the first-run prompt, in every theme;
         // the calibration's instructions, measuring and settings, in the setup and on their own (P23.10)
         for th in [mid, ThemeName::Daylight, ThemeName::Graphite] {
@@ -342,11 +550,24 @@ impl Shots {
                 ("95e", "setup_calibrate"),
                 ("95e2", "setup_measure"),
                 ("95e3", "setup_settings"),
+                ("95e4", "setup_settingsfold"),
                 ("95f", "setup_notes"),
+                // (the play-along, P38.4: fresh, listening, playing, its result; the fold open)
+                ("95h", "setup_timing"),
+                ("95h0a", "setup_playlisten"),
+                ("95h0b", "setup_playing"),
+                ("95h0c", "setup_playresult"),
+                ("95h1", "setup_timingclicks"),
+                ("95h2", "setup_timingmeasure"),
+                ("95h2b", "setup_timingscreen"),
+                ("95h3", "setup_timingresult"),
                 ("95g", "setup_done"),
                 ("97", "calibrate_calibrate"),
                 ("97b", "calibrate_measure"),
                 ("97c", "calibrate_settings"),
+                ("97d", "timingtool_fresh"),
+                ("97d2", "timingtool_result"),
+                ("97d3", "timingtool_playresult"),
             ] {
                 plan.push(Shot {
                     name: format!("{k}_{step}{tail}"),
@@ -368,12 +589,18 @@ impl Shots {
                 ("90b", "guitar"),
                 ("90c", "guitar_input"),
                 ("90d", "guitar_calibrate"),
+                ("90e1", "guitar_timing"),
                 ("90e", "guitar_done"),
+                ("90e3", "nam"),
+                ("90e4", "nam_yes"),
                 ("90f", "latency"),
                 ("90g", "widget"),
                 ("90h", "folders"),
                 ("90i", "done"),
             ] {
+                if what.starts_with("nam") && !crate::captures::ON {
+                    continue;
+                }
                 if what == "latency" && !cfg!(windows) {
                     continue;
                 }
@@ -406,6 +633,71 @@ impl Shots {
                     name: format!("{name}{tail}"),
                     theme: th,
                     page,
+                    pointer: None,
+                });
+            }
+        }
+        // the amp room polish (P37.13): its states in every theme; QUICKRS_ROOM_UNITS=1 adds the open unit of every
+        // model (64 shots a theme, so not by default)
+        for th in [mid, ThemeName::Graphite, ThemeName::Daylight] {
+            let tail = format!("-{}", th.key());
+            for what in [
+                "rig",
+                "scenes",
+                "empty",
+                "ab",
+                "gate",
+                "silver",
+                "gear",
+                "bass",
+                "cab",
+                "sounds",
+                "catalogue",
+                "catalogue_amps",
+                "catalogue_search",
+                "catalogue_captures",
+                "info",
+                "info_capture",
+            ] {
+                plan.push(Shot {
+                    name: format!("38_room_{what}{tail}"),
+                    theme: th,
+                    page: Page::Room(what),
+                    pointer: None,
+                });
+            }
+            if std::env::var("QUICKRS_ROOM_UNITS").is_ok() {
+                for m in qrs_audio::board::catalog::MODELS {
+                    let what: &'static str = Box::leak(format!("unit:{}", m.id).into_boxed_str());
+                    plan.push(Shot {
+                        name: format!("38_unit_{}{tail}", m.id),
+                        theme: th,
+                        page: Page::Room(what),
+                        pointer: None,
+                    });
+                }
+            }
+        }
+        // the score tile on a streak (P37.7): each tier, in every theme
+        for th in [mid, ThemeName::Daylight, ThemeName::Graphite] {
+            let tail = if th == mid {
+                String::new()
+            } else {
+                format!("-{}", th.key())
+            };
+            for what in [
+                "streak_10",
+                "streak_20",
+                "streak_50",
+                "streak_100",
+                "streak_200",
+                "streak_500",
+                "streak_1000",
+            ] {
+                plan.push(Shot {
+                    name: format!("37_{what}{tail}"),
+                    theme: th,
+                    page: Page::PlayerAt(what),
                     pointer: None,
                 });
             }

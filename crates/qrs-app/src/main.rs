@@ -19,11 +19,13 @@ mod applog;
 mod assets;
 mod backdrop;
 mod calibrate;
+mod captures;
 mod chrome;
 mod covers;
 mod devstatus;
 mod devswap;
 mod dialogs;
+mod downloads;
 mod gallery;
 mod gearindex;
 mod gpu;
@@ -35,10 +37,12 @@ mod listen;
 mod loading;
 #[cfg(feature = "nux")]
 mod mg300;
+mod namcheck;
 mod notewidget;
 mod pedalboard;
 mod pedalfaces;
 mod picks;
+mod playcheck;
 mod player;
 mod preview;
 mod recording;
@@ -47,10 +51,13 @@ mod settings;
 mod setup;
 mod shotclock;
 mod shots;
+mod songtones;
 mod state;
+mod timing_cal;
 mod tones;
 mod transport;
 mod update;
+mod whatsnew;
 
 fn icon() -> egui::IconData {
     let bytes = include_bytes!("../../../assets/icons/rsplay.png");
@@ -115,6 +122,25 @@ fn main() -> anyhow::Result<()> {
     applog::init(qrs_library::paths::DataDir::locate().cache());
     if std::env::args().len() > 1 {
         attach_console();
+    }
+    // (P33.7: the NAM picker checked on the library, no window)
+    let argv: Vec<String> = std::env::args().collect();
+    if let Some(i) = argv.iter().position(|a| a == "--nam-check") {
+        let out = argv.get(i + 1).map(String::as_str).unwrap_or("nam-check");
+        let n = argv.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(60);
+        return namcheck::run(std::path::Path::new(out), n);
+    }
+    // (P38.2: every song tone in the library on our models and with NAM, no window)
+    if let Some(i) = argv.iter().position(|a| a == "--song-tones") {
+        let out = argv.get(i + 1).map(String::as_str).unwrap_or("song-tones");
+        return songtones::run(std::path::Path::new(out));
+    }
+    if argv.iter().any(|a| a == "--nam-calibrate") {
+        let data = qrs_library::paths::DataDir::locate();
+        captures::init_quiet(&data.root, &qrs_library::Config::load(data.config()));
+        let n = namcheck::calibrate(true);
+        println!("nam-calibrate: {n} trims measured");
+        return Ok(());
     }
     let mut args = app::Args::parse(std::env::args().skip(1))?;
     // a new dev build swapped in (D67): where the old one was

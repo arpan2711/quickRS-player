@@ -834,15 +834,31 @@ fn mix(a: Color32, b: Color32, k: f32) -> Color32 {
 
 /// (top lip shadow dy, its sigma) in pixels: `inset 0 (1+3d)px (2+7d)px`.
 fn rec_rubber(s: f64) -> (i32, f64) {
-    let d = RUBBER_DEPTH;
+    rec_rubber_d(s, RUBBER_DEPTH)
+}
+
+/// `rec_rubber` for a well pressed `d` deep (0-1).
+fn rec_rubber_d(s: f64, d: f64) -> (i32, f64) {
     (pxd(1.0 + 3.0 * d, s).max(1), ((2.0 + 7.0 * d) / 2.0 * s).max(0.6))
 }
 
 /// A dip in matte rubber, no outline: a flat floor a shade darker, a shadow falling in from the top lip and a faint
 /// light catching the bottom lip (the mock's alphas, scaled by how strong the theme's own shadows and lights are).
 fn make_rubber(pw: usize, ph: usize, rr: i32, rec: (i32, f64), floor: Color32) -> Image {
+    make_rubber_d(pw, ph, rr, rec, floor, RUBBER_DEPTH as f32, 1.0)
+}
+
+/// `make_rubber` pressed `d` deep, its bottom lip's light times `catch_k`.
+fn make_rubber_d(
+    pw: usize,
+    ph: usize,
+    rr: i32,
+    rec: (i32, f64),
+    floor: Color32,
+    d: f32,
+    catch_k: f32,
+) -> Image {
     let th = t();
-    let d = RUBBER_DEPTH as f32;
     let (dy, sg) = rec;
     let pad = (dy as f64 + 3.0 * sg).ceil() as i32 + 1;
     let (bw, bh) = (pw + 2 * pad as usize, ph + 2 * pad as usize);
@@ -856,7 +872,7 @@ fn make_rubber(pw: usize, ph: usize, rr: i32, rec: (i32, f64), floor: Color32) -
     l.over_c(th.shade, &lip.scale(((0.35 + 0.35 * d) * th.sh_a / 0.7).min(0.9)));
     l.over_c(
         th.hilite,
-        &catch.scale(((0.03 + 0.04 * d) * th.hi_a / 0.07).min(0.5)),
+        &catch.scale(((0.03 + 0.04 * d) * th.hi_a / 0.07 * catch_k).min(0.5)),
     );
     l.image(Some(&shape))
 }
@@ -1208,6 +1224,39 @@ pub fn display(p: &Painter, rect: Rect, r: Option<f32>, depth: f32) {
 /// `display` on a rect in whole pixels.
 pub(crate) fn display_px(p: &Painter, pr: PxRect, r: Option<f64>, depth: f32) {
     sunk(p, pr, r, depth, Fill::Color(t().screen), true);
+}
+
+/// The quiet look's well (P37.3, D110): a dip pressed `d` deep (0-1) into the panel with a flat `floor`, a shadow
+/// falling in from the top lip and a faint light along the bottom one (`catch_k` times the rubber's). Cached as a
+/// nine-slice per (radius, depth, floor), like every well.
+pub(crate) fn quiet_well_px(p: &Painter, pr: PxRect, r: Option<f64>, d: f32, floor: Color32, catch_k: f32) {
+    let ppp = p.pixels_per_point();
+    if pr.w < 1 || pr.h < 1 {
+        return;
+    }
+    let rr = radius_px(pr.w, pr.h, r, ppp);
+    let rec = rec_rubber_d(sc(ppp), d as f64);
+    let c = rr + (rec.0 as f64 + 3.0 * rec.1).ceil() as i32 + 2;
+    let key = (
+        "quiet",
+        rr,
+        rec.0,
+        rec.1.to_bits(),
+        d.to_bits(),
+        catch_k.to_bits(),
+        theme::generation(),
+    );
+    sliced(
+        p,
+        (key, ck(floor)),
+        c as usize,
+        pr.x,
+        pr.y,
+        pr.w,
+        pr.h,
+        Color32::WHITE,
+        |pw, ph| make_rubber_d(pw, ph, rr, rec, floor, d, catch_k),
+    );
 }
 
 fn sunk(p: &Painter, pr: PxRect, r: Option<f64>, depth: f32, fill: Fill, is_screen: bool) {
@@ -1601,6 +1650,16 @@ pub fn floating(p: &Painter, rect: Rect, r: Option<f32>) {
     floating_px(p, PxRect::of(rect, p.pixels_per_point()), r.map(f64::from));
 }
 
+/// `floating` for a small card over busy content (a menu, a notice over the song tiles): the frosted glass on the
+/// dark themes let the text under it read through, words over words (P37.4b), so the page's base goes under it first.
+pub fn floating_opaque(p: &Painter, rect: Rect, r: Option<f32>) {
+    if theme::is_dark() && !theme::classic() {
+        let rr = crate::units::px(r.unwrap_or(16.0));
+        p.rect_filled(rect.shrink(1.0), rr, t().base);
+    }
+    floating(p, rect, r);
+}
+
 /// `floating` on a rect in whole pixels.
 pub(crate) fn floating_px(p: &Painter, pr: PxRect, r: Option<f64>) {
     let s = p.pixels_per_point();
@@ -1771,6 +1830,8 @@ mod tests {
     /// glass panel's frame leaves its face clear and casts its shadow below.
     #[test]
     fn rubber_and_glass() {
+        // (the rubber reads the theme: hold it while knobs' tests switch to Daylight)
+        let _lock = crate::raster::THEME_LOCK.lock();
         let (w, h) = (80, 40);
         let floor = MIDNIGHT_FLOOR;
         let img = make_rubber(w, h, 8, rec_rubber(1.0), floor);

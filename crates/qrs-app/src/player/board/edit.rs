@@ -387,7 +387,7 @@ impl Rack {
         );
         text::draw(
             &p,
-            &format!("after {}", def.after),
+            &Rack::file_name(&blk).unwrap_or_else(|| format!("after {}", def.after)),
             pos2(nr.max.x + px(12.0), y1 + px(1.0)),
             Align2::LEFT_CENTER,
             Style::new(12.0, 600, th.caption),
@@ -427,13 +427,39 @@ impl Rack {
         {
             self.block_defaults(st, blk);
         }
+        // NAM captures (P31): which amp plays, and the file a capture or IR block runs
+        let mut hx = dr.max.x;
+        if def.file {
+            let cr = Rect::from_min_size(pos2(hx + px(8.0), onr.min.y), vec2(px(150.0), px(30.0)));
+            if widgets::button(
+                ui,
+                cr,
+                "board-bar-choose",
+                if def.kind == Kind::Cab {
+                    "Choose IR\u{2026}"
+                } else {
+                    "Choose capture\u{2026}"
+                },
+                "",
+                widgets::ButtonStyle::primary(),
+            )
+            .clicked()
+            {
+                self.choose_file(blk);
+            }
+            hx = cr.max.x;
+        }
+        let sw = Rect::from_min_size(pos2(hx + px(8.0), onr.min.y), vec2(px(176.0), px(30.0)));
+        if self.amp_switch(ui, st, sw, blk) {
+            hx = sw.max.x;
+        }
         text::draw(
             &p,
             "click a block: show it \u{b7} double-click: its editor \u{b7} drag: move \u{b7} + adds one",
-            pos2(dr.max.x + px(16.0), y2),
+            pos2(hx + px(16.0), y2),
             Align2::LEFT_CENTER,
             Style::new(11.0, 600, th.caption),
-            Some(r.max.x - dr.max.x - px(36.0)),
+            Some(r.max.x - hx - px(36.0)),
         );
         if r.height() > px(110.0) {
             let summary: Vec<String> = def
@@ -532,12 +558,12 @@ impl Rack {
         let room = model_key.min.x - tx - px(20.0);
         let sub = match &self.board.rig {
             Some(_) => format!(
-                "PEDALBOARD \u{b7} {} \u{b7} {} \u{b7} {}",
+                "RIG \u{b7} {} \u{b7} {} \u{b7} {}",
                 self.song.title.to_uppercase(),
                 self.song.part_name.to_uppercase(),
                 self.board_title(st).to_uppercase()
             ),
-            None => format!("PEDALBOARD \u{b7} {}", self.board_title(st).to_uppercase()),
+            None => format!("RIG \u{b7} {}", self.board_title(st).to_uppercase()),
         };
         text::caps(
             &p,
@@ -959,7 +985,12 @@ impl Rack {
             hot = h;
             face_area.min.x = used + px(24.0);
         }
-        let bs = faces::board_size(&blk);
+        // (sized from its controls, P37.13: a drive's extras beside it; a cab keeps its art's size, its pad is apart)
+        let bs = if def.face == Face::Cab {
+            faces::board_size(&blk)
+        } else {
+            faces::unit_size(&blk)
+        };
         let scale = (face_area.height() / bs.y).min(face_area.width() / bs.x).min(2.4);
         let hot = if back {
             // the art behind the panel; its controls are in the card under it (last frame's hover explained here)
@@ -996,6 +1027,9 @@ impl Rack {
             bubble_at(&p, at, kd.label, &kd.text(blk.v[h.knob]), under);
         }
         let guide = Rect::from_min_max(pos2(area.max.x - guide_w, area.min.y), area.max);
+        if hot.is_none() {
+            self.guide_rows(ui, st, guide, blk);
+        }
         self.knob_guide(&p, guide, &blk, hot);
         // the line under it
         let cy = card.max.y - px(16.0);
@@ -1031,6 +1065,65 @@ impl Rack {
     }
 
     /// Beside the face: the knob under the mouse explained, with its sweet spot; else every knob at a glance.
+    /// The knob list's rows (the same places `knob_guide` draws them) as controls: drag along a row's scale (or
+    /// click on it) to set it, click a switch's row to step it, the wheel turns it, double-click resets (B3: the list
+    /// looked like sliders but was read-only).
+    fn guide_rows(&mut self, ui: &Ui, st: &mut AppState, r: Rect, blk: Block) {
+        let def = blk.def();
+        let shown: Vec<(usize, board::KnobDef)> = if self.board.back && def.has_back() {
+            def.back_knobs().map(|(k, kd)| (k, *kd)).collect()
+        } else {
+            def.front_knobs().iter().copied().enumerate().collect()
+        };
+        let y0 = r.min.y + px(8.0);
+        let n = shown.len().max(1);
+        let rh = ((r.height() - px(24.0)) / n as f32).min(px(26.0));
+        let label_w = r.width() * 0.3;
+        let value_w = r.width() * 0.26;
+        let (x0, x1) = (r.min.x + label_w + value_w + px(4.0), r.max.x - px(6.0));
+        for (row, (k, kd)) in shown.into_iter().enumerate() {
+            let y = y0 + px(22.0) + rh * (row as f32 + 0.5);
+            let rr = Rect::from_min_max(pos2(r.min.x, y - rh / 2.0), pos2(r.max.x, y + rh / 2.0));
+            self.board.wheel.push(super::WheelSpot {
+                uid: blk.uid,
+                knob: k,
+                rect: rr,
+            });
+            let resp = interact(ui, rr, ("guide-row", blk.uid, k), Sense::click_and_drag());
+            if resp.hovered() || resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            if resp.double_clicked() {
+                self.set_knob(st, blk.uid, k, kd.def);
+                self.board_commit(st);
+                continue;
+            }
+            match kd.unit {
+                Unit::Choice(opts) => {
+                    if resp.clicked() {
+                        let v = (blk.v[k].round() + 1.0).rem_euclid(opts.len().max(1) as f32);
+                        self.set_knob(st, blk.uid, k, v);
+                        self.board_commit(st);
+                    }
+                }
+                _ => {
+                    if (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
+                        && let Some(pos) = resp.interact_pointer_pos()
+                    {
+                        let u = ((pos.x - x0) / (x1 - x0).max(1.0)).clamp(0.0, 1.0);
+                        let v = kd.from_u(u);
+                        if (v - blk.v[k]).abs() > 1e-6 {
+                            self.set_knob(st, blk.uid, k, v);
+                        }
+                    }
+                    if resp.drag_stopped() || resp.clicked() {
+                        self.board_commit(st);
+                    }
+                }
+            }
+        }
+    }
+
     fn knob_guide(&self, p: &Painter, r: Rect, blk: &Block, hot: Option<HotCtl>) {
         let th = t();
         let ctx = p.ctx();
@@ -1194,7 +1287,7 @@ impl Rack {
                 );
                 text::draw(
                     p,
-                    "hover one to learn it",
+                    "drag a row to set it, or hover the face",
                     pos2(r.max.x, y0),
                     Align2::RIGHT_CENTER,
                     Style::new(10.5, 600, th.caption),
@@ -1222,7 +1315,7 @@ impl Rack {
                     );
                     text::draw(
                         p,
-                        &kd.text(blk.v[k]),
+                        &crate::pedalfaces::silver::knob_text(blk, k),
                         pos2(r.min.x + label_w + value_w - px(8.0), y),
                         Align2::RIGHT_CENTER,
                         Style::new(11.5, 800, th.text),
@@ -1619,9 +1712,11 @@ impl Rack {
             th.caption,
             Align2::LEFT_CENTER,
         );
+        let info = gi::info(def.id);
+        let inspired = info.map_or_else(|| format!("after {}", gi::real_unit(a)), |i| i.inspired_line());
         text::draw(
             &p,
-            &format!("after {}", gi::real_unit(a)),
+            &inspired,
             pos2(x1, y),
             Align2::RIGHT_CENTER,
             Style::new(11.0, 600, th.caption),
@@ -1670,7 +1765,7 @@ impl Rack {
         // what it is
         let ws = Style::new(12.5, 500, th.text_2);
         let lh = px(18.0);
-        let lines = text::wrap(&ctx, a.what, ws, w);
+        let lines = text::wrap(&ctx, info.map_or(a.what, |i| i.about), ws, w);
         let fit = ((bottom - y - px(60.0)) / lh).floor().max(2.0) as usize;
         for (n, line) in lines.iter().take(fit).enumerate() {
             let mut s = line.clone();
@@ -1679,6 +1774,31 @@ impl Rack {
             }
             text::draw(&p, &s, pos2(x0, y + lh / 2.0), Align2::LEFT_CENTER, ws, Some(w));
             y += lh;
+        }
+        // its sound and who played it (P37.14)
+        if let Some(i) = info {
+            let ps = Style::new(11.5, 600, th.caption);
+            let mut more = vec![(i.character.to_string(), Style::new(12.0, 700, th.text))];
+            if !i.players.is_empty() {
+                more.push((format!("Played by {}", i.players.join(", ")), ps));
+            }
+            more.push((format!("Era: {}", i.era), ps));
+            for (s, st) in more {
+                for line in text::wrap(&ctx, &s, st, w) {
+                    if bottom - y < px(90.0) {
+                        break;
+                    }
+                    text::draw(
+                        &p,
+                        &line,
+                        pos2(x0, y + lh / 2.0),
+                        Align2::LEFT_CENTER,
+                        st,
+                        Some(w),
+                    );
+                    y += lh;
+                }
+            }
         }
         y += px(10.0);
         // heard on
@@ -1985,7 +2105,7 @@ impl Rack {
             "TAP",
             tc,
             Align2::CENTER_CENTER,
-            Style::new(14.0, 800, IVORY_INK),
+            Style::new(14.0, 800, keys::key_ink(false)),
             None,
         );
         if resp.hovered() {

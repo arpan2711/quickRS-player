@@ -1,4 +1,4 @@
-//! Builders for synthetic Rocksmith files, so tests need no real songs or real keys. Port of tests/builders.py.
+//! Builders for synthetic RS files, so tests need no real songs or real keys. Port of tests/builders.py.
 //!
 //! Formats are written out explicitly here (not through the parser's own types) so that a layout mistake in the
 //! parser is not silently mirrored by the builder.

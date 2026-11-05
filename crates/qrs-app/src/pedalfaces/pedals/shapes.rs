@@ -396,7 +396,7 @@ fn rocket_art(pr: &Pr) {
     pr.ta(
         "Rocket",
         OW / 2.0,
-        0.545 * OH,
+        0.538 * OH,
         Align2::CENTER_CENTER,
         27.0,
         0xffffff,
@@ -406,7 +406,7 @@ fn rocket_art(pr: &Pr) {
     pr.ta(
         "Octave",
         OW / 2.0,
-        0.63 * OH,
+        0.638 * OH,
         Align2::CENTER_CENTER,
         20.0,
         0xf2e9ff,

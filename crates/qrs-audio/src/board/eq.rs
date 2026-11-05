@@ -121,7 +121,7 @@ fn graphic(rate: f32, freqs: &[f32], q: f32) -> Box<dyn Pedal> {
     })
 }
 
-/// Rocksmith's 5-band EQ: bands two octaves apart, so wider.
+/// RS's 5-band EQ: bands two octaves apart, so wider.
 pub fn graphic5(rate: f32) -> Box<dyn Pedal> {
     graphic(rate, &[63.0, 250.0, 750.0, 2200.0, 5700.0], 0.8)
 }

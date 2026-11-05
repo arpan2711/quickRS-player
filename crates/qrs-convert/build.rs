@@ -13,7 +13,7 @@ fn main() {
             .set("ProductName", "quickRS Converter")
             .set(
                 "FileDescription",
-                "quickRS Converter: Rocksmith .psarc songs to feedpaks",
+                "quickRS Converter: RS .psarc songs to feedpaks",
             )
             .set("OriginalFilename", "quickrs-convert.exe")
             .set("InternalName", "quickrs-convert");

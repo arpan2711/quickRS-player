@@ -15,7 +15,7 @@ It doesn't change your Rocksmith install.
 quickRS is free and MIT licensed. It is a hobby project made by one person
 with a lot of help from an AI coding assistant, and it has had few testers
 beyond me and the people who tried 0.1.0. Bug reports are very welcome:
-Settings > *Updates* > *Report a bug* in the app, or
+Settings > *About* > *Report a bug* in the app, or
 [GitHub Issues](https://github.com/arpan2711/quickRS-player/issues).
 
 ![The player](screenshots/player.png)
@@ -38,12 +38,12 @@ AI model, no upload, and the same take always gets the same answer. See
 
 ### Download
 
-* **Windows 10 or 11 (64-bit):** `quickRS-0.4.0-windows-x64.zip` from the
+* **Windows 10 or 11 (64-bit):** `quickRS-0.5.0-windows-x64.zip` from the
   [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
   There is no installer: unzip it and run `quickrs.exe`.
 * **macOS 11 or later (beta):** `quickRS-0.3.0-macos-universal.dmg` (or the
   `.zip`) from the [0.3.0 release](https://github.com/arpan2711/quickRS-player/releases/tag/v0.3.0);
-  the Mac build of 0.4.0 will follow. One app for Apple silicon and Intel
+  a Mac build of 0.5.0 may follow. One app for Apple silicon and Intel
   Macs. It is tested on one Mac so far and not notarised by Apple, so the
   first start takes an extra step. See [docs/INSTALL.md](docs/INSTALL.md#macos).
   On a Mac, the keys written Ctrl in these docs are Cmd (a take is `Cmd+R`).
@@ -106,6 +106,24 @@ Easy to miss, and some of the best parts. `F1` in a song lists every key.
   guitar's timing.
 
 
+### What's new in 0.5.0 (the bass release)
+
+* **Bass mode**: Guitar, Bass or 5-string bass per input. Notes read down to a low B, bass parts open first, bass
+  amps and cabs in the amp room, and seven bass starting sounds. Tuned on synthetic strings: tell us how it reads.
+* **A new first-time setup**: plain words, and one timing step where you play a few bars of "Ode to Joy" on a tab
+  and quickRS sets your delay. Advanced fine-tuning is folded away.
+* **The amp room**: one screen, a catalogue of every unit with an *i* card (what it's inspired by, who played it),
+  song tones on our own amps for every song, level-matched, four new amp voices, goal buttons (*More crunch*,
+  *Less harsh*...), and a gate that closes after the amp.
+* **Neural Amp Modeler (optional)**: Settings > *Neural Amp Modeler*. Captures through your own TONE3000 account,
+  suggestions for your songs' gear, a download card with progress, and our model kept beside every capture.
+* **Practice that works together**: a selection is the loop, speed applies everywhere, one count-in switch
+  (`Shift+C`), restart and review keys by the transport, low-latency output in Controls.
+* **Library**: a difficulty for every part, "Good to start with" on Home, score badges, Random, a Parts column.
+* Lessons are put aside for now. Full list in the
+  [0.5.0 release notes](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.0).
+
+
 ### What's new in 0.4.0
 
 * **Review a run** (experimental): after a song, *Review* (or `E`) lists the
@@ -142,7 +160,7 @@ Setting up
   read as soon as the keys arrive: no restart, no `F5`.
 * Song folders listed with *Add folder...* and *Remove*; a switch to read
   only your feedpaks; each song marked `feedpak`, `psarc` or both.
-* quickRS updates itself (it asks first), and Settings > *Updates* > *Report
+* quickRS updates itself (it asks first), and Settings > *About* > *Report
   a bug* opens a GitHub issue with your version and system filled in.
 * Settings sections renamed: *Audio input / output*, *Raw guitar tone*,
   *Directories*.

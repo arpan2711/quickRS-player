@@ -56,10 +56,25 @@ pub fn shapes_rect(w: f32) -> Rect {
     zoom_rect(w).translate(vec2(-104.0, 0.0))
 }
 
-/// The KEY picker, from over the neck's left end to the ALL SHAPES button.
-pub fn key_rect(w: f32) -> Rect {
+/// The KEY picker, from over the neck's left end to the ALL SHAPES button (with a song open, to the YOU / SONG
+/// switch).
+pub fn key_rect(w: f32, song: bool) -> Rect {
     let s = shapes_rect(w);
-    Rect::from_min_max(pos2(board_rect(w).min.x, s.min.y), pos2(s.min.x - 8.0, s.max.y))
+    let right = if song {
+        source_rect(w, 0).min.x - 6.0
+    } else {
+        s.min.x - 8.0
+    };
+    Rect::from_min_max(pos2(board_rect(w).min.x, s.min.y), pos2(right, s.max.y))
+}
+
+/// The YOU / SONG switch's segment `i`, left of ALL SHAPES (only while a song is open).
+pub fn source_rect(w: f32, i: usize) -> Rect {
+    let s = shapes_rect(w);
+    Rect::from_min_size(
+        pos2(s.min.x - 8.0 - 2.0 * 38.0 + i as f32 * 38.0, s.min.y),
+        vec2(38.0, s.height()),
+    )
 }
 
 /// A key's name: "A major", "F# minor".
@@ -116,6 +131,9 @@ pub struct ChordStrip {
     /// (else picked from the KEY menu).
     pub key: Option<Key>,
     pub key_auto: bool,
+    /// With a song open, whether the key is the song's (SONG) rather than the guess or the pick (YOU); None
+    /// without a song (no switch).
+    pub song: Option<bool>,
 }
 
 impl Default for ChordStrip {
@@ -133,6 +151,7 @@ impl Default for ChordStrip {
             alts: Vec::new(),
             key: None,
             key_auto: true,
+            song: None,
         }
     }
 }
@@ -267,7 +286,7 @@ impl ChordStrip {
     /// The strip over its sunken box (the background has it): the chord's name, its tones, the notes heard, the
     /// last few chords; the ZOOM button; the neck with the shape; the dragger. `at` maps widget points to the
     /// screen, `u` points a widget point; `hot` is what the pointer is over (1 the ZOOM button, 2 the dragger, 3 the
-    /// ALL SHAPES button, 4 the KEY picker).
+    /// ALL SHAPES button, 4 the KEY picker, 5 and 6 the YOU / SONG switch's segments).
     pub fn draw(
         &self,
         p: &egui::Painter,
@@ -395,7 +414,7 @@ impl ChordStrip {
             Align2::CENTER_CENTER,
             st(10.0, 800, if hot == 3 { FG } else { SUB }),
         );
-        let k = key_rect(w);
+        let k = key_rect(w, self.song.is_some());
         let kr = Rect::from_min_max(at(k.min.x, k.min.y), at(k.max.x, k.max.y));
         p.rect_filled(kr, 9.5 * u, if hot == 4 { HILITE } else { BASE });
         p.rect_stroke(kr, 9.5 * u, Stroke::new(u, FRET), egui::StrokeKind::Inside);
@@ -403,7 +422,16 @@ impl ChordStrip {
             Some(key) => (key_name(key), if hot == 4 { FG } else { SUB }),
             None => ("listening for a key".into(), DIM),
         };
-        let how = if self.key_auto { "auto" } else { "set" };
+        let how = match (self.song, self.key_auto) {
+            (Some(true), _) => "song",
+            (_, true) => "auto",
+            (_, false) => "set",
+        };
+        if let Some(on) = self.song {
+            let rects = [source_rect(w, 0), source_rect(w, 1)];
+            let hot = [5, 6].iter().position(|&h| h == hot);
+            super::draw_switch(p, u, &at, &rects, &["YOU", "SONG"], on as usize, hot, 9.0);
+        }
         pil_text(
             p,
             &format!("KEY  {kname}  \u{b7}  {how}"),

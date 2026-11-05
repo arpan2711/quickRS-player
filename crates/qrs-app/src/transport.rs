@@ -58,6 +58,15 @@ impl Transport {
         self.held = at.map(|t| (t.clamp(0.0, self.duration()), playing));
     }
 
+    /// Tests: a held clock moves on `wall` seconds at the song's speed while it's playing (stopping at the end).
+    #[cfg(test)]
+    pub fn step_held(&mut self, wall: f64) {
+        let (speed, d) = (self.speed(), self.duration());
+        if let Some((t, true)) = &mut self.held {
+            *t = (*t + wall * speed).min(d);
+        }
+    }
+
     pub fn engine(&self) -> Option<&Arc<Engine>> {
         match &self.source {
             Source::Engine { e, .. } => Some(e),

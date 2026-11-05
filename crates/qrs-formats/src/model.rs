@@ -1,7 +1,7 @@
 //! Format-independent note chart model. Port of rsplay/model.py.
 //!
 //! Every reader (SNG, XML, feedpak) produces an `Arrangement` holding the chart at one difficulty.
-//! Strings are numbered as in Rocksmith: 0 is the lowest-pitched string (low E on guitar). Times are seconds.
+//! Strings are numbered as in RS: 0 is the lowest-pitched string (low E on guitar). Times are seconds.
 
 use serde_json::{Map, Value, json};
 
@@ -130,7 +130,7 @@ pub struct Note {
     pub techniques: Techs,
     pub slide_to: i32,
     pub slide_unpitch_to: i32,
-    /// Maximum bend, in half steps (Rocksmith's and feedpak's unit).
+    /// Maximum bend, in half steps (RS's and feedpak's unit).
     pub bend: f64,
     /// Bend curve (time, step) when the source has one.
     pub bend_curve: Vec<(f64, f64)>,
@@ -191,7 +191,7 @@ pub struct Chord {
     pub frets: Vec<i32>,
     /// 1-4 = index..pinky, 0 = thumb, -1 = none.
     pub fingers: Vec<i32>,
-    /// A repeat of the chord before it (SNG high-density bit, feedpak `hd`, XML `highDensity`): Rocksmith draws it
+    /// A repeat of the chord before it (SNG high-density bit, feedpak `hd`, XML `highDensity`): RS draws it
     /// as an empty frame, the shape not shown again.
     pub high_density: bool,
 }
@@ -260,7 +260,7 @@ pub struct Section {
     pub end: f64,
 }
 
-/// A tone change in the chart (Rocksmith's Tone_A..D, feedpak `tones.changes`).
+/// A tone change in the chart (RS's Tone_A..D, feedpak `tones.changes`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToneChange {
     pub time: f64,
@@ -293,7 +293,7 @@ pub struct Arrangement {
     /// Semitone offsets per string.
     pub tuning: Vec<i32>,
     pub capo: i32,
-    /// Cents off concert pitch (feedpak `centOffset`, Rocksmith's A440 offset).
+    /// Cents off concert pitch (feedpak `centOffset`, RS's A440 offset).
     pub cent_offset: f64,
     pub song_length: f64,
     pub is_bass: bool,
@@ -310,15 +310,15 @@ pub struct Arrangement {
     pub handshapes: Vec<HandShape>,
     pub anchors: Vec<Anchor>,
     pub tones: Vec<ToneChange>,
-    /// The tone the part starts on (Rocksmith's Tone_Base, feedpak `tones.base`).
+    /// The tone the part starts on (RS's Tone_Base, feedpak `tones.base`).
     pub base_tone: String,
     /// Each tone's rig (amp, cab, pedals, racks), for the pedalboard.
     pub rig: Vec<crate::rig::RigTone>,
-    /// Rocksmith's DynamicVisualDensity, one per difficulty level, easiest first: how far ahead the highway shows
+    /// RS's DynamicVisualDensity, one per difficulty level, easiest first: how far ahead the highway shows
     /// notes (lower = notes come faster). Empty when the song doesn't say (see `visual_density_at`).
     pub visual_density: Vec<f32>,
     /// Where each phrase iteration starts (SNG / XML phraseIterations, feedpak `phrases[].start_time`), sorted:
-    /// Rocksmith's camera frames the hand positions from the current phrase's start.
+    /// RS's camera frames the hand positions from the current phrase's start.
     pub phrases: Vec<f64>,
 }
 
@@ -344,14 +344,14 @@ pub(crate) fn sorted_times(times: impl IntoIterator<Item = f64>) -> Vec<f64> {
     v
 }
 
-/// Rocksmith's highway density at the easiest level, and a song's own full-difficulty value when it gives none.
+/// RS's highway density at the easiest level, and a song's own full-difficulty value when it gives none.
 pub const VISUAL_DENSITY_EASIEST: f32 = 5.0;
 pub const VISUAL_DENSITY_DEFAULT: f32 = 1.3;
 
 impl Arrangement {
     /// The highway's density at a difficulty (0..1 of the ladder; 1 = the full chart): the song's own value for that
-    /// level, else Rocksmith's ladder, 5.0 at the easiest falling geometrically to 1.3 at full difficulty
-    /// (as the Rocksmith toolkit fills it: `5 * (end / 5) ^ (level / max)`).
+    /// level, else RS's ladder, 5.0 at the easiest falling geometrically to 1.3 at full difficulty
+    /// (as the RS toolkit fills it: `5 * (end / 5) ^ (level / max)`).
     pub fn visual_density_at(&self, mastery: f64) -> f32 {
         let m = mastery.clamp(0.0, 1.0);
         if !self.visual_density.is_empty() {

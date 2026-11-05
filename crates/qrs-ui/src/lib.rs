@@ -5,13 +5,18 @@
 //! scale, and every size here is the Python number.
 
 pub mod anim;
+pub mod glass;
+pub mod hall;
 pub mod icons;
 pub mod keys;
+pub mod knob_art;
 pub mod knobs;
 pub mod material;
 pub mod paint;
 pub mod pyfont;
+pub mod quiet;
 pub mod raster;
+pub mod streak;
 pub mod text;
 pub mod theme;
 pub mod units;

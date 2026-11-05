@@ -12,6 +12,7 @@
 //!   quickrs-cli take-check song --arr lead --from A --to B [--tone dry|clean|...] [--out-dir D]
 //!   quickrs-cli transcribe recording.wav [--from s] [--to s]
 //!   quickrs-cli jam render [-o DIR] [--key A --scale natural-minor --chords "i VI III VII" --bpm N] / jam scale
+//!   quickrs-cli nam info|bench|render capture.nam [--ir cab.wav] / nam standard test.nam
 //!   quickrs-cli sums quickRS-0.2.0-windows-x64.zip [more.zip ...] [-o SHA256SUMS.txt]
 //!
 //! tab and json also accept a loose .sng or .xml arrangement file.
@@ -28,12 +29,15 @@ mod board_cmd;
 mod board_rigs;
 mod chordname_cmd;
 mod chords_cmd;
+mod idle_cmd;
 mod jam_cmd;
 #[cfg(feature = "lessons")]
 mod lessons_cmd;
 mod library_cmd;
+mod listen_cmd;
 #[cfg(feature = "nux")]
 mod mg300_cmd;
+mod nam_cmd;
 mod sections_cmd;
 mod take_cmd;
 mod verify;
@@ -42,7 +46,7 @@ mod verify;
 #[command(
     name = "quickrs-cli",
     version,
-    about = "quickRS song toolkit: Rocksmith 2014 psarc and feedpak songs."
+    about = "quickRS song toolkit: RS2014 psarc and feedpak songs."
 )]
 struct Cli {
     /// keys.json to use (default: $RSPLAY_KEYS_FILE, ./keys.json, next to the program, ~/.config/rsplay/keys.json)
@@ -126,7 +130,7 @@ enum Cmd {
         #[arg(long)]
         song_key: Option<String>,
     },
-    /// List audio devices, ranked for the guitar, with the automatic choice (and the Rocksmith setup it used)
+    /// List audio devices, ranked for the guitar, with the automatic choice (and the RS setup it used)
     Devices(audio_cmds::DeviceArgs),
     /// Play a song through the audio engine (with the guitar monitored)
     Play(audio_cmds::PlayArgs),
@@ -135,6 +139,9 @@ enum Cmd {
     /// The pedalboard: list its models, or render a listening set (riffs through every model and starting
     /// board, or a song's part through its own tones) as WAVs
     Board(board_cmd::Args),
+    /// NAM captures and IR cabs: a capture's details, its CPU cost, a riff through it
+    #[command(subcommand)]
+    Nam(nam_cmd::Args),
     /// The amp room's jam engine offline: render drum styles, the click, a drone, a chord loop and a looper demo as
     /// WAVs, or print a scale's fretboard map
     Jam(jam_cmd::Args),
@@ -179,7 +186,7 @@ enum Cmd {
     /// feedpaks in another folder. Songs already converted there are skipped, so it can be run again after
     /// adding songs; one that fails is reported and the rest carry on.
     ConvertFolder {
-        /// the folder with the .psarc files (Rocksmith's dlc folder, say)
+        /// the folder with the .psarc files (RS's dlc folder, say)
         from: PathBuf,
         /// where the .feedpak files go (made if needed)
         to: PathBuf,
@@ -540,6 +547,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         #[cfg(feature = "nux")]
         Cmd::Mg300(c) => mg300_cmd::run(c),
         Cmd::Board(args) => board_cmd::run(&keys, args),
+        Cmd::Nam(args) => nam_cmd::run(args),
         Cmd::Jam(args) => jam_cmd::run(args),
         Cmd::Synth(args) => {
             let arr = load(&keys, &args.file, args.arr.as_deref(), args.mastery)?;
@@ -579,7 +587,7 @@ fn cmd_feedpak(
     dir: bool,
 ) -> anyhow::Result<()> {
     use qrs_library::feedpak_export;
-    // the current folder, not next to the source (which would put it in Rocksmith's dlc folder)
+    // the current folder, not next to the source (which would put it in RS's dlc folder)
     let out = output.unwrap_or_else(|| feedpak_export::default_out(file, keys, song_key));
     let converter = format!("quickRS {}", env!("CARGO_PKG_VERSION"));
     let r = feedpak_export::export(file, keys, &out, song_key, dir, &converter)?;

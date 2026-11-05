@@ -1,5 +1,6 @@
-//! The Display and Practice pages (port of settingsview.py `draw_display`, `tile_row`, `draw_practice`; the
-//! Library page is in library.rs).
+//! The Display page (port of settingsview.py `draw_display`, `tile_row`; rebuilt in P35.3, D92: look, notes, notation
+//! with its fine-tuning folded, the song screen's tiles and the note widget window), and the classic look's Practice
+//! page (`draw_practice`, the Python app's, for the parity shots: the new look's Timing replaces it). Library: library.rs.
 
 use eframe::egui;
 use egui::{Align2, CursorIcon, Rect, Sense, Ui, pos2, vec2};
@@ -13,7 +14,9 @@ use qrs_ui::theme::{self, t};
 use qrs_ui::units::px;
 use qrs_ui::widgets::{self, Segmented, interact};
 
-use super::{SettingsView, TileDrag, centre_x, centre_y, snap};
+use super::{SettingsView, TileDrag, centre_x, centre_y, line_h, snap};
+use crate::player::Backdrop;
+use crate::player::highway_size::{SIZES, size_from, size_label, size_pct};
 use crate::player::tiles::{self, TILES};
 use crate::state::AppState;
 
@@ -94,7 +97,7 @@ impl SettingsView {
             }
         }
         let top = look.max.y + gap;
-        // notes and the tab
+        // notes: string colours and what the note tile shows
         let nota = st.config.get("notation").and_then(|v| v.as_object()).cloned();
         let nota_on = |k: &str| {
             nota.as_ref()
@@ -106,14 +109,7 @@ impl SettingsView {
             pos2(body.min.x, top),
             vec2(
                 colw,
-                2.0 * pad
-                    + 3.0 * hh
-                    + Self::h_switch("md", true)
-                    + px(18.0)
-                    + seg_h
-                    + px(22.0)
-                    + NOTATIONS.len() as f32 * (Self::h_switch("sm", false) + px(8.0))
-                    - px(8.0),
+                2.0 * pad + hh + Self::h_switch("md", true) + px(16.0) + seg_h,
             ),
         );
         let (x, wd) = (card.min.x + pad, card.width() - 2.0 * pad);
@@ -125,15 +121,23 @@ impl SettingsView {
             y,
             wd,
             "String colours",
-            "Rocksmith's string colours on the tab, tuner and neck",
+            "RS's string colours on the tab, tuner and neck",
             st.config.bool("string_colors", false),
             "toggle:string_colors:off",
             "md",
             "",
             700,
-        ) + px(18.0);
-        y = self.heading(&p, "NOTE TILE SHOWS", x, y, None, "", "");
-        let seg = Rect::from_min_size(pos2(x, y), vec2(wd, seg_h));
+        ) + px(16.0);
+        let lr = text::draw(
+            &p,
+            "Note tile shows",
+            pos2(x, y + snap(seg_h / 2.0)),
+            Align2::LEFT_CENTER,
+            Style::new(15.0, 700, th.text),
+            None,
+        );
+        let sx = lr.max.x + px(18.0);
+        let seg = Rect::from_min_size(pos2(sx, y), vec2(x + wd - sx, seg_h));
         let cur = usize::from(st.config.str("note_view", "piano") == "guitar");
         let (_, clicked) =
             widgets::segmented(ui, seg, "set-noteview", &seg_opts(&["Piano", "Guitar neck"], cur));
@@ -141,24 +145,81 @@ impl SettingsView {
             self.acts
                 .push(format!("set:note_view:{}", ["piano", "guitar"][i]));
         }
-        y = seg.max.y + px(22.0);
-        y = self.heading(&p, "RHYTHM NOTATION", x, y, None, "", "N");
-        for (k, label) in NOTATIONS {
-            y += self.switch_row(
-                ui,
-                x,
-                y,
-                wd,
-                label,
-                "",
-                nota_on(k),
-                &format!("nota:{k}"),
-                "sm",
-                "",
-                600,
-            ) + px(8.0);
+        // notation: rhythm under the tab (N), its fine-tuning folded
+        let fine_open = self.folds.is_open("notation");
+        let fine_n = NOTATIONS.len() - 1;
+        let card_n = Rect::from_min_size(
+            pos2(body.min.x, card.max.y + gap),
+            vec2(
+                colw,
+                2.0 * pad
+                    + hh
+                    + Self::h_switch("md", true)
+                    + px(12.0)
+                    + px(widgets::FOLD_ROW_H)
+                    + if fine_open {
+                        px(12.0) + fine_n as f32 * (Self::h_switch("sm", false) + px(8.0)) - px(8.0)
+                    } else {
+                        0.0
+                    }
+                    + px(16.0)
+                    + line_h(&ctx, 12.0),
+            ),
+        );
+        paint::card(&p, card_n, 24.0, false);
+        let mut y = self.heading(&p, "NOTATION", x, card_n.min.y + pad, None, "", "");
+        y += self.switch_row(
+            ui,
+            x,
+            y,
+            wd,
+            NOTATIONS[0].1,
+            "note lengths, rests and beams",
+            nota_on(NOTATIONS[0].0),
+            &format!("nota:{}", NOTATIONS[0].0),
+            "md",
+            "N",
+            700,
+        ) + px(12.0);
+        let (h, open) = self.fold(
+            ui,
+            x - px(10.0),
+            y,
+            wd + px(20.0),
+            "notation",
+            "Fine-tune notation",
+            "snap to beats \u{b7} rests \u{b7} beams & ties \u{b7} triplets",
+        );
+        y += h;
+        if open {
+            y += px(12.0);
+            for (k, label) in &NOTATIONS[1..] {
+                y += self.switch_row(
+                    ui,
+                    x + px(32.0),
+                    y,
+                    wd - px(32.0),
+                    label,
+                    "",
+                    nota_on(k),
+                    &format!("nota:{k}"),
+                    "sm",
+                    "",
+                    600,
+                ) + px(8.0);
+            }
+            y -= px(8.0);
         }
-        // the tiles in their order: drag a row by its grip to move the tile
+        text::draw(
+            &p,
+            "Notation on or off (N) is also in a song's Controls.",
+            pos2(x, y + px(16.0)),
+            Align2::LEFT_TOP,
+            Style::new(12.0, 500, th.caption),
+            Some(wd),
+        );
+        // the song screen: the tiles in their order (drag a row by its grip to move the tile), the lyrics' next line
+        // and the note widget window
         let order = tiles::tile_order(st);
         let (row_h, rgap) = (px(44.0), px(4.0));
         let n = order.len() as f32;
@@ -167,28 +228,43 @@ impl SettingsView {
             pos2(body.min.x + colw + gap, top),
             vec2(
                 colw,
-                2.0 * pad + hh + list_h + px(22.0) + Self::h_switch("sm", false),
+                2.0 * pad
+                    + hh
+                    + list_h
+                    + px(18.0)
+                    + Self::h_switch("sm", false)
+                    + px(12.0)
+                    + Self::h_switch("md", true)
+                    + px(18.0)
+                    + hh
+                    + seg_h
+                    + px(18.0)
+                    + hh
+                    + seg_h,
             ),
         );
         paint::card(&p, card2, 24.0, false);
         let (x2, wd2) = (card2.min.x + pad, card2.width() - 2.0 * pad);
         let y2 = self.heading(
             &p,
-            "TILES",
+            "SONG SCREEN",
             x2,
             card2.min.y + pad,
             Some(card2.max.x - pad),
-            "drag to reorder",
+            "off: folded  ·  drag to reorder",
             "",
         );
+
         let lst = Rect::from_min_size(pos2(x2, y2), vec2(wd2, list_h));
         paint::well(&p, lst, 16.0);
         self.tile_list_y = lst.min.y;
         let drag_key = self.tile_drag.as_ref().map(|d| d.key);
-        for (i, (k, on)) in order.iter().enumerate() {
+        // (a switch is open or folded: a tile is never hidden, P35.2; a device's tile is on or off)
+        for (i, (k, _)) in order.iter().enumerate() {
             if drag_key == Some(*k) {
                 continue; // drawn last, on top
             }
+            let on = tiles::tile_open(st, k);
             let slot = px(6.0) + i as f32 * (row_h + rgap);
             let ry = anim::smooth(&ctx, ("srow", *k), slot, 0.05, None);
             self.tile_row(
@@ -199,33 +275,78 @@ impl SettingsView {
                     vec2(lst.width() - px(12.0), row_h),
                 ),
                 k,
-                *on,
+                on,
                 false,
             );
         }
         if let Some(d) = &self.tile_drag
-            && let Some((k, on)) = order.iter().find(|o| o.0 == d.key).copied()
+            && let Some((k, _)) = order.iter().find(|o| o.0 == d.key).copied()
         {
+            let on = tiles::tile_open(st, k);
             let r = Rect::from_min_size(
                 pos2(lst.min.x + px(6.0), snap(d.y)),
                 vec2(lst.width() - px(12.0), row_h),
             );
             self.tile_row(ui, st, r, k, on, true);
         }
-        self.switch_row(
+        let mut y2 = lst.max.y + px(18.0);
+        y2 += self.switch_row(
             ui,
             x2,
-            lst.max.y + px(22.0),
+            y2,
             wd2,
-            "Lyrics tile: next line",
+            "Lyrics: show the next line",
             "",
             st.config.bool("lyrics_next", true),
             "toggle:lyrics_next",
             "sm",
             "",
             600,
+        ) + px(12.0);
+        // the note widget window (on the Audio page before P35.3)
+        y2 += self.switch_row(
+            ui,
+            x2,
+            y2,
+            wd2,
+            "Note widget window",
+            "the always-on-top note and key window",
+            st.config.bool("note_widget", true),
+            "notewidget",
+            "md",
+            "",
+            700,
+        ) + px(18.0);
+        // the highway's background (P30.10): the living stage, one still wallpaper, or plain dark (also its toolbar's eye)
+        let y2 = self.heading(&p, "HIGHWAY BACKGROUND", x2, y2, None, "", "D");
+        let seg = Rect::from_min_size(pos2(x2, y2), vec2(wd2, seg_h));
+        let cur = Backdrop::parse(&st.config.str("hw_backdrop", "live"));
+        let labels = Backdrop::ALL.map(Backdrop::label);
+        let sel = Backdrop::ALL.iter().position(|&b| b == cur).unwrap_or(0);
+        let (_, clicked) = widgets::segmented(ui, seg, "set-hwbackdrop", &seg_opts(&labels, sel));
+        if let Some(i) = clicked {
+            self.acts
+                .push(format!("set:hw_backdrop:{}", Backdrop::ALL[i].key()));
+        }
+        // the highway's note size (P37.6d, D143): the camera's distance, 100% = RS's (also its toolbar's Size)
+        let y2 = self.heading(
+            &p,
+            "HIGHWAY NOTE SIZE",
+            x2,
+            seg.max.y + px(18.0),
+            Some(x2 + wd2),
+            "bigger: the camera closer",
+            "",
         );
-        card.max.y.max(card2.max.y)
+        let seg = Rect::from_min_size(pos2(x2, y2), vec2(wd2, seg_h));
+        let labels: Vec<String> = (0..SIZES.len()).map(size_label).collect();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let sel = size_from(&st.config);
+        let (_, clicked) = widgets::segmented(ui, seg, "set-hwsize", &seg_opts(&labels, sel));
+        if let Some(i) = clicked {
+            self.acts.push(format!("set:hw_size:{}", size_pct(i)));
+        }
+        card_n.max.y.max(card2.max.y)
     }
 
     /// One tile in the TILES list: a grip to drag it by, its name (with its key) and a switch.
@@ -342,7 +463,12 @@ impl SettingsView {
             body.min,
             vec2(
                 colw,
-                2.0 * pad + hh + Self::h_switch("md", true) + px(20.0) + rule.len() as f32 * px(19.0),
+                2.0 * pad
+                    + hh
+                    + 2.0 * Self::h_switch("md", true)
+                    + px(12.0)
+                    + px(20.0)
+                    + rule.len() as f32 * px(19.0),
             ),
         );
         paint::card(&p, card, 24.0, false);
@@ -357,6 +483,20 @@ impl SettingsView {
             "90%+ on a loop pass raises difficulty 10%",
             st.config.bool("auto_level", true),
             "toggle:auto_level",
+            "md",
+            "",
+            700,
+        ) + px(12.0);
+        // the count-in (P37.11, D121): one switch for every count-in there is
+        y += self.switch_row(
+            ui,
+            x,
+            y,
+            wd,
+            "Count in: 3, 2, 1",
+            "before the song, a loop, a review spot or a take starts (Shift C in the player)",
+            st.config.bool("countdown", true),
+            "toggle:countdown",
             "md",
             "",
             700,
@@ -385,15 +525,15 @@ impl SettingsView {
             (
                 "AUDIO / NOTES SYNC",
                 "if the notes run ahead of or behind the song",
-                ("Notes earlier", ",", "ms:av_offset:-10"),
-                ("Notes later", ".", "ms:av_offset:10"),
+                ("Notes earlier", ",", "ms:av_offset:-5"),
+                ("Notes later", ".", "ms:av_offset:5"),
                 format!("{sync:+.0} ms"),
             ),
             (
                 "GUITAR TIMING",
                 "if your hits all show as late or early",
-                ("Count earlier", "Ctrl+,", "ms:input_offset:-10"),
-                ("Count later", "Ctrl+.", "ms:input_offset:10"),
+                ("Count later", "Ctrl+,", "ms:input_offset:5"),
+                ("Count earlier", "Ctrl+.", "ms:input_offset:-5"),
                 format!("{gt:+.0} ms"),
             ),
         ] {

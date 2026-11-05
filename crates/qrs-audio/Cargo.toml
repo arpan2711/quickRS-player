@@ -31,6 +31,7 @@ signalsmith-stretch.workspace = true
 crossbeam-channel.workspace = true
 realfft.workspace = true
 parking_lot.workspace = true
+nam-rs = "0.4.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-core.workspace = true

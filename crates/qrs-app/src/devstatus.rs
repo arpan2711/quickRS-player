@@ -106,11 +106,11 @@ impl DevStatus {
             }
             match ev {
                 AudioEvent::Engine(Event::InputLost(m)) => out.push((
-                    "Guitar input lost".into(),
+                    "Input lost".into(),
                     format!("  ·  {}  ·  reconnecting…", short(&m)),
                 )),
                 AudioEvent::Engine(Event::InputBack(n)) => {
-                    out.push((format!("Guitar back: {n}"), String::new()))
+                    out.push((format!("Input back: {n}"), String::new()))
                 }
                 AudioEvent::Engine(Event::OutputLost(m)) => out.push((
                     "Sound device lost".into(),
@@ -122,8 +122,8 @@ impl DevStatus {
                 AudioEvent::Engine(Event::Changed) => {}
                 AudioEvent::Switched { input, output } => out.push((
                     match input {
-                        Some(i) => format!("Guitar input: {i}"),
-                        None => "No guitar input".into(),
+                        Some(i) => format!("Input: {i}"),
+                        None => "No input".into(),
                     },
                     output.map(|o| format!("  ·  sound: {o}")).unwrap_or_default(),
                 )),
@@ -131,7 +131,7 @@ impl DevStatus {
                     if c < 0 {
                         "Listening to every input channel".into()
                     } else {
-                        format!("Found your guitar on channel {}", c + 1)
+                        format!("Found your instrument on channel {}", c + 1)
                     },
                     String::new(),
                 )),
@@ -194,7 +194,7 @@ impl DevStatus {
             since: Instant::now(),
         });
         self.notice(
-            "Guitar input lost".into(),
+            "Input lost".into(),
             "  ·  Line (NUX Audio): unplugged  ·  reconnecting…".into(),
         );
     }
@@ -242,11 +242,11 @@ impl DevStatus {
         }
         let Some(o) = &self.offer else { return };
         ctx.request_repaint_after(Duration::from_millis(500));
-        paint::floating(&p, card, Some(22.0));
+        paint::floating_opaque(&p, card, Some(22.0));
         let x = card.min.x + pad;
         text::caps(
             &p,
-            "GUITAR PLUGGED IN",
+            "INPUT PLUGGED IN",
             pos2(x, card.min.y + pad),
             11.0,
             th.caption,
@@ -304,7 +304,7 @@ impl DevStatus {
             st.config
                 .set("audio", serde_json::to_value(&prefs).unwrap_or_default());
             st.save_config();
-            self.notice(format!("Guitar input: {}", o.label), String::new());
+            self.notice(format!("Input: {}", o.label), String::new());
         }
     }
 }

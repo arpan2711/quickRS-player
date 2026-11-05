@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::paths::write_atomic;
 
 /// Bumped whenever SongEntry changes, so old indexes are read again.
-pub const INDEX_VERSION: u32 = 1;
+pub const INDEX_VERSION: u32 = 1; // (the parts' levels have their own: `difficulty::LEVEL_VERSION`)
 
 /// Multi-song game archives that live next to the dlc folder; they aren't single songs.
 pub const NOT_SONGS: &[&str] = &[
@@ -27,6 +27,9 @@ pub struct PartEntry {
     pub tuning: String,
     #[serde(default)]
     pub bonus: bool,
+    /// How hard the part is (P37.6b, D137); None when its chart couldn't be read.
+    #[serde(default)]
+    pub level: Option<crate::difficulty::PartLevel>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -57,9 +60,12 @@ pub struct SongEntry {
     /// A feedpak's provenance: the id of the psarc it was converted from ("file_p.psarc|SongKey").
     #[serde(default)]
     pub source_id: String,
-    /// A psarc that can't be read without Rocksmith's keys.
+    /// A psarc that can't be read without RS's keys.
     #[serde(default)]
     pub needs_keys: bool,
+    /// The `difficulty::LEVEL_VERSION` the parts' levels were worked out with (0: none yet).
+    #[serde(default)]
+    pub level_v: u32,
 }
 
 impl SongEntry {
@@ -174,7 +180,7 @@ pub fn stamp(path: &Path) -> Option<(u64, f64)> {
     Some((md.len(), mtime))
 }
 
-fn entry_of(pkg: &Package, path: &Path, size: u64, mtime: f64, song_key: &str) -> SongEntry {
+fn entry_of(pkg: &mut Package, path: &Path, size: u64, mtime: f64, song_key: &str) -> SongEntry {
     let mut e = SongEntry {
         path: path.to_string_lossy().into_owned(),
         size,
@@ -192,14 +198,22 @@ fn entry_of(pkg: &Package, path: &Path, size: u64, mtime: f64, song_key: &str) -
     e.year = pkg.year();
     e.length = pkg.duration();
     e.source_id = pkg.feedpak_ref().map(|f| f.source_id()).unwrap_or_default();
-    for a in &pkg.arrangements {
+    let infos = pkg.arrangements.clone();
+    for a in &infos {
+        // the part's level from its full chart (D137: read once here, kept in the index)
+        let level = pkg
+            .load_info(a, 1.0)
+            .ok()
+            .map(|arr| crate::difficulty::part_level(&arr));
         e.arrangements.push(PartEntry {
             key: a.key.clone(),
             name: a.name.clone(),
             tuning: a.tuning_name(),
             bonus: a.bonus,
+            level,
         });
     }
+    e.level_v = crate::difficulty::LEVEL_VERSION;
     if e.arrangements.is_empty() {
         e.error = "no playable arrangements".into();
     }
@@ -229,18 +243,18 @@ pub fn read_entries(path: &Path, keys: &Keys) -> Vec<SongEntry> {
             ..Default::default()
         }]
     };
-    let pkg = match Package::open(path, keys, None) {
+    let mut pkg = match Package::open(path, keys, None) {
         Ok(p) => p,
         Err(e) => return failed(e),
     };
     let song_keys = pkg.song_keys();
     if song_keys.len() <= 1 {
-        return vec![entry_of(&pkg, path, size, mtime, "")];
+        return vec![entry_of(&mut pkg, path, size, mtime, "")];
     }
     let mut out = Vec::new();
     for k in song_keys {
         match Package::open(path, keys, Some(&k)) {
-            Ok(sub) => out.push(entry_of(&sub, path, size, mtime, &k)),
+            Ok(mut sub) => out.push(entry_of(&mut sub, path, size, mtime, &k)),
             Err(e) => out.extend(failed(e)),
         }
     }
@@ -340,6 +354,8 @@ impl Library {
         self.total.store(files.len(), Ordering::Release);
         let mut fresh: Vec<SongEntry> = Vec::new();
         let mut stale: Vec<PathBuf> = Vec::new();
+        // songs indexed before their parts had levels (or with older sums): listed as they are, and read again
+        let mut relevel: std::collections::HashSet<String> = std::collections::HashSet::new();
         // songs read before the keys were added are read again once they're here
         let retry_keys = keys.can_read_psarc();
         for f in &files {
@@ -350,7 +366,13 @@ impl Library {
                         && (c[0].mtime - mtime).abs() < 1.0
                         && !(retry_keys && c.iter().any(|e| e.needs_keys)) =>
                 {
-                    fresh.extend(c.iter().cloned())
+                    fresh.extend(c.iter().cloned());
+                    if c.iter()
+                        .any(|e| e.playable() && e.level_v != crate::difficulty::LEVEL_VERSION)
+                    {
+                        relevel.insert(key.clone());
+                        stale.push(f.clone());
+                    }
                 }
                 (_, Some(_)) => stale.push(f.clone()),
                 _ => {}
@@ -380,6 +402,10 @@ impl Library {
                         let entries = read_entries(f, keys);
                         self.done.fetch_add(1, Ordering::AcqRel);
                         let mut r = results.lock().unwrap_or_else(|e| e.into_inner());
+                        let key = f.to_string_lossy();
+                        if relevel.contains(key.as_ref()) {
+                            r.retain(|e| e.path != key); // (its rows read again replace the listed ones)
+                        }
                         r.extend(entries);
                         let mut lp = last_publish.lock().unwrap_or_else(|e| e.into_inner());
                         if lp.elapsed().as_millis() > 250 {
@@ -426,6 +452,39 @@ mod tests {
             lib.done.load(Ordering::Acquire),
             lib.total.load(Ordering::Acquire)
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parts_get_their_level_and_an_older_index_is_read_again_for_them() {
+        let dir = std::env::temp_dir().join(format!("qrs-scan-levels-{}", std::process::id()));
+        let songs = dir.join("dlc");
+        std::fs::create_dir_all(&songs).unwrap();
+        std::fs::write(songs.join("demo_p.psarc"), demo_psarc(Some(&TEST_PSARC_KEY))).unwrap();
+        let index = dir.join("library.json");
+        let lib = Library::new();
+        lib.scan(&test_keys(), std::slice::from_ref(&songs), &index);
+        let first = lib.snapshot();
+        assert!(!first.is_empty());
+        for e in first.iter() {
+            assert_eq!(e.level_v, crate::difficulty::LEVEL_VERSION);
+            assert!(
+                e.arrangements.iter().all(|a| a.level.is_some()),
+                "{:?}",
+                e.arrangements
+            );
+        }
+        // an index from before the levels: the same songs, no levels
+        let mut old = (*first).clone();
+        for e in &mut old {
+            e.level_v = 0;
+            e.arrangements.iter_mut().for_each(|a| a.level = None);
+        }
+        save_index(&index, &old);
+        lib.scan(&test_keys(), std::slice::from_ref(&songs), &index);
+        let again = lib.snapshot();
+        assert_eq!(again.len(), first.len(), "listed once, not twice");
+        assert_eq!(*again, *first);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

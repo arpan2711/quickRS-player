@@ -1,4 +1,4 @@
-//! Find a song's audio (the full song, or the short preview clip Rocksmith plays in its song list) and hand it
+//! Find a song's audio (the full song, or the short preview clip RS plays in its song list) and hand it
 //! over as a standard encoded file: Ogg Vorbis for psarc songs (rebuilt losslessly from Wwise's .wem, see `wem`),
 //! the stem as stored for feedpaks (Ogg, WAV, MP3, FLAC, Opus). Port of rsplay/audio.py's lookup.
 //!

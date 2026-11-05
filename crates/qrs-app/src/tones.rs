@@ -23,7 +23,7 @@ pub fn label(name: &str) -> &'static str {
         "bass" => "Bass",
         "acoustic" => "Acoustic",
         "custom" => "Custom",
-        "board" => "Pedalboard",
+        "board" => "Rig",
         _ => "As is",
     }
 }

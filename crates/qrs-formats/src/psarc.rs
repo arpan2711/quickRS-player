@@ -1,4 +1,4 @@
-//! PSARC archive reader and writer (Rocksmith 2014 flavour). Port of rsplay/psarc.py, the PC/Mac neutral view of
+//! PSARC archive reader and writer (RS2014 flavour). Port of rsplay/psarc.py, the PC/Mac neutral view of
 //! rsfeedpak/platform.py (`NeutralArchive`) and its `write_psarc`.
 //!
 //! Layout (all big-endian):

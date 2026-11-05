@@ -9,8 +9,10 @@
 
 pub mod catalog;
 pub mod dsp;
+pub mod level;
+pub mod loudness;
 pub mod picture;
-pub mod rocksmith;
+pub mod rs_gear;
 
 pub mod amp;
 mod cab;
@@ -20,10 +22,15 @@ mod dynamics;
 mod eq;
 mod filter;
 mod modfx;
+pub mod nam;
 mod reverb;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_bass;
+#[cfg(test)]
+mod tests_levels;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -35,12 +42,19 @@ pub use catalog::{Face, Kind, KnobDef, MODELS, ModelDef, Unit};
 /// Blocks on a board at most.
 pub const MAX_BLOCKS: usize = 12;
 /// Knobs on a model at most.
-pub const MAX_KNOBS: usize = 12;
+/// (16 since P37.2: the SVT with its Ultra switches has 13.)
+pub const MAX_KNOBS: usize = 16;
 
 /// One model running on the audio thread. Everything it needs is allocated by its constructor.
 pub trait Pedal: Send {
     /// Process mono samples in place.
     fn process(&mut self, x: &mut [f32]);
+    /// Process with the board's input (the DI) beside it, for a pedal that listens to it (the keyed gate, P41.1);
+    /// the rest ignore it.
+    fn process_keyed(&mut self, x: &mut [f32], key: &[f32]) {
+        let _ = key;
+        self.process(x);
+    }
     /// The knob values, in the model's knob order and units (the catalogue's `KnobDef`s). Called whenever any
     /// of them changes; the pedal glides to them.
     fn set(&mut self, v: &[f32; MAX_KNOBS]);
@@ -54,6 +68,37 @@ pub trait Pedal: Send {
 
 static NEXT_UID: AtomicU32 = AtomicU32::new(1);
 
+/// The song's tempo (beats a minute, as f32 bits; 0: none), for the delays' Sync (P37.2). Set by the app when a
+/// song opens or its tempo is known; read on the audio thread (an atomic load, no lock).
+static TEMPO: AtomicU32 = AtomicU32::new(0);
+
+pub fn set_tempo(bpm: f32) {
+    let b = if bpm.is_finite() && bpm > 20.0 {
+        bpm.min(400.0)
+    } else {
+        0.0
+    };
+    TEMPO.store(b.to_bits(), Ordering::Relaxed);
+}
+
+pub fn tempo() -> f32 {
+    f32::from_bits(TEMPO.load(Ordering::Relaxed))
+}
+
+/// A song's tempo from its beat times (the median beat, beats a minute; 0 with too few beats).
+pub fn tempo_of_beats(beats: &[f64]) -> f32 {
+    let mut d: Vec<f64> = beats
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|x| *x > 0.15 && *x < 2.0)
+        .collect();
+    if d.len() < 2 {
+        return 0.0;
+    }
+    d.sort_by(f64::total_cmp);
+    (60.0 / d[d.len() / 2]) as f32
+}
+
 /// A fresh id for a block (it follows the block through edits, so the running board can find it).
 pub fn new_uid() -> u32 {
     NEXT_UID.fetch_add(1, Ordering::Relaxed)
@@ -66,6 +111,8 @@ pub struct Block {
     pub on: bool,
     pub v: [f32; MAX_KNOBS],
     pub uid: u32,
+    /// The file a model runs (a NAM capture's or an IR's id in the captures library, `nam`); 0 for the rest.
+    pub asset: u32,
 }
 
 impl Block {
@@ -76,6 +123,7 @@ impl Block {
             on: true,
             v: MODELS[model].defaults(),
             uid: new_uid(),
+            asset: 0,
         }
     }
 
@@ -111,6 +159,7 @@ impl Block {
             on: self.on,
             v: MODELS[model].defaults(),
             uid: self.uid,
+            asset: if MODELS[model].file { self.asset } else { 0 },
         };
         for (i, k) in self.def().knobs.iter().enumerate() {
             if let Some(j) = MODELS[model].knob_index(k.key)
@@ -134,6 +183,9 @@ impl Block {
         m.insert("model".into(), Value::from(self.def().id));
         m.insert("on".into(), Value::from(self.on));
         m.insert("knobs".into(), Value::Object(knobs));
+        if self.asset != 0 {
+            m.insert("asset".into(), Value::from(self.asset));
+        }
         Value::Object(m)
     }
 
@@ -141,11 +193,20 @@ impl Block {
     pub fn from_json(v: &Value) -> Option<Block> {
         let mut b = Block::of(v.get("model")?.as_str()?)?;
         b.on = v.get("on").and_then(Value::as_bool).unwrap_or(true);
+        if b.def().file {
+            b.asset = v.get("asset").and_then(Value::as_u64).unwrap_or(0) as u32;
+        }
         if let Some(knobs) = v.get("knobs").and_then(Value::as_object) {
             for (k, x) in knobs {
                 if let Some(f) = x.as_f64() {
                     b.set(k, f as f32);
                 }
+            }
+            // (P41.1, D162: a gate saved before it had Range and Key turned all the way down and listened to what
+            // reached it; it keeps doing so, wherever it sits)
+            if b.def().id == "gate" && !knobs.contains_key("range") {
+                b.set("range", -90.0);
+                b.set("key", 1.0);
             }
         }
         Some(b)
@@ -273,9 +334,51 @@ impl BoardCmd {
     }
 }
 
+/// The file a block plays: its asset, or for a capture with its Gain turned, the unit's capture at that gain (the gain
+/// ladder, P37.2).
+pub fn effective_asset(b: &Block) -> u32 {
+    match b.def().id {
+        "amp_nam" | "pedal_nam" => nam::ladder_pick(b.asset, b.get("gain").unwrap_or(-1.0)),
+        _ => b.asset,
+    }
+}
+
+impl Block {
+    /// Put a capture or IR on this block (from the library): its Gain knob goes to the capture's own gain when the
+    /// library knows it (so the ladder starts where the capture is), else "as loaded".
+    pub fn set_asset(&mut self, asset: u32) -> &mut Block {
+        self.asset = asset;
+        if self.def().knob_index("gain").is_some() && self.def().file {
+            self.set("gain", nam::ladder_gain(asset).unwrap_or(-1.0));
+        }
+        self
+    }
+
+    /// The same block as a bass player sets it (P37.2): a drive's or fuzz's Blend at half and its Clean low at
+    /// 120 Hz (the Darkglass and Parallax default), a chorus's Low cut at 200 Hz. Other blocks unchanged.
+    pub fn for_bass(mut self) -> Block {
+        let kind = self.def().kind;
+        if matches!(kind, Kind::Drive | Kind::Fuzz) {
+            if self.def().knob_index("blend").is_some() && self.get("blend") == Some(100.0) {
+                self.set("blend", 50.0);
+            }
+            self.set("clean_low", 2.0);
+        }
+        if self.def().id == "chorus" {
+            self.set("low_cut", 3.0);
+        }
+        self
+    }
+}
+
 /// The pedal for a block, set to its knobs (allocates: off the audio thread).
 pub fn make_pedal(b: &Block, rate: u32) -> Box<dyn Pedal> {
-    let mut p = (b.def().make)(rate as f32);
+    let mut p = match b.def().id {
+        "amp_nam" => nam::make_amp(effective_asset(b), rate as f32),
+        "pedal_nam" => nam::make_pedal_capture(effective_asset(b), rate as f32),
+        "cab_ir" => nam::make_cab(b.asset, rate as f32),
+        _ => (b.def().make)(rate as f32),
+    };
     p.set(&b.v);
     p.reset();
     p
@@ -304,10 +407,16 @@ pub fn diff(old: &Board, new: &Board, rate: u32) -> Option<Vec<BoardCmd>> {
                 block: *b,
                 pedal: make_pedal(b, rate),
             }),
-            Some(o) if o.model != b.model => cmds.push(BoardCmd::Replace {
-                block: *b,
-                pedal: make_pedal(b, rate),
-            }),
+            Some(o)
+                if o.model != b.model
+                    || o.asset != b.asset
+                    || (b.def().file && effective_asset(&o) != effective_asset(b)) =>
+            {
+                cmds.push(BoardCmd::Replace {
+                    block: *b,
+                    pedal: make_pedal(b, rate),
+                })
+            }
             Some(o) => {
                 for k in 0..b.def().knobs.len() {
                     if o.v[k] != b.v[k] {
@@ -363,11 +472,17 @@ struct Slot {
     wet_only: bool,
     /// Samples the switched-off tail has been silent.
     quiet: usize,
+    /// The pedal a `Replace` took over from, still playing while `xf` crossfades from it (0) to the new one (1):
+    /// a model swap or a capture's gain ladder step glides instead of dipping to the dry guitar (P37.2).
+    old: Option<Box<dyn Pedal>>,
+    xf: f32,
 }
 
 /// Samples processed at a time (longer blocks are split).
 const CHUNK: usize = 512;
 const FADE_MS: f32 = 10.0;
+/// A replaced pedal's crossfade into the new one.
+const XFADE_MS: f32 = 25.0;
 
 /// A board running on the audio thread.
 pub struct BoardProcessor {
@@ -375,6 +490,10 @@ pub struct BoardProcessor {
     slots: Vec<Slot>,
     dry: Vec<f32>,
     wet: Vec<f32>,
+    /// The board's input this chunk (the DI): a keyed gate listens to it wherever it sits (P41.1).
+    key: Vec<f32>,
+    /// The outgoing pedal's output during a crossfade.
+    xbuf: Vec<f32>,
     /// Pedals dropped while processing, for the trash.
     dropped: Vec<Box<dyn Pedal>>,
     level: f32,
@@ -397,6 +516,8 @@ impl BoardProcessor {
                 dying: false,
                 g: if b.on { 1.0 } else { 0.0 },
                 quiet: usize::MAX / 2,
+                old: None,
+                xf: 1.0,
             });
         }
         let level = db_gain(board.level_db);
@@ -405,6 +526,8 @@ impl BoardProcessor {
             slots,
             dry: vec![0.0; CHUNK],
             wet: vec![0.0; CHUNK],
+            key: vec![0.0; CHUNK],
+            xbuf: vec![0.0; CHUNK],
             dropped: Vec::with_capacity(MAX_BLOCKS * 4),
             level,
             level_target: level,
@@ -419,9 +542,42 @@ impl BoardProcessor {
     fn process_chunk(&mut self, x: &mut [f32]) {
         let n = x.len();
         let step = 1.0 / (FADE_MS * 1e-3 * self.rate);
-        let (dry, wet) = (&mut self.dry[..n], &mut self.wet[..n]);
+        let xstep = 1.0 / (XFADE_MS * 1e-3 * self.rate);
+        self.key[..n].copy_from_slice(x);
+        let (dry, wet, xb, key) = (
+            &mut self.dry[..n],
+            &mut self.wet[..n],
+            &mut self.xbuf[..n],
+            &self.key[..n],
+        );
         for s in self.slots.iter_mut() {
             let target = if s.on && !s.dying { 1.0 } else { 0.0 };
+            if let Some(old) = s.old.as_mut() {
+                // a crossfade from the replaced pedal (both in series blocks: `Replace` starts one only then)
+                xb.copy_from_slice(x);
+                old.process_keyed(xb, key);
+                dry.copy_from_slice(x);
+                s.pedal.process_keyed(x, key);
+                let (mut xf, mut g) = (s.xf, s.g);
+                for ((v, &d), &o) in x.iter_mut().zip(dry.iter()).zip(xb.iter()) {
+                    xf = approach(xf, 1.0, xstep);
+                    g = approach(g, target, step);
+                    let y = o + (*v - o) * xf;
+                    *v = d + (y - d) * g;
+                }
+                s.xf = xf;
+                s.g = g;
+                if xf >= 1.0
+                    && let Some(p) = s.old.take()
+                {
+                    if self.dropped.len() < self.dropped.capacity() {
+                        self.dropped.push(p);
+                    } else {
+                        std::mem::forget(p);
+                    }
+                }
+                continue;
+            }
             if s.wet_only {
                 if s.g == 0.0 && target == 0.0 && s.quiet >= self.tail_hold {
                     continue;
@@ -448,11 +604,11 @@ impl BoardProcessor {
                     continue;
                 }
                 if s.g == 1.0 && target == 1.0 {
-                    s.pedal.process(x);
+                    s.pedal.process_keyed(x, key);
                     continue;
                 }
                 dry.copy_from_slice(x);
-                s.pedal.process(x);
+                s.pedal.process_keyed(x, key);
                 let mut g = s.g;
                 for (v, &d) in x.iter_mut().zip(dry.iter()) {
                     g = approach(g, target, step);
@@ -467,10 +623,12 @@ impl BoardProcessor {
             let s = &self.slots[i];
             if s.dying && s.g == 0.0 && (!s.wet_only || s.quiet >= self.tail_hold) {
                 let s = self.slots.remove(i);
-                if self.dropped.len() < self.dropped.capacity() {
-                    self.dropped.push(s.pedal);
-                } else {
-                    std::mem::forget(s.pedal);
+                for p in std::iter::once(s.pedal).chain(s.old) {
+                    if self.dropped.len() < self.dropped.capacity() {
+                        self.dropped.push(p);
+                    } else {
+                        std::mem::forget(p);
+                    }
                 }
             } else {
                 i += 1;
@@ -510,6 +668,9 @@ impl crate::rt::ToneProcessor for BoardProcessor {
     fn reset(&mut self) {
         for s in &mut self.slots {
             s.pedal.reset();
+            if let Some(o) = s.old.as_mut() {
+                o.reset();
+            }
         }
     }
 
@@ -547,17 +708,28 @@ impl crate::rt::ToneProcessor for BoardProcessor {
                     dying: false,
                     g: 0.0,
                     quiet: 0,
+                    old: None,
+                    xf: 1.0,
                 });
                 None
             }
             BoardCmd::Replace { block, pedal } => match self.slot(block.uid) {
                 Some(s) => {
+                    // a series block that is playing crossfades from the old pedal; otherwise it fades in from dry
+                    let glide = !s.wet_only && !pedal.wet_only() && s.on && block.on && s.g > 0.0;
                     s.v = block.v;
                     s.on = block.on;
                     s.wet_only = pedal.wet_only();
-                    s.g = 0.0;
                     s.quiet = 0;
-                    Some(std::mem::replace(&mut s.pedal, pedal))
+                    if glide {
+                        let cur = std::mem::replace(&mut s.pedal, pedal);
+                        s.xf = 0.0;
+                        // (a second step while one is gliding: the oldest goes to the trash)
+                        s.old.replace(cur)
+                    } else {
+                        s.g = 0.0;
+                        Some(std::mem::replace(&mut s.pedal, pedal))
+                    }
                 }
                 None => Some(pedal),
             },
@@ -614,6 +786,82 @@ pub fn render(board: &Board, rate: u32, x: &[f32]) -> Vec<f32> {
 /// board wants a gate (a JCM800 from gain 6, the Mesa-style amp 57, a Tube Screamer into the lead amp 50, fuzz 47).
 /// Renders 0.4 s, off the audio thread.
 pub fn hiss_gain_db(board: &Board) -> f32 {
+    hiss_gain_at(board)
+}
+
+/// Over this much hiss gain (`hiss_gain_db`) a board's idle noise is plainly audible (a guitar's single-coil buzz
+/// comes out near -50 dBFS, `quickrs-cli board idle`): song tones get a gentle gate and the room offers one (P38.2).
+pub const GATE_HISS_DB: f32 = 20.0;
+
+// -- the gate's threshold from the input's noise (P41.1, D163) -------------------------------------------------------
+
+/// The input's noise floor after the input boost (dBFS, as f32 bits; NaN: not measured), from Calibrate or the room's
+/// Learn noise. Set by the app (`calibrate::apply`); read when a gate is made.
+static NOISE_FLOOR: AtomicU32 = AtomicU32::new(0x7fc0_0000);
+
+/// A gate opens this far over the input's noise floor (and closes 6 dB under that, its hysteresis).
+pub const GATE_OVER_FLOOR_DB: f32 = 8.0;
+
+pub fn set_noise_floor(db: Option<f32>) {
+    let v = db
+        .filter(|d| d.is_finite())
+        .map(|d| d.clamp(-120.0, 0.0))
+        .unwrap_or(f32::NAN);
+    NOISE_FLOOR.store(v.to_bits(), Ordering::Relaxed);
+}
+
+/// The input's noise floor after the input boost (dBFS), when measured.
+pub fn noise_floor() -> Option<f32> {
+    let v = f32::from_bits(NOISE_FLOOR.load(Ordering::Relaxed));
+    v.is_finite().then_some(v)
+}
+
+/// A gate's threshold (dB): the measured noise floor plus `GATE_OVER_FLOOR_DB`; unmeasured, -62 for a gentle gate (a
+/// crunch) and -54 for a firm one (high gain), as before. Within the knob's -80..-30.
+pub fn gate_threshold(firm: bool) -> f32 {
+    match noise_floor() {
+        Some(f) => (f + GATE_OVER_FLOOR_DB).clamp(-80.0, -30.0),
+        None if firm => -54.0,
+        None => -62.0,
+    }
+}
+
+/// A gate as a song tone or the room adds one (P41.1, D162): keyed on the input, its threshold from the noise floor; a
+/// gentle one (a crunch: turns the hiss down 30 dB, a slow 150 ms) or a firm one (high gain: 60 dB, 120 ms).
+pub fn new_gate(firm: bool) -> Block {
+    Block::of("gate")
+        .expect("gate")
+        .with("threshold", gate_threshold(firm))
+        .with("release", if firm { 120.0 } else { 150.0 })
+        .with("range", if firm { -60.0 } else { -30.0 })
+        .with("key", 0.0)
+}
+
+/// Where a new gate goes on a board (P41.1, D162): right after the amp (the first one on, else the first), else after
+/// the last drive or fuzz, else first. Keyed on the input, it turns the amp's hiss and sustain down together there,
+/// and comes before the delays and reverbs, whose tails ring on.
+pub fn gate_slot(b: &Board) -> usize {
+    let amp = b
+        .blocks
+        .iter()
+        .position(|x| x.on && x.def().kind == Kind::Amp)
+        .or_else(|| b.first(Kind::Amp));
+    if let Some(i) = amp {
+        // (a capture's own model of ours, off, follows it: the gate goes after both)
+        let mut j = i + 1;
+        while j < b.blocks.len() && b.blocks[j].def().kind == Kind::Amp && !b.blocks[j].on {
+            j += 1;
+        }
+        return j;
+    }
+    b.blocks
+        .iter()
+        .rposition(|x| matches!(x.def().kind, Kind::Drive | Kind::Fuzz))
+        .map(|i| i + 1)
+        .unwrap_or(0)
+}
+
+fn hiss_gain_at(board: &Board) -> f32 {
     const RATE: u32 = 48000;
     const RMS: f32 = 3.162e-5; // -90 dBFS
     let n = RATE as usize * 2 / 5;
@@ -651,7 +899,10 @@ pub fn presets() -> Vec<(&'static str, Board)> {
         (
             "Crunch",
             Board::new(vec![
+                // (P38.2: a gentle gate: the Plexi at 6 raises an idle guitar's buzz ~20 dB; P41.1: after the amp,
+                // keyed on the input, turning the hiss down 30 dB)
                 b("amp_crunch").with("gain", 6.0).with("mid", 6.5),
+                b("gate").with("threshold", -62.0).with("release", 150.0),
                 b("cab_4x12").with("mic", 4.0),
                 b("room").with("mix", 14.0),
             ]),
@@ -659,9 +910,12 @@ pub fn presets() -> Vec<(&'static str, Board)> {
         (
             "Lead",
             Board::new(vec![
-                b("gate").with("threshold", -54.0).with("release", 120.0),
                 b("green").with("drive", 3.0).with("level", 7.0),
                 b("amp_lead").with("gain", 7.0),
+                b("gate")
+                    .with("threshold", -54.0)
+                    .with("release", 120.0)
+                    .with("range", -60.0),
                 b("cab_4x12"),
                 b("analog_delay").with("time", 380.0).with("mix", 22.0),
                 b("plate").with("mix", 16.0),
@@ -670,9 +924,9 @@ pub fn presets() -> Vec<(&'static str, Board)> {
         (
             "Metal",
             Board::new(vec![
-                b("gate").with("threshold", -50.0),
                 b("green").with("drive", 0.5).with("tone", 6.0).with("level", 8.0),
                 b("amp_modern").with("gain", 7.5),
+                b("gate").with("threshold", -50.0).with("range", -60.0),
                 b("cab_4x12").with("mic", 3.5),
             ]),
         ),
@@ -681,6 +935,7 @@ pub fn presets() -> Vec<(&'static str, Board)> {
             Board::new(vec![
                 b("blues").with("gain", 4.0),
                 b("amp_tweed").with("volume", 6.0),
+                b("gate").with("threshold", -62.0).with("release", 150.0),
                 b("cab_1x12"),
                 b("spring").with("mix", 20.0),
             ]),
@@ -701,9 +956,12 @@ pub fn presets() -> Vec<(&'static str, Board)> {
         (
             "Fuzz",
             Board::new(vec![
-                b("gate").with("threshold", -54.0).with("release", 120.0),
                 b("big_pi"),
                 b("amp_clean").with("gain", 5.0),
+                b("gate")
+                    .with("threshold", -54.0)
+                    .with("release", 120.0)
+                    .with("range", -60.0),
                 b("cab_4x12"),
             ]),
         ),
@@ -719,6 +977,116 @@ pub fn presets() -> Vec<(&'static str, Board)> {
             "Bass",
             Board::new(vec![b("bass_comp"), b("amp_bass"), b("cab_8x10")]),
         ),
+        // -- P37.2: two more guitar starters, then the bass set (BASS-GEAR.md section 4); names starting "Bass"
+        // are bass boards (`preset_is_bass`)
+        (
+            "Jangle",
+            Board::new(vec![
+                b("amp_chime")
+                    .with("gain", 4.0)
+                    .with("treble", 6.5)
+                    .with("cut", 3.5),
+                b("cab_2x12").with("mic", 5.0),
+                b("room").with("mix", 14.0),
+            ]),
+        ),
+        (
+            "Dotted 8th",
+            Board::new(vec![
+                b("squeeze").with("sustain", 3.0),
+                b("amp_clean").with("gain", 3.5).with("treble", 6.5),
+                b("cab_2x12"),
+                // a dotted eighth at the song's tempo (380 ms without one)
+                b("digital_delay")
+                    .with("sync", 2.0)
+                    .with("repeats", 4.5)
+                    .with("mix", 32.0),
+                b("plate").with("mix", 14.0),
+            ]),
+        ),
+        (
+            "Bass Motown",
+            Board::new(vec![
+                b("opto_comp").with("peak", 5.0),
+                b("amp_b15")
+                    .with("volume", 3.5)
+                    .with("treble", 4.0)
+                    .with("bass", 6.0),
+                b("cab_1x15").with("mic_type", 1.0).with("di", 30.0),
+            ]),
+        ),
+        (
+            "Bass Rock pick",
+            Board::new(vec![
+                b("bass_comp").with("compress", 5.0),
+                b("amp_bass")
+                    .with("gain", 5.0)
+                    .with("mid", 6.5)
+                    .with("freq", 800.0),
+                b("cab_8x10").with("di", 40.0),
+            ]),
+        ),
+        (
+            "Bass Slap",
+            Board::new(vec![
+                b("studio_comp")
+                    .with("threshold", -24.0)
+                    .with("ratio", 4.0)
+                    .with("attack", 2.0)
+                    .with("release", 90.0)
+                    .with("makeup", 6.0),
+                b("amp_bass_ss")
+                    .with("contour", 1.0)
+                    .with("bass", 3.0)
+                    .with("treble", 4.0),
+                b("cab_4x10").with("horn", 6.0).with("di", 60.0),
+            ]),
+        ),
+        (
+            "Bass Metal grind",
+            Board::new(vec![
+                b("gate").with("threshold", -58.0).with("range", -90.0),
+                b("bass_grind")
+                    .with("drive", 6.0)
+                    .with("blend", 50.0)
+                    .with("level", 7.0)
+                    .with("grunt", 0.0)
+                    .with("clean_low", 2.0),
+                b("amp_bass").with("gain", 2.0),
+                b("cab_4x10").with("di", 50.0),
+            ]),
+        ),
+        (
+            "Bass Funk",
+            Board::new(vec![
+                b("env_filter")
+                    .with("range", 1.0)
+                    .with("mix", 70.0)
+                    .with("sens", 6.0)
+                    .with("boost", 6.0),
+                b("amp_bass_ss").with("mid", -3.0),
+                b("cab_4x10").with("di", 40.0),
+            ]),
+        ),
+        (
+            "Bass Dub",
+            Board::new(vec![
+                b("opto_comp").with("peak", 6.0),
+                b("amp_bass").with("bass", 8.0).with("treble", 2.0),
+                b("cab_1x15").with("high_cut", 3000.0),
+                b("tape_echo").with("mix", 18.0).with("repeats", 4.5),
+            ]),
+        ),
+        (
+            "Bass Octave fuzz",
+            Board::new(vec![
+                b("gate").with("threshold", -60.0).with("range", -90.0),
+                b("octaver").with("sub", 6.0).with("dry", 7.0),
+                b("bass_muff").with("blend", 60.0),
+                b("amp_bass").with("gain", 3.0),
+                b("cab_8x10").with("di", 30.0),
+            ]),
+        ),
     ];
     // output levels matched to Clean by loudness (BS.1770, K-weighted): the owner's guitar through the Scarlett,
     // two takes rendered through every board (2026-10-15); Crunch had come out 3.6 LU under Clean, Blues 1.5 over
@@ -730,8 +1098,24 @@ pub fn presets() -> Vec<(&'static str, Board)> {
             "Bass" => 1.5,
             "Blues" => -1.5,
             "Metal" | "Fuzz" => -1.0,
+            // P37.2's boards, matched to Clean by BS.1770 on the synthetic DI (`quickrs-cli board listen`: the
+            // guitar ones on the strummed chords, the bass ones on the bass lines; all peak at -10 dBFS)
+            "Jangle" => 2.5,
+            "Dotted 8th" => 0.5,
+            "Bass Motown" => -1.5,
+            "Bass Rock pick" => 2.5,
+            "Bass Slap" => 5.0,
+            "Bass Metal grind" => 3.0,
+            "Bass Funk" => 6.0,
+            "Bass Dub" => -2.0,
+            "Bass Octave fuzz" => -1.0,
             _ => 0.0,
         };
     }
     boards
+}
+
+/// A starting board for a bass (P37.2): the app offers these first on a bass input.
+pub fn preset_is_bass(name: &str) -> bool {
+    name.starts_with("Bass")
 }

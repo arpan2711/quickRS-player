@@ -1,0 +1,770 @@
+{
+ "scale": 6,
+ "scale_note": "every file is 6x of app size (px_6x) except panel_spill.png (1x); size_1x unchanged",
+ "format": "sRGB 8-bit RGBA PNG, PREMULTIPLIED alpha; additive layers have alpha 0 (egui: a premultiplied Color32 with a = 0 adds); 6x app size unless noted (scale by pixels_per_point / 6)",
+ "geometry": {
+  "note": "app px at 1x, measured in tiles/ref/10_player.png (1440 x 900)",
+  "gem_centre": [
+   127,
+   833
+  ],
+  "gem_diameter": 64,
+  "back_key_centre": [
+   58,
+   833
+  ],
+  "fwd_key_centre": [
+   196,
+   833
+  ],
+  "key_diameter": 48,
+  "gem_to_key_distance": 69,
+  "slot_start": [
+   253,
+   846.5
+  ],
+  "slot_end_x": 728,
+  "bar_centre_y": 846.5,
+  "gem_relative_to_slot_start": [
+   -126,
+   -13.5
+  ],
+  "slot": {
+   "height": 13,
+   "y_offset_from_bar_centre": 0,
+   "depth_px": 3.5,
+   "fill_height": 9.5,
+   "fill_top_below_panel_px": 0.6
+  },
+  "strip_piece_height": 24,
+  "strip_piece_top_y": 834.5,
+  "thumb": {
+   "diameter": 26,
+   "height": 8,
+   "rim_radius": 3,
+   "dish_depth": 1.2,
+   "centre_x": "slot_start + 13 + progress * (slot_len - 26)",
+   "centre_y": 846.5,
+   "camera_tilt_deg": 0,
+   "view": "face-on (straight down), the same camera as the gem and the stones"
+  },
+  "fill_end_x": "thumb centre x",
+  "ticks_x_example": [
+   299,
+   325,
+   351,
+   364,
+   377,
+   402,
+   428,
+   453,
+   479,
+   504,
+   530,
+   543,
+   556,
+   581,
+   607,
+   633,
+   658,
+   684,
+   709
+  ]
+ },
+ "constants": {
+  "I_d": "I(d) = 1 / (1 + (d / d0)^2)",
+  "d0": 120.0,
+  "exponent_p": 0.8,
+  "glow": {
+   "playing": 1.0,
+   "paused": 0.12,
+   "glow_from_lit": "glow = lit + (1 - lit) * 0.12"
+  },
+  "keys": {
+   "d": 69,
+   "w": "glow^p"
+  },
+  "thumb": {
+   "nodes_d": [
+    139,
+    300,
+    587
+   ],
+   "blend": "t = ln(d/a) / ln(b/a) between the nodes around d (clamp d to 139..587); draw delta_a with grey((1-t) * (glow I(d)/I(a))^p) and delta_b with grey(t * (glow I(d)/I(b))^p)",
+   "d": "|gem centre - thumb centre| (thumb centre on the bar centre line)",
+   "I_at": {
+    "69": 0.7515,
+    "139": 0.427,
+    "150": 0.3902,
+    "300": 0.1379,
+    "587": 0.0401
+   }
+  },
+  "bar": {
+   "w": "clamp((glow * I(d(x)) / I(150))^p, 0, 1) per column",
+   "d_ref": 150
+  },
+  "panel_spill": {
+   "w": "glow^p"
+  },
+  "tints_srgb": {
+   "sheen": [
+    190,
+    16,
+    40
+   ],
+   "mirror_and_coat": [
+    235,
+    30,
+    52
+   ],
+   "note": "already baked into every delta / layer; only needed if the app re-bakes"
+  },
+  "switch": {
+   "to_paused": "lit 1 -> 0 over 0.35 s smoothstep, sign stays PAUSE; at lit = 0 swap the sign to PLAY",
+   "to_playing": "swap the sign to PAUSE at once, then lit 0 -> 1 over 0.30 s smoothstep",
+   "gem_sprite": "blend gem_dark_<sign> and gem_lit_<sign> by lit (never two signs at once)",
+   "smoothstep": "t*t*(3-2t)"
+  },
+  "states": {
+   "hover": "content 1 px up, light x1.05 (baked)",
+   "pressed": "content 1 px down, x0.94, tighter shadow (baked); gem_glow weight 0"
+  },
+  "icon": "the keys' << >>: ink (44,46,50), 2 px round-capped strokes, chevron tips at x = -4.4 and +1.6 px from the stone centre (back points left), arms 4.6 px long, +-5.2 px tall; a light lip (255,255,255,120) 0.9 px lower drawn first"
+ },
+ "draw_order": [
+  "panel (app)",
+  "panel_spill (additive)",
+  "track pieces",
+  "fill pieces",
+  "fill_light pieces",
+  "key_base + key_delta (additive) + icon, both keys",
+  "gem_glow / gem_glow_dark",
+  "gem sprite",
+  "thumb_base + thumb_delta (additive)"
+ ],
+ "files": {
+  "gem_lit_pause_normal.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    48,
+    48
+   ],
+   "anchor_is": "the stone's centre (canvas centre; hover drawn 1 px up, pressed 1 px down are baked in)",
+   "note": "64 px key, 16 px margin each side; contact shadow baked in; the white stones' reflection in the polish baked in; no panel glow"
+  },
+  "gem_lit_pause_hover.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    48,
+    47
+   ],
+   "anchor_is": "the stone's centre (canvas centre; hover drawn 1 px up, pressed 1 px down are baked in)",
+   "note": "64 px key, 16 px margin each side; contact shadow baked in; the white stones' reflection in the polish baked in; no panel glow"
+  },
+  "gem_lit_pause_pressed.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    48,
+    49
+   ],
+   "anchor_is": "the stone's centre (canvas centre; hover drawn 1 px up, pressed 1 px down are baked in)",
+   "note": "64 px key, 16 px margin each side; contact shadow baked in; the white stones' reflection in the polish baked in; no panel glow"
+  },
+  "gem_lit_play_normal.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    48,
+    48
+   ],
+   "anchor_is": "the stone's centre (canvas centre; hover drawn 1 px up, pressed 1 px down are baked in)",
+   "note": "64 px key, 16 px margin each side; contact shadow baked in; the white stones' reflection in the polish baked in; no panel glow"
+  },
+  "gem_lit_play_hover.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    48,
+    47
+   ],
+   "anchor_is": "the stone's centre (canvas centre; hover drawn 1 px up, pressed 1 px down are baked in)",
+   "note": "64 px key, 16 px margin each side; contact shadow baked in; the white stones' reflection in the polish baked in; no panel glow"
+  },
+  "gem_lit_play_pressed.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    48,
+    49
+   ],
+   "anchor_is": "the stone's centre (canvas centre; hover drawn 1 px up, pressed 1 px down are baked in)",
+   "note": "64 px key, 16 px margin each side; contact shadow baked in; the white stones' reflection in the polish baked in; no panel glow"
+  },
+  "gem_dark_pause_normal.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    48,
+    48
+   ],
+   "anchor_is": "the stone's centre (canvas centre; hover drawn 1 px up, pressed 1 px down are baked in)",
+   "note": "64 px key, 16 px margin each side; contact shadow baked in; the white stones' reflection in the polish baked in; no panel glow"
+  },
+  "gem_dark_pause_hover.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    48,
+    47
+   ],
+   "anchor_is": "the stone's centre (canvas centre; hover drawn 1 px up, pressed 1 px down are baked in)",
+   "note": "64 px key, 16 px margin each side; contact shadow baked in; the white stones' reflection in the polish baked in; no panel glow"
+  },
+  "gem_dark_pause_pressed.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    48,
+    49
+   ],
+   "anchor_is": "the stone's centre (canvas centre; hover drawn 1 px up, pressed 1 px down are baked in)",
+   "note": "64 px key, 16 px margin each side; contact shadow baked in; the white stones' reflection in the polish baked in; no panel glow"
+  },
+  "gem_dark_play_normal.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    48,
+    48
+   ],
+   "anchor_is": "the stone's centre (canvas centre; hover drawn 1 px up, pressed 1 px down are baked in)",
+   "note": "64 px key, 16 px margin each side; contact shadow baked in; the white stones' reflection in the polish baked in; no panel glow"
+  },
+  "gem_dark_play_hover.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    48,
+    47
+   ],
+   "anchor_is": "the stone's centre (canvas centre; hover drawn 1 px up, pressed 1 px down are baked in)",
+   "note": "64 px key, 16 px margin each side; contact shadow baked in; the white stones' reflection in the polish baked in; no panel glow"
+  },
+  "gem_dark_play_pressed.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    48,
+    49
+   ],
+   "anchor_is": "the stone's centre (canvas centre; hover drawn 1 px up, pressed 1 px down are baked in)",
+   "note": "64 px key, 16 px margin each side; contact shadow baked in; the white stones' reflection in the polish baked in; no panel glow"
+  },
+  "gem_glow.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal (premultiplied), vertex colour = weight",
+   "anchor_1x": [
+    48,
+    48
+   ],
+   "anchor_is": "gem centre",
+   "weight": "lit amount (1 playing -> 0 paused); 0 while pressed",
+   "note": "the lit ruby's panel glow under the gem, split out so it can fade"
+  },
+  "gem_glow_dark.png": {
+   "px_6x": [
+    576,
+    576
+   ],
+   "size_1x": [
+    96.0,
+    96.0
+   ],
+   "blend": "normal (premultiplied), weight = 1 - lit",
+   "anchor_1x": [
+    48,
+    48
+   ],
+   "anchor_is": "gem centre",
+   "note": "the dark garnet's faint glow; crossfade with gem_glow"
+  },
+  "key_base_normal.png": {
+   "px_6x": [
+    384,
+    384
+   ],
+   "size_1x": [
+    64.0,
+    64.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    32,
+    32
+   ],
+   "anchor_is": "stone centre at rest (hover content is 1 px up, pressed 1 px down, baked in; the shadow stays)",
+   "note": "48 px shell Go stone, 8 px margin, contact shadow baked in, no icon (the app draws << >>)"
+  },
+  "key_base_hover.png": {
+   "px_6x": [
+    384,
+    384
+   ],
+   "size_1x": [
+    64.0,
+    64.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    32,
+    32
+   ],
+   "anchor_is": "stone centre at rest (hover content is 1 px up, pressed 1 px down, baked in; the shadow stays)",
+   "note": "48 px shell Go stone, 8 px margin, contact shadow baked in, no icon (the app draws << >>)"
+  },
+  "key_base_pressed.png": {
+   "px_6x": [
+    384,
+    384
+   ],
+   "size_1x": [
+    64.0,
+    64.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    32,
+    32
+   ],
+   "anchor_is": "stone centre at rest (hover content is 1 px up, pressed 1 px down, baked in; the shadow stays)",
+   "note": "48 px shell Go stone, 8 px margin, contact shadow baked in, no icon (the app draws << >>)"
+  },
+  "key_delta.png": {
+   "px_6x": [
+    384,
+    384
+   ],
+   "size_1x": [
+    64.0,
+    64.0
+   ],
+   "blend": "ADDITIVE (premultiplied, alpha 0), vertex colour = grey(w)",
+   "anchor_1x": [
+    32,
+    32
+   ],
+   "anchor_is": "stone centre (draw with the same lift as the base)",
+   "note": "gem to the RIGHT (back key); the forward key draws it with u flipped. Baked at d = 69 px",
+   "weight": "w = glow^0.8"
+  },
+  "thumb_base_normal.png": {
+   "px_6x": [
+    240,
+    240
+   ],
+   "size_1x": [
+    40.0,
+    40.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    20,
+    20
+   ],
+   "anchor_is": "the button's centre (face-on, like the gem and the stones: the camera looks straight down, so its top face, dish and foot share this centre); put it on the bar centre line at the thumb x. Hover content 1 px up, pressed 1 px down (baked in)",
+   "note": "26 px button, 8 px tall, 3 px rim, 1.2 px oval thumb dish, shell; contact shadow baked in; face-on"
+  },
+  "thumb_base_hover.png": {
+   "px_6x": [
+    240,
+    240
+   ],
+   "size_1x": [
+    40.0,
+    40.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    20,
+    20
+   ],
+   "anchor_is": "the button's centre (face-on, like the gem and the stones: the camera looks straight down, so its top face, dish and foot share this centre); put it on the bar centre line at the thumb x. Hover content 1 px up, pressed 1 px down (baked in)",
+   "note": "26 px button, 8 px tall, 3 px rim, 1.2 px oval thumb dish, shell; contact shadow baked in; face-on"
+  },
+  "thumb_base_pressed.png": {
+   "px_6x": [
+    240,
+    240
+   ],
+   "size_1x": [
+    40.0,
+    40.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    20,
+    20
+   ],
+   "anchor_is": "the button's centre (face-on, like the gem and the stones: the camera looks straight down, so its top face, dish and foot share this centre); put it on the bar centre line at the thumb x. Hover content 1 px up, pressed 1 px down (baked in)",
+   "note": "26 px button, 8 px tall, 3 px rim, 1.2 px oval thumb dish, shell; contact shadow baked in; face-on"
+  },
+  "thumb_delta_139.png": {
+   "px_6x": [
+    240,
+    240
+   ],
+   "size_1x": [
+    40.0,
+    40.0
+   ],
+   "blend": "ADDITIVE (premultiplied, alpha 0), vertex colour = grey(w)",
+   "anchor_1x": [
+    20,
+    20
+   ],
+   "anchor_is": "the button's centre (same as thumb_base)",
+   "note": "gem light baked at d = 139 px (gem up-left of the thumb), THUMB_BOOST 8.0 baked in; face-on",
+   "weight": "blend the two nodes around d in ln d; w_node = (glow * I(d) / I(139))^0.8"
+  },
+  "thumb_delta_300.png": {
+   "px_6x": [
+    240,
+    240
+   ],
+   "size_1x": [
+    40.0,
+    40.0
+   ],
+   "blend": "ADDITIVE (premultiplied, alpha 0), vertex colour = grey(w)",
+   "anchor_1x": [
+    20,
+    20
+   ],
+   "anchor_is": "the button's centre (same as thumb_base)",
+   "note": "gem light baked at d = 300 px (gem up-left of the thumb), THUMB_BOOST 8.0 baked in; face-on",
+   "weight": "blend the two nodes around d in ln d; w_node = (glow * I(d) / I(300))^0.8"
+  },
+  "thumb_delta_587.png": {
+   "px_6x": [
+    240,
+    240
+   ],
+   "size_1x": [
+    40.0,
+    40.0
+   ],
+   "blend": "ADDITIVE (premultiplied, alpha 0), vertex colour = grey(w)",
+   "anchor_1x": [
+    20,
+    20
+   ],
+   "anchor_is": "the button's centre (same as thumb_base)",
+   "note": "gem light baked at d = 587 px (gem up-left of the thumb), THUMB_BOOST 8.0 baked in; face-on",
+   "weight": "blend the two nodes around d in ln d; w_node = (glow * I(d) / I(587))^0.8"
+  },
+  "panel_spill.png": {
+   "px_1x": [
+    320,
+    100
+   ],
+   "size_1x": [
+    320,
+    100
+   ],
+   "scale": "1x (smooth; let the GPU stretch)",
+   "blend": "ADDITIVE (alpha 0), vertex colour = grey(glow^0.8)",
+   "anchor_1x": [
+    160,
+    50
+   ],
+   "anchor_is": "gem centre",
+   "note": "the gem's crimson light on the panel, with the key stones' shadows in it; draw before the stones"
+  },
+  "track_left.png": {
+   "px_6x": [
+    420,
+    144
+   ],
+   "size_1x": [
+    70.0,
+    24.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    6,
+    12
+   ],
+   "anchor_is": "the slot start (bar start); y = the bar centre line",
+   "how": "slot start (x = 0) at 6 px from the piece's left edge"
+  },
+  "track_tile.png": {
+   "px_6x": [
+    384,
+    144
+   ],
+   "size_1x": [
+    64.0,
+    24.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    0,
+    12
+   ],
+   "anchor_is": "tile origin: bar start + 64k; y = the bar centre line",
+   "how": "repeat every 64 px from bar start + 64"
+  },
+  "track_right.png": {
+   "px_6x": [
+    420,
+    144
+   ],
+   "size_1x": [
+    70.0,
+    24.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    60,
+    12
+   ],
+   "anchor_is": "the slot end; y = the bar centre line",
+   "how": "slot end at 60 px from the piece's left edge: place it at bar end - 60"
+  },
+  "fill_left.png": {
+   "px_6x": [
+    420,
+    144
+   ],
+   "size_1x": [
+    70.0,
+    24.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    6,
+    12
+   ],
+   "anchor_is": "the slot start; y = the bar centre line",
+   "how": "slot start at 6 px; the fill's round start begins 1.75 px in"
+  },
+  "fill_light_left.png": {
+   "px_6x": [
+    420,
+    144
+   ],
+   "size_1x": [
+    70.0,
+    24.0
+   ],
+   "blend": "normal (premultiplied (c, a)); out = fb(1 - w a) + w c",
+   "anchor_1x": [
+    6,
+    12
+   ],
+   "anchor_is": "the slot start (same rect as fill_left)",
+   "weight": "per column w(x) = clamp((glow * I(d(x)) / I(150))^0.8, 0, 1), d(x) = |gem centre - (slot_start + x, bar centre)|; vertex colours of the strip's quads",
+   "how": "draw right after the matching fill piece, same rects"
+  },
+  "fill_tile.png": {
+   "px_6x": [
+    384,
+    144
+   ],
+   "size_1x": [
+    64.0,
+    24.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    0,
+    12
+   ],
+   "anchor_is": "tile origin: bar start + 64k (phase 0 at the bar start); y = the bar centre line",
+   "how": "64 px period, phase 0 at the bar start: tile k covers bar_start + 64k .. +64"
+  },
+  "fill_light_tile.png": {
+   "px_6x": [
+    384,
+    144
+   ],
+   "size_1x": [
+    64.0,
+    24.0
+   ],
+   "blend": "normal (premultiplied (c, a)); out = fb(1 - w a) + w c",
+   "anchor_1x": [
+    0,
+    12
+   ],
+   "anchor_is": "tile origin: bar start + 64k (phase 0 at the bar start) (same rect as fill_tile)",
+   "weight": "per column w(x) = clamp((glow * I(d(x)) / I(150))^0.8, 0, 1), d(x) = |gem centre - (slot_start + x, bar centre)|; vertex colours of the strip's quads",
+   "how": "draw right after the matching fill piece, same rects"
+  },
+  "fill_cut.png": {
+   "px_6x": [
+    84,
+    144
+   ],
+   "size_1x": [
+    14.0,
+    24.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    6,
+    12
+   ],
+   "anchor_is": "the tick x (start of the 2 px gap); y = the bar centre line",
+   "how": "14 px: 6 px fill, the 2 px gap at px 6..8, 6 px fill; put px 6 on the tick x; feather 2 px at both ends over the tiled fill"
+  },
+  "fill_light_cut.png": {
+   "px_6x": [
+    84,
+    144
+   ],
+   "size_1x": [
+    14.0,
+    24.0
+   ],
+   "blend": "normal (premultiplied (c, a)); out = fb(1 - w a) + w c",
+   "anchor_1x": [
+    6,
+    12
+   ],
+   "anchor_is": "the tick x (start of the 2 px gap) (same rect as fill_cut)",
+   "weight": "per column w(x) = clamp((glow * I(d(x)) / I(150))^0.8, 0, 1), d(x) = |gem centre - (slot_start + x, bar centre)|; vertex colours of the strip's quads",
+   "how": "draw right after the matching fill piece, same rects"
+  },
+  "fill_lead.png": {
+   "px_6x": [
+    66,
+    144
+   ],
+   "size_1x": [
+    11.0,
+    24.0
+   ],
+   "blend": "normal",
+   "anchor_1x": [
+    9,
+    12
+   ],
+   "anchor_is": "the fill end (thumb centre x); y = the bar centre line",
+   "how": "11 px: the round end at px 9; put px 9 on the fill end (thumb centre); feather 2 px at its left; nothing right of it"
+  },
+  "fill_light_lead.png": {
+   "px_6x": [
+    66,
+    144
+   ],
+   "size_1x": [
+    11.0,
+    24.0
+   ],
+   "blend": "normal (premultiplied (c, a)); out = fb(1 - w a) + w c",
+   "anchor_1x": [
+    9,
+    12
+   ],
+   "anchor_is": "the fill end (thumb centre x) (same rect as fill_lead)",
+   "weight": "per column w(x) = clamp((glow * I(d(x)) / I(150))^0.8, 0, 1), d(x) = |gem centre - (slot_start + x, bar centre)|; vertex colours of the strip's quads",
+   "how": "draw right after the matching fill piece, same rects"
+  }
+ }
+}

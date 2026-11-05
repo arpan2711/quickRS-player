@@ -708,7 +708,7 @@ fn negative_cases(r: &mut Rand, n: usize, sets: &Sets) -> Vec<Case> {
         }
     }
     cases.push(mk("previous chord again", items, false));
-    // informative: one string a fret off (Rocksmith lets that pass; so may we)
+    // informative: one string a fret off (RS lets that pass; so may we)
     let items = run(r, n, (0.5, 0.9), |r, _, t| {
         let want = r.pick(&sets.all).clone();
         let mut wrong = want.clone();

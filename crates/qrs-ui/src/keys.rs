@@ -371,6 +371,16 @@ pub(crate) fn key_face_px(p: &Painter, pr: PxRect, r: Option<f64>, accent: bool,
     if pr.w < 2 || pr.h < 2 {
         return;
     }
+    // the dark themes: the main action (accent) a glass plate with the room in it (P34.5; a square key is a disc),
+    // any other key the quiet well (P37.3, D110)
+    if crate::quiet::on() && !accent {
+        crate::quiet::key_px(p, pr, r, crate::quiet::State::of(pressed, pressed));
+        return;
+    }
+    if crate::glass::on() {
+        crate::glass::key(p, pr.to_rect(ppp), crate::glass::State::of(false, pressed));
+        return;
+    }
     let rr = radius_px(pr.w, pr.h, r, ppp);
     // round 3: a flat tile, its corners tighter unless it's a round key
     let tile = !theme::classic();
@@ -495,6 +505,8 @@ pub enum CapOn {
     Material,
     Ivory,
     Accent,
+    /// engraved as on the accent, into a fill that isn't a key (stays so on the glass look: the RS Highway pill)
+    Fill,
     /// tortoiseshell or abalone
     Dark,
     /// aluminium
@@ -514,7 +526,7 @@ impl CapOn {
         match self {
             CapOn::Material => None,
             CapOn::Ivory => Some(([80.0, 60.0, 30.0], 0.07, 0.3, 0.7)),
-            CapOn::Accent => Some(([90.0, 50.0, 0.0], 0.1, 0.38, 0.4)),
+            CapOn::Accent | CapOn::Fill => Some(([90.0, 50.0, 0.0], 0.1, 0.38, 0.4)),
             CapOn::Dark => Some(([0.0, 0.0, 0.0], 0.28, 0.4, 0.12)),
             CapOn::Metal => Some(([40.0, 40.0, 60.0], 0.07, 0.28, 0.7)),
         }
@@ -524,7 +536,7 @@ impl CapOn {
         match self {
             CapOn::Material => t().text_2,
             CapOn::Ivory => IVORY_KBD,
-            CapOn::Accent => Color32::from_rgb(90, 52, 0),
+            CapOn::Accent | CapOn::Fill => Color32::from_rgb(90, 52, 0),
             CapOn::Dark => Color32::from_rgb(236, 228, 218),
             CapOn::Metal => Color32::from_rgb(61, 70, 82),
         }
@@ -568,7 +580,14 @@ pub(crate) fn anchored(anchor: Align2, x: i32, y: i32, w: i32, h: i32) -> PxRect
 /// A shortcut hint: the key's name on a small cap (`neu.keycap`: the text's box plus `px(12)` by `px(2)`, placed
 /// by its anchor at `int(pos)`, the label centred on it). Returns its rect.
 pub fn keycap(p: &Painter, label: &str, pos: Pos2, anchor: Align2, size: f32, on: CapOn) -> Rect {
-    let st = Style::new(size, 700, on.ink());
+    // on a glass key (the dark themes): a thin outline in the key's ink, the name in it (P34.5)
+    let glass = crate::glass::on() && matches!(on, CapOn::Ivory | CapOn::Accent);
+    let ink = if glass {
+        crate::glass::ink(on == CapOn::Accent).gamma_multiply(0.85)
+    } else {
+        on.ink()
+    };
+    let st = Style::new(size, 700, ink);
     let ctx = p.ctx();
     let ppp = p.pixels_per_point();
     let s = sc(ppp);
@@ -580,7 +599,9 @@ pub fn keycap(p: &Painter, label: &str, pos: Pos2, anchor: Align2, size: f32, on
         tw + pxr(12.0, s),
         th + pxr(2.0, s),
     );
-    if on == CapOn::Material {
+    if glass {
+        crate::glass::cap(p, r.to_rect(ppp), ink);
+    } else if on == CapOn::Material {
         inset_px(p, r, Some(6.0), 2.0, crate::paint::Fill::Base);
     } else {
         let rr = pxr(6.0, s).min(r.h / 2);
@@ -606,6 +627,25 @@ pub fn keycap_width(ctx: &egui::Context, label: &str, size: f32) -> f32 {
 }
 
 fn make_thumb(d: usize, s: f64) -> Image {
+    let th = t();
+    make_thumb_with(
+        d,
+        s,
+        (rgbf(th.thumb_top), rgbf(th.thumb_bot)),
+        ([255.0; 3], 0.95),
+        ([110.0, 90.0, 50.0], 0.25),
+    )
+}
+
+/// A thumb's sprite: its face from `top` to `bot`, a gloss of `gloss` (colour, strength) up-left, a rim of `rim`
+/// along its lower edge.
+fn make_thumb_with(
+    d: usize,
+    s: f64,
+    (top, bot): ([f32; 3], [f32; 3]),
+    gloss: ([f32; 3], f32),
+    rim: ([f32; 3], f32),
+) -> Image {
     let ss = 3usize;
     let m = pxr(6.0, s);
     let n = (d + 2 * m as usize) * ss;
@@ -632,7 +672,6 @@ fn make_thumb(d: usize, s: f64) -> Image {
             .shift(0, (ss as f64 * s) as i32)
             .scale(a),
     );
-    let (top, bot) = (rgbf(th.thumb_top), rgbf(th.thumb_bot));
     let mut face = Vec::with_capacity(n * n);
     let mut rimlo = Mask::new(n, n);
     for y in 0..n {
@@ -642,8 +681,8 @@ fn make_thumb(d: usize, s: f64) -> Image {
             let xx = x as f32 + 0.5;
             let mut col: [f32; 3] = std::array::from_fn(|i| top[i] + (bot[i] - top[i]) * v);
             let gl = (1.0 - (xx - (c - 0.2 * r)).hypot(yy - (c - 0.44 * r)) / (0.96 * r)).clamp(0.0, 1.0);
-            for ch in col.iter_mut() {
-                *ch = *ch * (1.0 - 0.95 * gl) + 255.0 * 0.95 * gl;
+            for (ch, g) in col.iter_mut().zip(gloss.0) {
+                *ch = *ch * (1.0 - gloss.1 * gl) + g * gloss.1 * gl;
             }
             face.push(col);
             let dist = (xx - c).hypot(yy - c);
@@ -654,15 +693,19 @@ fn make_thumb(d: usize, s: f64) -> Image {
         }
     }
     l.over_img(&face, &disc);
-    l.over([110.0, 90.0, 50.0], &rimlo.scale(0.25));
+    l.over(rim.0, &rimlo.scale(rim.1));
     let out = (d + 2 * m as usize) as i32;
     Surf::from_image(&l.image(None)).smoothscale(out, out).image()
 }
 
-/// An ivory thumb (a switch's or slider's) `d` points across (`int(d * s)` pixels, at least 6) centred on
+/// A thumb (a switch's or slider's; ivory, graphite on the dark themes) `d` points across (`int(d * s)` pixels, at least 6) centred on
 /// `int(center)`. Returns its rect.
 pub fn thumb(p: &Painter, center: Pos2, d: f32) -> Rect {
     let ppp = p.pixels_per_point();
+    if crate::quiet::on() {
+        // the dark themes: graphite, not ivory (P37.3, D111)
+        return quiet_thumb_px(p, ipx(center.x, ppp), ipx(center.y, ppp), ipx(d, ppp)).to_rect(ppp);
+    }
     thumb_px(p, ipx(center.x, ppp), ipx(center.y, ppp), ipx(d, ppp)).to_rect(ppp)
 }
 
@@ -673,6 +716,33 @@ pub(crate) fn thumb_px(p: &Painter, cx: i32, cy: i32, d: i32) -> PxRect {
     let m = pxr(6.0, s);
     let key = key_of(("thumb", d, theme::generation()));
     let (tex, size) = texture(p.ctx(), Store::Small, key, || make_thumb(d as usize, s));
+    let r = PxRect {
+        x: cx - d / 2,
+        y: cy - d / 2,
+        w: d,
+        h: d,
+    };
+    blit(p, tex, size, (r.x - m) as f32, (r.y - m) as f32, Color32::WHITE);
+    r
+}
+
+/// The quiet look's thumb (P37.3, D111; the dark themes' switches and sliders): a graphite disc `d` pixels across,
+/// a faint sheen up-left, no white. Cached per size and theme like the ivory one.
+pub(crate) fn quiet_thumb_px(p: &Painter, cx: i32, cy: i32, d: i32) -> PxRect {
+    let s = sc(p.pixels_per_point());
+    let d = d.max(6);
+    let m = pxr(6.0, s);
+    let key = key_of(("thumb-q", d, theme::generation()));
+    let (tex, size) = texture(p.ctx(), Store::Small, key, || {
+        let (top, bot, sheen) = crate::quiet::thumb_colours();
+        make_thumb_with(
+            d as usize,
+            s,
+            (rgbf(top), rgbf(bot)),
+            (rgbf(sheen), 0.45),
+            ([0.0; 3], 0.35),
+        )
+    });
     let r = PxRect {
         x: cx - d / 2,
         y: cy - d / 2,
@@ -1022,6 +1092,17 @@ pub fn jewel_lamp(p: &Painter, center: Pos2, d: f32, lit: f32, hot: bool) -> Rec
         );
     }
     rect
+}
+
+/// The ink of a label on a key from `key_face`: ivory's dark ink (or text on the accent), or on the dark themes'
+/// the quiet key's text colour (or the glass key's amber on the main action).
+pub fn key_ink(accent: bool) -> Color32 {
+    match (crate::glass::on(), accent) {
+        (true, false) => t().text,
+        (true, true) => crate::glass::ink(true),
+        (false, true) => t().on_accent,
+        (false, false) => IVORY_INK,
+    }
 }
 
 /// Text colours on keys.

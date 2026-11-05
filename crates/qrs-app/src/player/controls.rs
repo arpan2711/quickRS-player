@@ -1,645 +1,587 @@
-//! The controls in place of the tiles (port of the controls half of rsplay/app.py `PlayerView`): the practice
-//! module (speed and difficulty knobs, the loop on a small screen with its keys, level-up), the playback commands
-//! as flat rows with their keys, and Part / Tab view / Tiles / Lyrics / Sound & guitar as rows that open to their
-//! keys. Scrolls when it doesn't fit. Laid out in the Python app's whole screen pixels (see `tab`'s helpers).
-
-use std::collections::BTreeSet;
+//! The controls in place of the tiles. Was a port of the controls half of rsplay/app.py `PlayerView`; redesigned in
+//! P35.1 (D90, the owner's layout A of the controls review): three tabs, Practise / Sound / View, as a segmented strip
+//! at the top, each fitting the panel at 1440 x 900 (it scrolls only in a smaller window).
+//! - Practise: Settings' Reduce delay card first (the FAST low-latency output, P41.4, `settings/fastout.rs`), speed
+//!   (a stepper and presets 50 / 75 / 90 / 100), difficulty (a notched slider) with level-up, the loop and Save as a
+//!   lick, the practice modes (note by note, continuous, ear) with a line each, the take, the review, and a "Go to"
+//!   line of keys.
+//! - Sound: your guitar (hear it, the tone, recorded or synth guitar in the song, your sounds), pitch, the stems one
+//!   row each, and a link to the timing settings.
+//! - View: tab or highway, what the tab shows, the highway's strings, two tiles and a link to the rest.
+//!
+//! One on/off style throughout (`widgets::switch`), no knobs (the header's SPEED knob opens Practise). The panel
+//! remembers its tab (config `controls_tab`). Every control here is also a key; the keys are drawn beside them.
 
 use eframe::egui;
-use egui::{Align2, CursorIcon, Sense, Ui, pos2};
+use egui::{Align2, CursorIcon, Painter, Pos2, Rect, Sense, Ui, pos2, vec2};
+use qrs_library::Config;
 use qrs_ui::icons::{self, Icon};
-use qrs_ui::keys::{CapOn, keycap};
-use qrs_ui::knobs::{self, Scale};
+use qrs_ui::keys::{CapOn, keycap, keycap_width};
 use qrs_ui::paint::{self, Fill};
-use qrs_ui::text::Style;
+use qrs_ui::text::{self, Style};
 use qrs_ui::theme::{fmt_time, t};
-use qrs_ui::widgets::{self, ButtonStyle, interact};
-use serde_json::Value;
+use qrs_ui::units::{px, snap};
+use qrs_ui::widgets::{self, ButtonStyle, Segmented, interact};
 
-use super::tab::{PRect, int_, int_pt, ipx, pt, put, rpx, sc, tw};
 use super::{PlayerView, SPEEDS, tiles, tone_label};
+use crate::settings::fastout;
 use crate::state::AppState;
 
-pub fn panel_open(st: &AppState) -> BTreeSet<String> {
-    st.config
-        .get("panel_open")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default()
+/// The panel's tabs, in the strip's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CtrlTab {
+    Practise,
+    Sound,
+    View,
 }
 
-pub fn set_panel_open(st: &mut AppState, open: &BTreeSet<String>) {
-    st.config.set(
-        "panel_open",
-        Value::Array(open.iter().map(|s| Value::String(s.clone())).collect()),
-    );
-}
+impl CtrlTab {
+    pub const ALL: [CtrlTab; 3] = [CtrlTab::Practise, CtrlTab::Sound, CtrlTab::View];
 
-/// The first word of a group's title is its key ("SOUND & GUITAR" -> "SOUND").
-fn group_key(title: &str) -> &str {
-    title.split_whitespace().next().unwrap_or(title)
-}
-
-pub fn toggle_group(st: &mut AppState, key: Option<&str>, open_all: Option<bool>) {
-    let mut opened = panel_open(st);
-    match (key, open_all) {
-        (_, Some(true)) => {
-            opened = ["PART", "TAB", "TILES", "LYRICS", "SOUND", "PITCH"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-        }
-        (_, Some(false)) => opened.clear(),
-        (Some(k), None) if !opened.remove(k) => {
-            opened.insert(k.to_string());
-        }
-        _ => {}
-    }
-    set_panel_open(st, &opened);
-}
-
-/// A key on the controls: its label, key cap, what it does (None: a read-only value) and whether it's on.
-#[derive(Clone, Debug)]
-pub struct Btn {
-    pub label: String,
-    pub key: String,
-    pub action: Option<String>,
-    pub active: bool,
-}
-
-impl Btn {
-    fn new(label: impl Into<String>, key: impl Into<String>, action: impl Into<String>) -> Btn {
-        Btn {
-            label: label.into(),
-            key: key.into(),
-            action: Some(action.into()),
-            active: false,
+    pub fn key(self) -> &'static str {
+        match self {
+            CtrlTab::Practise => "practise",
+            CtrlTab::Sound => "sound",
+            CtrlTab::View => "view",
         }
     }
-    fn value(label: impl Into<String>) -> Btn {
-        Btn {
-            label: label.into(),
-            key: String::new(),
-            action: None,
-            active: false,
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CtrlTab::Practise => "Practise",
+            CtrlTab::Sound => "Sound",
+            CtrlTab::View => "View",
         }
     }
-    fn onoff(label: &str, on: bool, key: &str, action: &str) -> Btn {
-        Btn {
-            label: format!("{label}: {}", if on { "on" } else { "off" }),
-            key: key.into(),
-            action: Some(action.into()),
-            active: on,
-        }
+
+    pub fn from_key(k: &str) -> Option<CtrlTab> {
+        CtrlTab::ALL.into_iter().find(|t_| t_.key() == k)
     }
 }
 
-/// Columns: a count, or relative widths.
-#[derive(Clone, Debug)]
-pub enum Cols {
-    N(usize),
-    Fr(Vec<f64>),
+/// The tab the panel was last on (Practise at first; the old `panel_open` folds are ignored).
+pub fn ctrl_tab(cfg: &Config) -> CtrlTab {
+    CtrlTab::from_key(&cfg.str("controls_tab", "practise")).unwrap_or(CtrlTab::Practise)
 }
 
-type Section = (String, Cols, Vec<Btn>);
+pub fn set_ctrl_tab(cfg: &mut Config, tab: CtrlTab) {
+    cfg.set("controls_tab", tab.key());
+}
 
-/// Column widths of a "less / value / more" row.
-const STEPPER: [f64; 3] = [1.0, 0.46, 1.0];
-const PLAYBACK_ROWS: [(&str, &[(&str, &str)]); 4] = [
-    ("Restart", &[("Home", "start")]),
-    (
-        "Previous / next section",
-        &[("PgUp", "prev_section"), ("PgDn", "next_section")],
-    ),
-    ("Back / forward", &[("←", "back"), ("→", "fwd")]),
-    ("Rewind 5 seconds", &[("−", "rewind")]),
-];
+/// The speed presets beside the stepper.
+pub const PRESETS: [f64; 4] = [0.5, 0.75, 0.9, 1.0];
 
-/// `ui.layout_grid`: buttons in a grid of equal columns, or columns of the given relative widths (pixels). Returns
-/// their rects and the height used.
-fn layout_grid(n: usize, x: f64, y: f64, width: f64, cols: &Cols, bh: f64, gap: f64) -> (Vec<PRect>, f64) {
-    let fracs: Vec<f64> = match cols {
-        Cols::N(k) => vec![1.0; (*k).max(1)],
-        Cols::Fr(v) => v.clone(),
-    };
-    let nc = fracs.len();
-    let room = width - gap * (nc as f64 - 1.0);
-    let total: f64 = fracs.iter().sum();
-    let mut xs = Vec::new();
-    let mut cx = x;
-    for fr in &fracs {
-        let wd = room * fr / total;
-        xs.push((cx, wd));
-        cx += wd + gap;
+/// The speed step nearest `v` (the presets, and anything typed into `speed_set:`, land on one of `SPEEDS`).
+pub fn snap_speed(v: f64) -> f64 {
+    SPEEDS
+        .iter()
+        .copied()
+        .min_by(|a, b| (a - v).abs().total_cmp(&(b - v).abs()))
+        .unwrap_or(1.0)
+}
+
+/// The difficulty step from `cur` to `target` (both 0..1; the target lands on a tenth): what `change_mastery` takes.
+pub fn diff_step(cur: f64, target: f64) -> f64 {
+    let to = (target.clamp(0.0, 1.0) * 10.0).round() / 10.0;
+    ((to - cur) * 100.0).round() / 100.0
+}
+
+/// The panel's action for a click on the Reduce delay card ("fastout:exclusive", "fastout:buffer:128"): the player
+/// hands it to `fastout::apply`, as Settings does its own.
+pub fn fastout_action(a: fastout::Act) -> String {
+    format!("fastout:{}", a.action())
+}
+
+/// The panel's action back to what it asks for.
+pub fn fastout_act(action: &str) -> Option<fastout::Act> {
+    action.strip_prefix("fastout:").and_then(fastout::Act::parse)
+}
+
+/// The difficulty slider's stops (0, 10, ... 100 %).
+const DIFF_STOPS: usize = 11;
+
+/// A card's padding, the gap between cards, a row of keys' height.
+const PAD: f32 = 12.0;
+const GAP: f32 = 8.0;
+const KEY_H: f32 = 34.0;
+
+/// A small-caps heading at the left of a card's top line.
+fn heading(p: &Painter, s: &str, x: f32, cy: f32) -> Rect {
+    text::caps(p, s, pos2(x, cy), 11.0, t().caption, Align2::LEFT_CENTER, None)
+}
+
+/// Text in the caption colour.
+fn note(p: &Painter, s: &str, at: Pos2, anchor: Align2, max_w: Option<f32>) -> Rect {
+    text::draw(p, s, at, anchor, Style::new(11.5, 500, t().caption), max_w)
+}
+
+/// Key caps (with "/" between alternatives as text) ending at `right`, centred on `cy`. Returns their left edge.
+fn keys_left_of(p: &Painter, keys: &[&str], right: f32, cy: f32) -> f32 {
+    let th = t();
+    let mut x = right;
+    for k in keys.iter().rev() {
+        if *k == "/" {
+            let r = text::draw(
+                p,
+                "/",
+                pos2(x - px(3.0), cy),
+                Align2::RIGHT_CENTER,
+                Style::new(11.0, 500, th.caption),
+                None,
+            );
+            x = r.min.x - px(3.0);
+        } else {
+            let r = keycap(p, k, pos2(x, cy), Align2::RIGHT_CENTER, 11.0, cap_on());
+            x = r.min.x - px(3.0);
+        }
     }
-    let rects = (0..n)
-        .map(|i| {
-            let (r, c) = (i / nc, i % nc);
-            let (bx, bw) = xs[c];
-            PRect {
-                x: int_(bx),
-                y: int_(y + r as f64 * (bh + gap)),
-                w: int_(bx + bw) - int_(bx),
-                h: bh,
-            }
-        })
-        .collect();
-    let rows = n.div_ceil(nc);
-    (rects, rows as f64 * bh + rows.saturating_sub(1) as f64 * gap)
+    x
 }
 
-/// `blit_text` in a caption colour and weight (pixels).
-#[allow(clippy::too_many_arguments)]
-fn txt(
-    p: &egui::Painter,
-    s: &str,
-    x: f64,
-    y: f64,
-    size: f32,
-    color: egui::Color32,
-    weight: u16,
-    anchor: Align2,
-    max_w: Option<f64>,
-) -> PRect {
-    put(p, s, x, y, anchor, Style::new(size, weight, color), max_w)
-}
-
-/// `ui.caps`: a small-caps heading (pixels).
-fn caps(
-    p: &egui::Painter,
-    s: &str,
-    x: f64,
-    y: f64,
-    size: f32,
-    color: egui::Color32,
-    anchor: Align2,
-) -> PRect {
-    put(p, s, x, y, anchor, Style::caps(size, color), None)
-}
-
-/// `neu.keycap` at (x, y) by `anchor` (pixels), sunk into the material. Returns its rect.
-fn cap(p: &egui::Painter, key: &str, x: f64, y: f64, anchor: Align2) -> PRect {
-    PRect::of(keycap(
-        p,
-        key,
-        pos2(pt(int_(x)), pt(int_(y))),
-        anchor,
-        11.0,
-        CapOn::Material,
-    ))
-}
-
-/// `neu.keycap_width` (size 11), in pixels.
-fn keycap_w(ctx: &egui::Context, key: &str) -> f64 {
-    if key.is_empty() {
-        0.0
+/// What key caps on the panel sit on: outlined in the glass ink on the dark themes (as on the glass keys), sunk
+/// into the material in Daylight and the classic look.
+fn cap_on() -> CapOn {
+    if qrs_ui::glass::on() {
+        CapOn::Ivory
     } else {
-        tw(ctx, key, Style::new(11.0, 700, egui::Color32::WHITE)) + rpx(12.0)
+        CapOn::Material
     }
+}
+
+/// A card: a well sunk into the console.
+fn card(p: &Painter, r: Rect) {
+    paint::inset(p, r, Some(18.0), 5.0, Fill::Base);
 }
 
 impl PlayerView {
-    /// (title, hint, sections) for the rows of the controls panel that open to their keys. Each section is
-    /// (subtitle, columns (a count, or relative widths), buttons); a blank subtitle runs straight on from the
-    /// section above. Every button shows its key.
-    fn control_groups(&self, st: &AppState) -> Vec<(&'static str, &'static str, Vec<Section>)> {
-        let parts = &self.entry.arrangements;
-        let labels = self.part_labels();
-        let tile_btns: Vec<Btn> = tiles::tile_order(st)
-            .iter()
-            .map(|(k, on)| {
-                Btn::onoff(
-                    tiles::tile_label(k),
-                    *on,
-                    if *k == "lyrics" { "Y" } else { "" },
-                    &format!("tile:{k}"),
-                )
-            })
-            .collect();
-        let mut sound: Vec<Section> = vec![(
-            "VOLUME".into(),
-            Cols::Fr(STEPPER.to_vec()),
-            vec![
-                Btn::new("Song −", "9", "vol-"),
-                Btn::value(format!(
-                    "{}%",
-                    (self.transport.volume() as f64 * 100.0).round_ties_even() as i64
-                )),
-                Btn::new("Song +", "0", "vol+"),
-            ],
-        )];
-        if let Some(e) = self.engine() {
-            sound.push((
-                String::new(),
-                Cols::Fr(STEPPER.to_vec()),
-                vec![
-                    Btn::new("Guitar −", "7", "gvol-"),
-                    Btn::value(format!(
-                        "{}%",
-                        (e.guitar_gain() as f64 * 100.0).round_ties_even() as i64
-                    )),
-                    Btn::new("Guitar +", "8", "gvol+"),
-                ],
-            ));
-            sound.push((
-                "GUITAR".into(),
-                Cols::N(2),
-                vec![
-                    Btn::onoff("Hear guitar", e.monitor(), "M", "monitor"),
-                    Btn::new(format!("Tone: {}", tone_label(&e.tone())), "T", "tone"),
-                    Btn::new("Timing earlier", "Ctrl+,", "gtime-"),
-                    Btn::new("Timing later", "Ctrl+.", "gtime+"),
-                ],
-            ));
-            sound.push((
-                String::new(),
-                Cols::N(1),
-                vec![Btn::new("All settings", "F2", "settings")],
-            ));
-        }
-        let part_btns: Vec<Btn> = parts
-            .iter()
-            .zip(&labels)
-            .enumerate()
-            .map(|(i, (a, label))| Btn {
-                label: label.clone(),
-                key: if i < 6 { (i + 1).to_string() } else { String::new() },
-                action: Some(format!("part:{}", a.key)),
-                active: a.key == self.part_key,
-            })
-            .collect();
-        let neck = st.config.str("note_view", "piano") == "guitar";
-        let mut groups = vec![
-            (
-                "PART",
-                "A next  ·  Shift+A previous  ·  1–6",
-                vec![(
-                    String::new(),
-                    Cols::N(if parts.len() > 1 { 2 } else { 1 }),
-                    part_btns,
-                )],
-            ),
-            (
-                "TAB VIEW",
-                "rhythm notation N  ·  zoom ↑ ↓  ·  shape Alt+arrows",
-                vec![
-                    (
-                        String::new(),
-                        Cols::N(2),
-                        vec![
-                            Btn::new("Zoom out", "↓", "zoom_out"),
-                            Btn::new("Zoom in", "↑", "zoom_in"),
-                            Btn::new("Narrower bars", "Alt ←", "tab_narrower"),
-                            Btn::new("Wider bars", "Alt →", "tab_wider"),
-                            Btn::new("Strings closer", "Alt ↓", "tab_shorter"),
-                            Btn::new("Strings apart", "Alt ↑", "tab_taller"),
-                            Btn::onoff("Compact rows", self.tab.compact, "C", "tab_compact"),
-                            Btn::onoff("Full screen", self.tab_full, "F", "tab_full"),
-                        ],
-                    ),
-                    (
-                        "NOTATION".into(),
-                        Cols::N(2),
-                        vec![
-                            Btn::onoff("Notation", self.nota.show, "N", "nota:show"),
-                            Btn::onoff("Snap to beats", self.nota.snap, "", "nota:snap"),
-                            Btn::onoff("Rests", self.nota.rests, "", "nota:rests"),
-                            Btn::onoff("Beams & ties", self.nota.beams, "", "nota:beams"),
-                            Btn::onoff("Triplets", self.nota.triplets, "", "nota:triplets"),
-                        ],
-                    ),
-                ],
-            ),
-            (
-                "TILES",
-                "show, hide and reorder",
-                vec![
-                    (String::new(), Cols::N(2), tile_btns),
-                    (
-                        String::new(),
-                        Cols::N(1),
-                        vec![Btn::new(
-                            format!("Note tile: {}", if neck { "guitar neck" } else { "piano" }),
-                            "",
-                            "noteview",
-                        )],
-                    ),
-                ],
-            ),
-            (
-                "LYRICS",
-                "next line",
-                vec![(
-                    String::new(),
-                    Cols::N(1),
-                    vec![Btn::onoff("Next line", self.lyrics_next, "", "lyrics_next")],
-                )],
-            ),
-            (
-                "SOUND & GUITAR",
-                "tone T  ·  hear guitar M  ·  volumes 7 8 9 0",
-                sound,
-            ),
-        ];
-        if self.engine().is_some() {
-            groups.push(self.song_audio_group());
-        }
-        groups
-    }
-
-    /// The song's pitch shift and, for a stemmed feedpak, its stems: level, mute and solo each (P20.3).
-    fn song_audio_group(&self) -> (&'static str, &'static str, Vec<Section>) {
-        let pitch = self.mixer.pitch;
-        let mut secs: Vec<Section> = vec![
-            (
-                "PITCH (SEMITONES)".into(),
-                Cols::Fr(STEPPER.to_vec()),
-                vec![
-                    Btn::new("Lower", "Shift+↓", "pitch-"),
-                    Btn::value(super::songaudio::pitch_short(pitch)),
-                    Btn::new("Higher", "Shift+↑", "pitch+"),
-                ],
-            ),
-            (
-                String::new(),
-                Cols::N(1),
-                vec![Btn {
-                    active: pitch == 0,
-                    ..Btn::new("Original pitch", "", "pitch0")
-                }],
-            ),
-        ];
-        let Some(set) = self.mixer.stems.as_ref() else {
-            return ("PITCH", "transpose  Shift+↑ ↓", secs);
-        };
-        let mut rows = Vec::new();
-        let mut solos = Vec::new();
-        for (i, (s, m)) in set.stems.iter().zip(&self.mixer.mix).enumerate() {
-            // a stem with no name shows its id ("drums"): capitalised like the named ones
-            let mut c = s.info.name.chars();
-            let name: String = c
-                .next()
-                .map(|f| f.to_uppercase().chain(c).collect())
-                .unwrap_or_default();
-            rows.push(Btn::onoff(&name, m.on, "", &format!("stem:on:{i}")));
-            rows.push(Btn::new("−", "", format!("stem:down:{i}")));
-            rows.push(Btn::value(format!("{}%", (m.gain * 100.0).round() as i64)));
-            rows.push(Btn::new("+", "", format!("stem:up:{i}")));
-            solos.push(Btn::onoff(&name, m.solo, "", &format!("stem:solo:{i}")));
-        }
-        secs.push(("STEMS".into(), Cols::Fr(vec![1.2, 0.42, 0.7, 0.42]), rows));
-        secs.push(("SOLO".into(), Cols::N(2), solos));
-        secs.push((
-            String::new(),
-            Cols::N(1),
-            vec![Btn {
-                active: set.is_default(&self.mixer.mix),
-                ..Btn::new("Stems as the pack sets them", "", "stem:reset")
-            }],
-        ));
-        (
-            "PITCH & STEMS",
-            "transpose  Shift+↑ ↓  ·  each stem's level, mute, solo",
-            secs,
-        )
-    }
-
-    /// The controls in place of the tiles: the practice module (speed and difficulty knobs, the loop and its keys),
-    /// the playback commands, and the rest as rows that open to their keys. Scrolls when it doesn't fit, sliding
-    /// out under the console's edges.
-    pub(super) fn draw_controls(&mut self, ui: &mut Ui, st: &mut AppState, area: egui::Rect) {
+    /// The controls in place of the tiles: the tab strip, then the tab's page. Scrolls only when the window is too
+    /// small for the page, sliding out under the console's edges.
+    pub(super) fn draw_controls(&mut self, ui: &mut Ui, st: &mut AppState, area: Rect) {
         let p = ui.painter().clone();
-        if let Some(target) = self.ctrl_target {
-            // glide to a module that was asked for (the speed knob)
-            self.ctrl_scroll += (target - self.ctrl_scroll) * 0.3;
-            if (target - self.ctrl_scroll).abs() < 1.0 {
-                self.ctrl_scroll = target;
-                self.ctrl_target = None;
-            }
-            ui.ctx().request_repaint();
+        let tab = ctrl_tab(&st.config);
+        // the tab strip stays put; the page under it scrolls if it must
+        let strip = Rect::from_min_size(area.min, vec2(area.width(), px(44.0)));
+        let labels: Vec<&str> = CtrlTab::ALL.iter().map(|t_| t_.label()).collect();
+        let sel = CtrlTab::ALL.iter().position(|t_| *t_ == tab);
+        let seg = Segmented {
+            size: 14.0,
+            r: 16.0,
+            inner_r: 12.0,
+            pad: 5.0,
+            ..Segmented::new(&labels, sel)
+        };
+        let (_, hit) = widgets::segmented(ui, strip, "ctrl-tabs", &seg);
+        if let Some(i) = hit
+            && Some(i) != sel
+        {
+            self.acts.push(format!("ctrl_tab:{}", CtrlTab::ALL[i].key()));
         }
-        let s = sc();
-        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(area));
-        cui.set_clip_rect(area);
-        let a = PRect::of(area);
-        let top_y = a.y - int_pt(self.ctrl_scroll);
-        self.group_y.clear();
-        self.group_y.insert("PRACTICE", 0.0);
-        let mut y = self.draw_practice_module(&cui, st, a.x, top_y, a.w) + ipx(12.0);
-        self.group_y.insert("PLAYBACK", ((y - top_y) / s) as f32);
-        y = self.draw_playback_module(&cui, a.x, y, a.w) + ipx(12.0);
-        y = self.draw_more_module(&cui, st, a.x, y, a.w);
-        self.ctrl_max = ((y - top_y - a.h).max(0.0) / s) as f32;
+        let page = Rect::from_min_max(pos2(area.min.x, strip.max.y + px(GAP)), area.max);
+        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(page));
+        cui.set_clip_rect(page.intersect(ui.clip_rect()));
+        let top = page.min.y - snap(self.ctrl_scroll);
+        let (x, w) = (page.min.x, page.width());
+        let bottom = match tab {
+            CtrlTab::Practise => self.draw_practise_page(&cui, st, x, top, w),
+            CtrlTab::Sound => self.draw_sound_page(&cui, st, x, top, w),
+            CtrlTab::View => self.draw_view_page(&cui, st, x, top, w),
+        };
+        self.ctrl_max = (bottom - top - page.height()).max(0.0);
         self.ctrl_scroll = self.ctrl_scroll.clamp(0.0, self.ctrl_max);
         if self.ctrl_scroll > 0.5 || self.ctrl_scroll < self.ctrl_max - 0.5 {
-            // what's behind the edges (the console's face) laid back over the content, fading out inwards; the
-            // console is the area grown by its padding, with the Tiles key under it
-            let pad = ipx(16.0);
-            let console = PRect {
-                x: a.x - pad,
-                y: a.y - pad,
-                w: a.w + 2.0 * pad,
-                h: a.h + ipx(12.0) + ipx(48.0) + 2.0 * pad,
-            };
+            // what's behind the edges (the console's face) laid back over the content, fading out inwards
+            let pad = px(16.0);
+            let console = Rect::from_min_max(
+                area.min - vec2(pad, pad),
+                pos2(area.max.x + pad, area.max.y + px(12.0) + px(48.0) + pad),
+            );
             paint::fade_edges(
                 &p,
-                area,
+                page,
                 self.ctrl_scroll > 0.5,
                 self.ctrl_scroll < self.ctrl_max - 0.5,
                 24.0,
                 paint::FaceKind::Base {
-                    rect: console.rect(),
+                    rect: console,
                     sunk: false,
                 },
             );
         }
-        if let Some(goto) = self.ctrl_goto.take()
-            && let Some(&gy) = self.group_y.get(goto)
-        {
-            // asked for a module (the speed knob): glide to it
-            self.ctrl_target = Some(gy.min(self.ctrl_max));
-        }
     }
 
-    /// Key caps in a row ("/" between alternatives), centred on cx (pixels).
-    fn key_row(&self, p: &egui::Painter, keys: &[&str], cx: f64, cy: f64) -> PRect {
-        let th = t();
-        let ctx = p.ctx();
-        let gap = ipx(3.0);
-        let widths: Vec<f64> = keys
-            .iter()
-            .map(|k| {
-                if *k == "/" {
-                    tw(ctx, "/", Style::new(11.0, 500, th.caption)) + ipx(6.0)
-                } else {
-                    keycap_w(ctx, k)
-                }
-            })
-            .collect();
-        let total = widths.iter().sum::<f64>() + gap * (keys.len() as f64 - 1.0);
-        let mut x = cx - (total / 2.0).floor();
-        let mut out = PRect {
-            x,
-            y: cy,
-            w: total,
-            h: 0.0,
+    // -- the pieces every page uses ------------------------------------------------------------------------------
+
+    /// A card's top line: its heading at the left and, at the right, a caption and its keys. Returns the y below it.
+    #[allow(clippy::too_many_arguments)]
+    fn card_top(&self, p: &Painter, title: &str, lx: f32, rx: f32, y: f32, hint: &str, keys: &[&str]) -> f32 {
+        let cy = y + px(9.0);
+        let hr = heading(p, title, lx, cy);
+        let kx = if keys.is_empty() {
+            rx
+        } else {
+            keys_left_of(p, keys, rx, cy) - px(3.0)
         };
-        for (k, wd) in keys.iter().zip(&widths) {
-            if *k == "/" {
-                txt(
-                    p,
-                    "/",
-                    x + (wd / 2.0).floor(),
-                    cy,
-                    11.0,
-                    th.caption,
-                    500,
-                    Align2::CENTER_CENTER,
-                    None,
-                );
-            } else {
-                let r = cap(p, k, x, cy, Align2::LEFT_CENTER);
-                let (x0, y0) = (out.x.min(r.x), out.y.min(r.y));
-                out = PRect {
-                    x: x0,
-                    y: y0,
-                    w: out.right().max(r.right()) - x0,
-                    h: out.bottom().max(r.bottom()) - y0,
-                };
-            }
-            x += wd + gap;
+        if !hint.is_empty() {
+            note(
+                p,
+                hint,
+                pos2(kx, cy),
+                Align2::RIGHT_CENTER,
+                Some((kx - hr.max.x - px(12.0)).max(px(20.0))),
+            );
         }
-        out
+        y + px(18.0) + px(8.0)
     }
 
-    /// Speed and difficulty as knobs (drag up or down, scroll, or the keys), the loop in a small screen with its
-    /// keys, and level-up. Returns the module's bottom (pixels).
-    fn draw_practice_module(&mut self, ui: &Ui, st: &mut AppState, x: f64, y: f64, w: f64) -> f64 {
-        let p = ui.painter().clone();
+    /// A row with a name (its key cap after it, an explanation under it) and a switch at the right; the whole row
+    /// clicks. Pushes `action` when clicked.
+    #[allow(clippy::too_many_arguments)]
+    fn switch_row(
+        &mut self,
+        ui: &Ui,
+        row: Rect,
+        label: &str,
+        key: &str,
+        explain: &str,
+        on: bool,
+        action: &str,
+        enabled: bool,
+    ) {
+        let p = ui.painter();
         let th = t();
-        let ctx = ui.ctx().clone();
-        let pad = ipx(14.0);
-        let bx = ipx(92.0);
-        let (kh, kgap) = (ipx(38.0), ipx(8.0));
-        let h = pad
-            + ipx(18.0)
-            + ipx(8.0)
-            + bx
-            + ipx(26.0)
-            + ipx(24.0)
-            + ipx(12.0)
-            + ipx(44.0)
-            + ipx(10.0)
-            + 3.0 * kh
-            + 2.0 * kgap
-            + ipx(12.0)
-            + ipx(26.0)
-            + pad;
-        let module = PRect { x, y, w, h };
-        paint::inset(&p, module.rect(), Some(20.0), 6.0, Fill::Base);
-        let (lx, rx) = (module.x + pad, module.right() - pad);
-        let yy = module.y + pad + ipx(9.0);
-        caps(&p, "PRACTICE", lx, yy, 12.0, th.caption, Align2::LEFT_CENTER);
-        txt(
-            &p,
-            "drag a dial, or the keys",
-            rx,
-            yy,
-            12.0,
-            th.caption,
-            500,
-            Align2::RIGHT_CENTER,
+        let sw = Rect::from_min_size(
+            pos2(row.max.x - px(46.0), snap(row.center().y - px(12.0))),
+            vec2(px(46.0), px(24.0)),
+        );
+        let resp = interact(
+            ui,
+            row,
+            ("ctrl-sw", action),
+            if enabled { Sense::click() } else { Sense::hover() },
+        );
+        let hot = enabled && resp.hovered();
+        widgets::draw_switch(p, sw, egui::Id::new(("ctrl-sw-k", action)), on);
+        let ly = if explain.is_empty() {
+            row.center().y
+        } else {
+            row.center().y - px(8.0)
+        };
+        let col = if enabled { th.text } else { th.caption };
+        let lr = text::draw(
+            p,
+            label,
+            pos2(row.min.x, ly),
+            Align2::LEFT_CENTER,
+            Style::new(13.0, 700, col),
+            Some(sw.min.x - row.min.x - px(40.0)),
+        );
+        if !key.is_empty() {
+            keycap(
+                p,
+                key,
+                pos2(lr.max.x + px(7.0), ly),
+                Align2::LEFT_CENTER,
+                10.0,
+                cap_on(),
+            );
+        }
+        if !explain.is_empty() {
+            note(
+                p,
+                explain,
+                pos2(row.min.x, ly + px(17.0)),
+                Align2::LEFT_CENTER,
+                Some(sw.min.x - row.min.x - px(8.0)),
+            );
+        }
+        if hot {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            self.acts.push(action.into());
+        }
+    }
+
+    /// A line that goes somewhere (Settings, the pedalboard): caption text, an arrow, its key. Pushes `action`.
+    fn link_row(&mut self, ui: &Ui, x: f32, cy: f32, max_w: f32, label: &str, key: &str, action: &str) {
+        let p = ui.painter();
+        let th = t();
+        let ctx = ui.ctx();
+        let st = Style::new(12.0, 600, th.caption);
+        let key_w = if key.is_empty() {
+            0.0
+        } else {
+            keycap_width(ctx, key, 10.0) + px(6.0)
+        };
+        let lw = text::width(ctx, label, st).min(max_w - px(16.0) - key_w);
+        let hit = Rect::from_min_size(
+            pos2(x - px(4.0), cy - px(11.0)),
+            vec2(lw + px(16.0) + key_w + px(8.0), px(22.0)),
+        );
+        let resp = interact(ui, hit, ("ctrl-link", action), Sense::click());
+        let col = if resp.hovered() { th.text } else { th.caption };
+        let lr = text::draw(
+            p,
+            label,
+            pos2(x, cy),
+            Align2::LEFT_CENTER,
+            Style { color: col, ..st },
+            Some(lw + px(1.0)),
+        );
+        icons::icon(p, Icon::Right, pos2(lr.max.x + px(8.0), cy), 11.0, col);
+        if !key.is_empty() {
+            keycap(
+                p,
+                key,
+                pos2(lr.max.x + px(16.0), cy),
+                Align2::LEFT_CENTER,
+                10.0,
+                cap_on(),
+            );
+        }
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            self.acts.push(action.into());
+        }
+    }
+
+    /// A key (a glass plate on the dark themes, ivory elsewhere). Pushes `action` when clicked.
+    #[allow(clippy::too_many_arguments)]
+    fn key_btn(
+        &mut self,
+        ui: &Ui,
+        r: Rect,
+        label: &str,
+        key: &str,
+        action: &str,
+        active: bool,
+        enabled: bool,
+    ) {
+        let style = ButtonStyle {
+            active,
+            enabled,
+            // (a stepper's − and + read as signs)
+            size: if matches!(label, "−" | "+") { 17.0 } else { 12.5 },
+            r: Some(12.0),
+            align: if key.is_empty() {
+                widgets::Align::Center
+            } else {
+                widgets::Align::Split
+            },
+            ..Default::default()
+        };
+        if widgets::button(ui, r, ("ctrl-key", action), label, key, style).clicked() {
+            self.acts.push(action.into());
+        }
+    }
+
+    /// A two-way choice beside a name (Recorded | Synth, As charted | In the key). Pushes `action` when the other
+    /// option is clicked.
+    fn choice(&mut self, ui: &Ui, r: Rect, id: &'static str, labels: &[&str], sel: usize, action: &str) {
+        let seg = Segmented {
+            size: 12.0,
+            r: 13.0,
+            inner_r: 10.0,
+            pad: 4.0,
+            ..Segmented::new(labels, Some(sel))
+        };
+        let (_, hit) = widgets::segmented(ui, r, id, &seg);
+        if hit.is_some_and(|i| i != sel) {
+            self.acts.push(action.into());
+        }
+    }
+
+    /// A name with its key cap at the left of a row (the row's control is drawn by the caller). Returns its rect.
+    fn row_name(&self, p: &Painter, label: &str, key: &str, x: f32, cy: f32) -> Rect {
+        let th = t();
+        let lr = text::draw(
+            p,
+            label,
+            pos2(x, cy),
+            Align2::LEFT_CENTER,
+            Style::new(13.0, 700, th.text),
             None,
         );
-        let mut yy = module.y + pad + ipx(18.0) + ipx(8.0);
-        let colw = (rx - lx) / 2.0;
-        let span = SPEEDS[SPEEDS.len() - 1] - SPEEDS[0];
-        let dials: [(&str, String, &'static str, f32, &[&str]); 2] = [
-            (
-                "SPEED",
-                format!("{}%", (self.speed() * 100.0).round_ties_even() as i64),
-                "speed",
-                ((1.0 - SPEEDS[0]) / span) as f32,
-                &["Ctrl", "=", "/", "="],
-            ),
-            (
-                "DIFFICULTY",
-                format!(
-                    "{}%",
-                    (self.dial_value("diff") as f64 * 100.0).round_ties_even() as i64
-                ),
-                "diff",
-                1.0,
-                &["Ctrl", "↓", "/", "Ctrl", "↑"],
-            ),
-        ];
-        for (i, (label, value, kind, home, keys)) in dials.iter().enumerate() {
-            let cx = int_(lx + colw * i as f64 + colw / 2.0);
-            let hit = PRect {
-                x: cx - (bx / 2.0).floor(),
-                y: yy,
-                w: bx,
-                h: bx,
-            };
-            self.dial_interact(ui, hit.rect(), kind);
-            knobs::knob(
-                &p,
-                pos2(pt(hit.centerx()), pt(hit.centery())),
-                56.0,
-                self.dial_value(kind),
-                Scale {
-                    home: Some(*home),
-                    ..Default::default()
-                },
-                None,
-            );
-            let ly = hit.bottom() + ipx(13.0);
-            let lw = tw(&ctx, label, Style::caps(11.0, th.caption));
-            let vw = tw(&ctx, value, Style::new(15.0, 800, th.text));
-            let x0 = cx - ((lw + ipx(6.0) + vw) / 2.0).floor();
-            caps(&p, label, x0, ly, 11.0, th.caption, Align2::LEFT_CENTER);
-            txt(
-                &p,
-                value,
-                x0 + lw + ipx(6.0),
-                ly,
-                15.0,
-                th.text,
-                800,
-                Align2::LEFT_CENTER,
-                None,
-            );
-            self.key_row(&p, keys, cx, ly + ipx(25.0));
+        if key.is_empty() {
+            return lr;
         }
-        yy += bx + ipx(26.0) + ipx(24.0) + ipx(12.0);
-        // the loop
-        let disp = PRect {
-            x: lx,
-            y: yy,
-            w: rx - lx,
-            h: ipx(44.0),
-        };
-        paint::display(&p, disp.rect(), Some(12.0), 3.0);
-        caps(
+        let kr = keycap(
+            p,
+            key,
+            pos2(lr.max.x + px(7.0), cy),
+            Align2::LEFT_CENTER,
+            10.0,
+            cap_on(),
+        );
+        lr.union(kr)
+    }
+
+    /// A stepper: a round − key, the value, a round + key. Returns its right edge.
+    #[allow(clippy::too_many_arguments)]
+    fn stepper(&mut self, ui: &Ui, x: f32, y: f32, value: &str, value_w: f32, less: &str, more: &str) -> f32 {
+        let th = t();
+        let d = px(KEY_H);
+        let minus = Rect::from_min_size(pos2(x, y), vec2(d, d));
+        self.key_btn(ui, minus, "−", "", less, false, true);
+        let vx = minus.max.x + px(4.0);
+        text::draw(
+            ui.painter(),
+            value,
+            pos2(vx + value_w / 2.0, minus.center().y),
+            Align2::CENTER_CENTER,
+            Style::new(16.0, 800, th.accent_ink),
+            None,
+        );
+        let plus = Rect::from_min_size(pos2(vx + value_w + px(4.0), y), vec2(d, d));
+        self.key_btn(ui, plus, "+", "", more, false, true);
+        plus.max.x
+    }
+
+    // -- Practise ------------------------------------------------------------------------------------------------
+
+    /// Settings' Reduce delay card first (the FAST low-latency output, P41.4, D174), then speed and difficulty, the
+    /// loop, the practice modes, "Go to". Returns the page's bottom.
+    fn draw_practise_page(&mut self, ui: &Ui, st: &mut AppState, x: f32, y: f32, w: f32) -> f32 {
+        let shown = fastout::Shown::of(st);
+        let (r, act) = fastout::draw(ui, x, y, w, fastout::Frame::Panel, &shown, "ctrl");
+        if let Some(a) = act {
+            self.acts.push(fastout_action(a));
+        }
+        let y = r.max.y + px(GAP);
+        let y = self.draw_speed_card(ui, x, y, w) + px(GAP);
+        let y = self.draw_loop_card(ui, x, y, w) + px(GAP);
+        let y = self.draw_modes_card(ui, x, y, w) + px(GAP);
+        self.draw_goto_row(ui, x + px(PAD), y + px(10.0), w - 2.0 * px(PAD)) + px(4.0)
+    }
+
+    /// SPEED (a stepper and the presets) and DIFFICULTY (a notched slider) with level-up. Returns its bottom.
+    fn draw_speed_card(&mut self, ui: &Ui, x: f32, y: f32, w: f32) -> f32 {
+        let p = ui.painter().clone();
+        let th = t();
+        let h = px(PAD) * 2.0 + px(26.0) + px(KEY_H) + px(16.0) + px(26.0) + px(26.0) + px(8.0) + px(28.0);
+        let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+        card(&p, r);
+        let (lx, rx) = (x + px(PAD), r.max.x - px(PAD));
+        let mut yy = self.card_top(&p, "SPEED", lx, rx, y + px(PAD), "", &["Ctrl", "=", "/", "="]);
+        let speed = self.pending_speed.unwrap_or_else(|| self.speed());
+        let pct = (speed * 100.0).round() as i64;
+        let right = self.stepper(ui, lx, yy, &format!("{pct}%"), px(50.0), "slower", "faster");
+        // the presets: equal keys in what's left, lit when the speed is on one
+        let gap = px(4.0);
+        let x0 = right + px(10.0);
+        let pw = ((rx - x0 - gap * 3.0) / 4.0).floor();
+        for (i, v) in PRESETS.iter().enumerate() {
+            let pr = Rect::from_min_size(pos2(x0 + i as f32 * (pw + gap), yy), vec2(pw, px(KEY_H)));
+            // (lit by an amber label: a light wouldn't fit beside the number)
+            let style = ButtonStyle {
+                accent: (speed - v).abs() < 1e-6,
+                size: 12.5,
+                r: Some(12.0),
+                ..Default::default()
+            };
+            let label = format!("{}", (v * 100.0).round() as i64);
+            if widgets::button(ui, pr, ("ctrl-preset", i), &label, "", style).clicked() {
+                self.acts.push(format!("speed_set:{v}"));
+            }
+        }
+        yy += px(KEY_H) + px(16.0);
+        // the difficulty: what the slider is set to while it's dragged
+        let shown = self.diff_preview.unwrap_or(self.mastery);
+        let cy = yy + px(9.0);
+        let hr = heading(&p, "DIFFICULTY", lx, cy);
+        text::draw(
+            &p,
+            &format!("{}%", (shown * 100.0).round() as i64),
+            pos2(hr.max.x + px(10.0), cy),
+            Align2::LEFT_CENTER,
+            Style::new(14.0, 800, th.text),
+            None,
+        );
+        keys_left_of(&p, &["Ctrl", "↓", "/", "Ctrl", "↑"], rx, cy);
+        yy += px(26.0);
+        let groove = Rect::from_min_size(
+            pos2(lx + px(4.0), snap(yy + px(13.0) - px(4.0))),
+            vec2(rx - lx - px(8.0), px(8.0)),
+        );
+        let hit = groove.expand2(vec2(px(10.0), px(12.0)));
+        let resp = interact(ui, hit, "ctrl-diff", Sense::click_and_drag());
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        let at = |pos: Pos2| ((pos.x - groove.min.x) / groove.width()).clamp(0.0, 1.0) as f64;
+        if (resp.dragged() || resp.is_pointer_button_down_on())
+            && let Some(pos) = resp.interact_pointer_pos()
+        {
+            self.diff_preview = Some(((at(pos) * 10.0).round() / 10.0).clamp(0.0, 1.0));
+        }
+        if resp.drag_stopped() || resp.clicked() {
+            let target = resp
+                .interact_pointer_pos()
+                .map(at)
+                .or(self.diff_preview)
+                .unwrap_or(self.mastery);
+            self.diff_preview = None;
+            if diff_step(self.mastery, target).abs() > 1e-9 {
+                self.acts
+                    .push(format!("diff_set:{}", (target * 10.0).round() / 10.0));
+            }
+        } else if !resp.dragged() && !resp.is_pointer_button_down_on() {
+            self.diff_preview = None;
+        }
+        widgets::slider_notched(
+            &p,
+            groove,
+            shown as f32,
+            DIFF_STOPS,
+            18.0,
+            resp.hovered() || resp.dragged(),
+        );
+        yy += px(26.0) + px(8.0);
+        let auto = self.auto_level;
+        self.switch_row(
+            ui,
+            Rect::from_min_max(pos2(lx, yy), pos2(rx, yy + px(28.0))),
+            "Level up after a clean loop",
+            "",
+            "",
+            auto,
+            "auto_level",
+            true,
+        );
+        r.max.y
+    }
+
+    /// LOOP: its readout, Start / End / Section / Clear, Save as a lick. Returns its bottom.
+    fn draw_loop_card(&mut self, ui: &Ui, x: f32, y: f32, w: f32) -> f32 {
+        let p = ui.painter().clone();
+        let th = t();
+        let h = px(PAD) * 2.0 + px(26.0) + px(40.0) + px(10.0) + px(KEY_H) + px(8.0) + px(KEY_H);
+        let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+        card(&p, r);
+        let (lx, rx) = (x + px(PAD), r.max.x - px(PAD));
+        let mut yy = self.card_top(
             &p,
             "LOOP",
-            disp.x + ipx(14.0),
-            disp.centery(),
-            11.0,
-            th.caption,
-            Align2::LEFT_CENTER,
+            lx,
+            rx,
+            y + px(PAD),
+            "or Ctrl-drag across the tab",
+            &[],
         );
+        let disp = Rect::from_min_max(pos2(lx, yy), pos2(rx, yy + px(40.0)));
+        paint::display(&p, disp, Some(12.0), 3.0);
+        let cy = disp.center().y;
+        let tx = disp.min.x + px(14.0);
         match (self.loop_a, self.loop_b) {
             (Some(a), Some(b)) => {
-                let ta = txt(
+                let ta = text::draw(
                     &p,
                     &format!("{}–{}", fmt_time(a), fmt_time(b)),
-                    disp.x + ipx(62.0),
-                    disp.centery(),
-                    15.0,
-                    th.text,
-                    800,
+                    pos2(tx, cy),
                     Align2::LEFT_CENTER,
+                    Style::new(15.0, 800, th.text),
                     None,
                 );
                 if !self.tab.measures.is_empty() {
@@ -647,18 +589,14 @@ impl PlayerView {
                         self.tab.measure_at(a).map(|m| m.number).unwrap_or(0),
                         self.tab.measure_at(b - 1e-3).map(|m| m.number).unwrap_or(0),
                     );
-                    txt(
+                    note(
                         &p,
                         &if ma == mb {
                             format!("bar {ma}")
                         } else {
                             format!("bars {ma}–{mb}")
                         },
-                        ta.right() + ipx(8.0),
-                        disp.centery(),
-                        12.0,
-                        th.caption,
-                        500,
+                        pos2(ta.max.x + px(10.0), cy),
                         Align2::LEFT_CENTER,
                         None,
                     );
@@ -671,362 +609,634 @@ impl PlayerView {
                             .map(|a| format!("  ·  {}%", (a * 100.0).round_ties_even() as i64))
                             .unwrap_or_default()
                     );
-                    txt(
+                    text::draw(
                         &p,
                         &s,
-                        disp.right() - ipx(14.0),
-                        disp.centery(),
-                        13.0,
-                        th.accent_ink,
-                        800,
+                        pos2(disp.max.x - px(14.0), cy),
                         Align2::RIGHT_CENTER,
+                        Style::new(13.0, 800, th.accent_ink),
                         None,
                     );
                 }
             }
             (Some(a), None) => {
-                txt(
+                text::draw(
                     &p,
                     &format!("from {}: set the end with ]", fmt_time(a)),
-                    disp.x + ipx(62.0),
-                    disp.centery(),
-                    13.0,
-                    th.text_2,
-                    700,
+                    pos2(tx, cy),
                     Align2::LEFT_CENTER,
-                    Some(disp.right() - ipx(14.0) - disp.x - ipx(62.0)),
+                    Style::new(13.0, 700, th.text_2),
+                    Some(disp.max.x - px(14.0) - tx),
                 );
             }
             _ => {
-                txt(
+                text::draw(
                     &p,
-                    "off",
-                    disp.x + ipx(62.0),
-                    disp.centery(),
-                    13.0,
-                    th.caption,
-                    700,
+                    "No loop: set one with the keys",
+                    pos2(tx, cy),
                     Align2::LEFT_CENTER,
-                    None,
+                    Style::new(13.0, 700, th.caption),
+                    Some(disp.max.x - px(14.0) - tx),
                 );
             }
         }
-        yy = disp.bottom() + ipx(10.0);
-        let kw = ((rx - lx - kgap) / 2.0).floor();
-        let loop_keys = [
-            ("Loop start", "[", "loop_start", self.loop_a.is_some()),
-            ("Loop end", "]", "loop_end", self.loop_b.is_some()),
-            ("Loop this section", "L", "loop_section", false),
-            ("Clear loop", "\\", "clear_loop", false),
-        ];
-        for (i, (label, key, action, on)) in loop_keys.iter().enumerate() {
-            let r = PRect {
-                x: lx + (i % 2) as f64 * (kw + kgap),
-                y: yy + (i / 2) as f64 * (kh + kgap),
-                w: kw,
-                h: kh,
-            };
-            if widgets::button(
-                ui,
-                r.rect(),
-                ("loopkey", *action),
-                label,
-                key,
-                ButtonStyle {
-                    active: *on,
-                    size: 12.0,
-                    r: Some(12.0),
-                    ..Default::default()
-                },
-            )
-            .clicked()
-            {
-                self.acts.push((*action).into());
-            }
-        }
-        yy += 2.0 * kh + kgap;
-        // the loop kept as a lick (the Saved licks page, under Home)
+        yy = disp.max.y + px(10.0);
+        // Start / End / Section in a row; Clear and Save as a lick under them
+        let gap = px(6.0);
+        let kw = ((rx - lx - 2.0 * gap) / 3.0).floor();
         let has_loop = self.loop_a.zip(self.loop_b).is_some();
-        let r = PRect {
-            x: lx,
-            y: yy + kgap,
-            w: rx - lx,
-            h: kh,
-        };
-        if widgets::button(
-            ui,
-            r.rect(),
-            "loopkey-lick",
-            "Save loop as a lick",
-            "Ctrl+S",
-            ButtonStyle {
+        let keys = [
+            ("Start", "[", "loop_start", self.loop_a.is_some(), true),
+            ("End", "]", "loop_end", self.loop_b.is_some(), true),
+            ("Section", "L", "loop_section", false, true),
+            ("Clear", "\\", "clear_loop", false, true),
+            ("Save as a lick", "Ctrl S", "lick_loop", false, has_loop),
+        ];
+        for (i, (label, key, action, on, enabled)) in keys.into_iter().enumerate() {
+            let (col, row) = (i % 3, i / 3);
+            let kx = lx + col as f32 * (kw + gap);
+            let kr = Rect::from_min_max(
+                pos2(kx, yy + row as f32 * (px(KEY_H) + px(8.0))),
+                pos2(
+                    if i == 4 { rx } else { kx + kw },
+                    yy + row as f32 * (px(KEY_H) + px(8.0)) + px(KEY_H),
+                ),
+            );
+            let style = ButtonStyle {
+                active: on,
+                enabled,
                 size: 12.0,
                 r: Some(12.0),
-                enabled: has_loop,
+                align: widgets::Align::Split,
                 ..Default::default()
-            },
-        )
-        .clicked()
-        {
-            self.acts.push("lick_loop".into());
+            };
+            if widgets::button(ui, kr, ("ctrl-loop", action), label, key, style).clicked() {
+                self.acts.push(action.into());
+            }
         }
-        yy += kh + kgap + ipx(12.0);
-        let row = PRect {
-            x: lx,
-            y: yy,
-            w: rx - lx,
-            h: ipx(26.0),
-        };
-        let (sw_w, sw_h) = (ipx(48.0), ipx(26.0));
-        let sw = PRect {
-            x: row.right() - sw_w,
-            y: row.centery() - (sw_h / 2.0).floor(),
-            w: sw_w,
-            h: sw_h,
-        };
-        let resp = interact(ui, row.rect(), "auto-level", Sense::click());
-        widgets::draw_switch(&p, sw.rect(), egui::Id::new("auto_level"), self.auto_level);
-        txt(
-            &p,
-            "Level up after a clean loop",
-            lx,
-            row.centery(),
-            13.0,
-            th.text,
-            700,
-            Align2::LEFT_CENTER,
-            Some(sw.x - lx - ipx(10.0)),
-        );
-        if resp.hovered() {
-            ctx.set_cursor_icon(CursorIcon::PointingHand);
-        }
-        if resp.clicked() {
-            self.acts.push("auto_level".into());
-        }
-        let _ = st;
-        module.bottom()
+        r.max.y
     }
 
-    /// The playback commands as flat rows with their keys (each key cap clicks too). Returns the bottom (pixels).
-    fn draw_playback_module(&mut self, ui: &Ui, x: f64, y: f64, w: f64) -> f64 {
+    /// PRACTISE IT: note by note, continuous, ear mode, each with a line; a take and listening back; the review.
+    /// Returns its bottom.
+    fn draw_modes_card(&mut self, ui: &Ui, x: f32, y: f32, w: f32) -> f32 {
+        let p = ui.painter().clone();
+        let row_h = px(39.0);
+        let h = px(PAD) * 2.0 + px(26.0) + 4.0 * row_h + px(8.0) + px(KEY_H) + px(10.0) + px(22.0);
+        let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+        card(&p, r);
+        let (lx, rx) = (x + px(PAD), r.max.x - px(PAD));
+        let mut yy = self.card_top(&p, "PRACTISE IT", lx, rx, y + px(PAD), "", &[]);
+        let modes = [
+            (
+                "Note by note",
+                "W",
+                "waits for each note  ·  Enter skips",
+                self.nbn,
+                "nbn",
+            ),
+            (
+                "Continuous",
+                "O",
+                "loops without stopping, every pass scored",
+                self.continuous,
+                "continuous",
+            ),
+            (
+                "Ear mode",
+                "H",
+                "notes hidden until you play them",
+                self.ear,
+                "ear",
+            ),
+            (
+                "Count-in",
+                "Shift C",
+                "3, 2, 1 before playing: songs, loops, spots, takes",
+                self.countdown_on,
+                "countdown",
+            ),
+        ];
+        for (label, key, explain, on, action) in modes {
+            let row = Rect::from_min_max(pos2(lx, yy), pos2(rx, yy + row_h));
+            self.switch_row(ui, row, label, key, explain, on, action, true);
+            yy += row_h;
+        }
+        yy += px(8.0);
+        let gap = px(8.0);
+        let bw = ((rx - lx - gap) / 2.0).floor();
+        let recording = self.take.as_ref().is_some_and(|s| s.recording());
+        let can_listen = self.take.as_ref().is_some_and(|s| s.has_input());
+        let listening = self.take.as_ref().is_some_and(|s| s.listening());
+        self.key_btn(
+            ui,
+            Rect::from_min_size(pos2(lx, yy), vec2(bw, px(KEY_H))),
+            "Record a take",
+            "Ctrl R",
+            "take:record",
+            recording,
+            true,
+        );
+        self.key_btn(
+            ui,
+            Rect::from_min_size(pos2(lx + bw + gap, yy), vec2(rx - lx - bw - gap, px(KEY_H))),
+            if listening {
+                "Stop listening"
+            } else {
+                "Listen back"
+            },
+            "B",
+            "take:listen",
+            listening,
+            can_listen,
+        );
+        yy += px(KEY_H) + px(10.0);
+        self.link_row(
+            ui,
+            lx,
+            yy + px(11.0),
+            rx - lx,
+            "Review the run: spots to practise",
+            "E",
+            "review",
+        );
+        r.max.y
+    }
+
+    /// "Go to": the start, the previous or next section, back 5 seconds, each a key. Returns its bottom.
+    fn draw_goto_row(&mut self, ui: &Ui, x: f32, cy: f32, w: f32) -> f32 {
         let p = ui.painter().clone();
         let th = t();
-        let (pad, row_h) = (ipx(10.0), ipx(34.0));
-        let module = PRect {
-            x,
-            y,
-            w,
-            h: pad + ipx(22.0) + ipx(4.0) + PLAYBACK_ROWS.len() as f64 * row_h + pad,
-        };
-        paint::inset(&p, module.rect(), Some(20.0), 6.0, Fill::Base);
-        let hy = module.y + pad + ipx(11.0);
-        caps(
-            &p,
-            "PLAYBACK",
-            module.x + pad + ipx(8.0),
-            hy,
-            12.0,
-            th.caption,
-            Align2::LEFT_CENTER,
-        );
-        let tr = txt(
-            &p,
-            "+ arrows: 1 second",
-            module.right() - pad - ipx(8.0),
-            hy,
-            11.0,
-            th.caption,
-            500,
-            Align2::RIGHT_CENTER,
-            None,
-        );
-        cap(&p, "Shift", tr.x - ipx(5.0), hy, Align2::RIGHT_CENTER);
-        let mut ry = module.y + pad + ipx(22.0) + ipx(4.0);
-        for (label, keys) in PLAYBACK_ROWS {
-            let r = PRect {
-                x: module.x + pad,
-                y: ry,
-                w: module.w - 2.0 * pad,
-                h: row_h,
-            };
-            let resp = interact(ui, r.rect(), ("pb-row", label), Sense::click());
-            if resp.hovered() {
-                paint::raised(&p, r.rect(), Some(10.0), 3.0, Fill::Base, 0.0);
-                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-            }
-            txt(
+        let gr = note(&p, "Go to", pos2(x, cy), Align2::LEFT_CENTER, None);
+        let items: [(&str, &[(&str, &str)]); 3] = [
+            ("start", &[("Home", "start")]),
+            ("section", &[("PgUp", "prev_section"), ("PgDn", "next_section")]),
+            ("−5 s", &[("−", "rewind")]),
+        ];
+        let mut xx = gr.max.x + px(14.0);
+        for (label, keys) in items {
+            let lr = text::draw(
                 &p,
                 label,
-                r.x + ipx(10.0),
-                r.centery(),
-                13.0,
-                th.text,
-                700,
+                pos2(xx, cy),
                 Align2::LEFT_CENTER,
-                Some(r.w * 0.62),
+                Style::new(12.0, 600, th.text_2),
+                None,
             );
-            let mut clicked_key = false;
-            let mut kx = r.right() - ipx(8.0);
-            for (key, action) in keys.iter().rev() {
-                let kr = cap(&p, key, kx, r.centery(), Align2::RIGHT_CENTER);
-                if interact(
+            let mut kx = lr.max.x + px(6.0);
+            for (key, action) in keys {
+                let kr = keycap(&p, key, pos2(kx, cy), Align2::LEFT_CENTER, 10.0, cap_on());
+                let resp = interact(
                     ui,
-                    kr.inflate(ipx(4.0), ipx(10.0)).rect(),
-                    ("pb-key", *action),
+                    kr.expand2(vec2(px(2.0), px(6.0))),
+                    ("ctrl-goto", *action),
                     Sense::click(),
-                )
-                .clicked()
-                {
-                    self.acts.push((*action).into());
-                    clicked_key = true;
+                );
+                if resp.hovered() {
+                    paint::ring(&p, kr.expand(px(1.0)), Some(5.0), 1.0, th.accent, false);
+                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                 }
-                kx = kr.x - ipx(4.0);
+                if resp.clicked() {
+                    self.acts.push((*action).into());
+                }
+                kx = kr.max.x + px(3.0);
             }
-            if resp.clicked() && !clicked_key {
-                self.acts.push(keys[0].1.into());
+            xx = kx + px(14.0);
+            if xx > x + w {
+                break;
             }
-            ry += row_h;
         }
-        module.bottom()
+        cy + px(12.0)
     }
 
-    /// Part, tab view, tiles, lyrics and sound as rows; a row opens to its keys. Returns the bottom (pixels).
-    fn draw_more_module(&mut self, ui: &Ui, st: &mut AppState, x: f64, y: f64, w: f64) -> f64 {
+    // -- Sound ---------------------------------------------------------------------------------------------------
+
+    /// Your guitar, pitch, the stems, timing. Returns the page's bottom.
+    fn draw_sound_page(&mut self, ui: &Ui, st: &mut AppState, x: f32, y: f32, w: f32) -> f32 {
+        let y = self.draw_guitar_card(ui, st, x, y, w) + px(GAP);
+        let y = self.draw_pitch_card(ui, x, y, w) + px(GAP);
+        let y = if self.mixer.stems.is_some() {
+            self.draw_stems_card(ui, x, y, w) + px(GAP)
+        } else {
+            y
+        };
+        self.draw_timing_card(ui, x, y, w)
+    }
+
+    /// YOUR GUITAR: hear it, the tone, recorded or synth guitar in the song, your sounds. Returns its bottom.
+    fn draw_guitar_card(&mut self, ui: &Ui, st: &AppState, x: f32, y: f32, w: f32) -> f32 {
+        let p = ui.painter().clone();
+        let row_h = px(36.0);
+        let Some(e) = self.engine().cloned() else {
+            let h = px(PAD) * 2.0 + px(26.0) + px(20.0) + px(26.0);
+            let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+            card(&p, r);
+            let (lx, rx) = (x + px(PAD), r.max.x - px(PAD));
+            let inst = st.instrument();
+            let yy = self.card_top(&p, &inst.say("YOUR GUITAR"), lx, rx, y + px(PAD), "", &[]);
+            note(
+                &p,
+                &inst.say("Hearing your guitar needs the audio engine"),
+                pos2(lx, yy + px(10.0)),
+                Align2::LEFT_CENTER,
+                Some(rx - lx),
+            );
+            self.link_row(
+                ui,
+                lx,
+                yy + px(20.0) + px(13.0),
+                rx - lx,
+                "Settings › Sound",
+                "F2",
+                "settings",
+            );
+            return r.max.y;
+        };
+        let h = px(PAD) * 2.0 + px(26.0) + 3.0 * row_h + px(6.0) + px(22.0);
+        let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+        card(&p, r);
+        let (lx, rx) = (x + px(PAD), r.max.x - px(PAD));
+        let inst = st.instrument();
+        let mut yy = self.card_top(
+            &p,
+            &inst.say("YOUR GUITAR"),
+            lx,
+            rx,
+            y + px(PAD),
+            &inst.say("its level: the GUITAR knob below"),
+            &[],
+        );
+        self.switch_row(
+            ui,
+            Rect::from_min_max(pos2(lx, yy), pos2(rx, yy + row_h)),
+            &inst.say("Hear my guitar"),
+            "M",
+            "",
+            e.monitor(),
+            "monitor",
+            true,
+        );
+        yy += row_h;
+        let cy = yy + row_h / 2.0;
+        let nr = self.row_name(&p, "Tone", "T", lx, cy);
+        let tw_ = (rx - lx) * 0.6;
+        let tr = Rect::from_min_size(
+            pos2(rx - tw_.max(rx - nr.max.x - px(12.0)).min(tw_), cy - px(15.0)),
+            vec2(tw_.min(rx - nr.max.x - px(12.0)), px(30.0)),
+        );
+        let style = ButtonStyle {
+            size: 12.5,
+            r: Some(12.0),
+            ..Default::default()
+        };
+        let label = tone_label(&e.tone());
+        let resp = widgets::button(ui, tr, "ctrl-tone", &label, "", style);
+        if resp.hovered() {
+            self.tip = Some((
+                "The next tone".into(),
+                "T".into(),
+                pos2(tr.center().x, tr.min.y - px(6.0)),
+                Align2::CENTER_BOTTOM,
+            ));
+        }
+        if resp.clicked() {
+            self.acts.push("tone".into());
+        }
+        yy += row_h;
+        let cy = yy + row_h / 2.0;
+        let nr = self.row_name(&p, "In the song", "G", lx, cy);
+        let synth = self.song_synth.on;
+        let cw = (rx - nr.max.x - px(12.0)).min((rx - lx) * 0.6);
+        self.choice(
+            ui,
+            Rect::from_min_size(pos2(rx - cw, cy - px(15.0)), vec2(cw, px(30.0))),
+            "ctrl-synth",
+            &["Recorded", "Synth"],
+            usize::from(synth),
+            "song_synth",
+        );
+        yy += row_h + px(6.0);
+        let _ = st;
+        self.link_row(
+            ui,
+            lx,
+            yy + px(11.0),
+            rx - lx,
+            "Your sounds on the Rig",
+            "Shift T",
+            "sounds",
+        );
+        r.max.y
+    }
+
+    /// PITCH: a stepper in semitones and Original pitch. Returns its bottom.
+    fn draw_pitch_card(&mut self, ui: &Ui, x: f32, y: f32, w: f32) -> f32 {
+        let p = ui.painter().clone();
+        let h = px(PAD) * 2.0 + px(26.0) + px(KEY_H);
+        let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+        card(&p, r);
+        let (lx, rx) = (x + px(PAD), r.max.x - px(PAD));
+        let yy = self.card_top(
+            &p,
+            "PITCH",
+            lx,
+            rx,
+            y + px(PAD),
+            "the tab stays as written",
+            &["Shift", "↑", "↓"],
+        );
+        let pitch = self.mixer.pitch;
+        let right = self.stepper(
+            ui,
+            lx,
+            yy,
+            &super::songaudio::pitch_short(pitch),
+            px(56.0),
+            "pitch-",
+            "pitch+",
+        );
+        self.key_btn(
+            ui,
+            Rect::from_min_max(pos2(right + px(12.0), yy), pos2(rx, yy + px(KEY_H))),
+            "Original pitch",
+            "",
+            "pitch0",
+            pitch == 0,
+            true,
+        );
+        r.max.y
+    }
+
+    /// STEMS: one row each (level, solo, on) and "As the pack sets them". Returns its bottom.
+    fn draw_stems_card(&mut self, ui: &Ui, x: f32, y: f32, w: f32) -> f32 {
         let p = ui.painter().clone();
         let th = t();
-        let s = sc();
-        let groups = self.control_groups(st);
-        let opened = panel_open(st);
-        let (pad_x, pad_y, row_h) = (ipx(10.0), ipx(8.0), ipx(32.0));
-        let (bh, gap) = (ipx(36.0), ipx(6.0));
-        let (inner_x, inner_w) = (x + pad_x + ipx(4.0), w - 2.0 * pad_x - ipx(8.0));
-        // lay the open groups' keys out first: the module's height depends on them
-        let mut yy = y + pad_y;
-        let mut placed = Vec::new();
-        for (title, hint, sections) in &groups {
-            let key = group_key(title);
-            let row = PRect {
-                x: x + pad_x,
-                y: yy,
-                w: w - 2.0 * pad_x,
-                h: row_h,
-            };
-            self.group_y.insert(group_static(key), ((yy - y) / s) as f32);
-            yy += row_h;
-            let mut items: Vec<(Option<String>, f64, Vec<(Btn, PRect)>)> = Vec::new();
-            if opened.contains(key) {
-                yy += ipx(4.0);
-                for (sub, cols, btns) in sections {
-                    if !sub.is_empty() {
-                        items.push((Some(sub.clone()), yy, Vec::new()));
-                        yy += ipx(18.0);
-                    }
-                    let (rects, used) = layout_grid(btns.len(), inner_x, yy, inner_w, cols, bh, gap);
-                    yy += used + gap;
-                    items.push((None, 0.0, btns.iter().cloned().zip(rects).collect()));
-                }
-                yy += ipx(6.0);
-            }
-            placed.push((*title, *hint, key.to_string(), row, items));
-        }
-        let module = PRect {
-            x,
-            y,
-            w,
-            h: yy + pad_y - y,
+        let Some(set) = self.mixer.stems.clone() else {
+            return y;
         };
-        paint::inset(&p, module.rect(), Some(20.0), 6.0, Fill::Base);
-        for (title, hint, key, row, items) in placed {
-            let is_open = opened.contains(&key);
-            let resp = interact(ui, row.rect(), ("group", key.clone()), Sense::click());
-            if resp.hovered() {
-                paint::raised(&p, row.rect(), Some(10.0), 3.0, Fill::Base, 0.0);
+        let row_h = px(32.0);
+        let n = set.stems.len().min(self.mixer.mix.len());
+        let h = px(PAD) * 2.0 + px(26.0) + n as f32 * row_h + px(8.0) + px(30.0);
+        let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+        card(&p, r);
+        let (lx, rx) = (x + px(PAD), r.max.x - px(PAD));
+        let mut yy = self.card_top(&p, "STEMS", lx, rx, y + px(PAD), "level  ·  solo  ·  on", &[]);
+        let max_gain = qrs_audio::stems::MAX_GAIN;
+        for i in 0..n {
+            let (s, m) = (&set.stems[i], self.mixer.mix[i]);
+            let cy = yy + row_h / 2.0;
+            // a stem with no name shows its id ("drums"): capitalised like the named ones
+            let mut c = s.info.name.chars();
+            let name: String = c
+                .next()
+                .map(|f| f.to_uppercase().chain(c).collect())
+                .unwrap_or_default();
+            text::draw(
+                &p,
+                &name,
+                pos2(lx, cy),
+                Align2::LEFT_CENTER,
+                Style::new(13.0, 700, if m.on { th.text } else { th.caption }),
+                Some(px(70.0)),
+            );
+            let sw = Rect::from_min_size(pos2(rx - px(44.0), snap(cy - px(11.0))), vec2(px(44.0), px(22.0)));
+            if widgets::switch(ui, sw, ("ctrl-stem-on", i), m.on).clicked() {
+                self.acts.push(format!("stem:on:{i}"));
+            }
+            let solo = Rect::from_min_size(
+                pos2(sw.min.x - px(8.0) - px(26.0), cy - px(13.0)),
+                vec2(px(26.0), px(26.0)),
+            );
+            let style = ButtonStyle {
+                active: false,
+                accent: m.solo,
+                size: 11.0,
+                r: Some(13.0),
+                ..Default::default()
+            };
+            if widgets::button(ui, solo, ("ctrl-stem-solo", i), "S", "", style).clicked() {
+                self.acts.push(format!("stem:solo:{i}"));
+            }
+            let groove = Rect::from_min_max(
+                pos2(lx + px(78.0), snap(cy - px(3.0))),
+                pos2(solo.min.x - px(12.0), snap(cy - px(3.0)) + px(6.0)),
+            );
+            let hit = groove.expand2(vec2(px(8.0), px(10.0)));
+            let resp = interact(ui, hit, ("ctrl-stem-lvl", i), Sense::click_and_drag());
+            if (resp.dragged() || resp.clicked())
+                && let Some(pos) = resp.interact_pointer_pos()
+            {
+                let u = ((pos.x - groove.min.x) / groove.width()).clamp(0.0, 1.0);
+                let g = (u * max_gain * 10.0).round() / 10.0;
+                if (g - m.gain).abs() > 1e-3 {
+                    self.acts.push(format!("stem:set:{i}:{g}"));
+                }
+            }
+            if resp.hovered() || resp.dragged() {
                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                self.tip = Some((
+                    format!("{name} {}%", (m.gain * 100.0).round() as i64),
+                    String::new(),
+                    pos2(groove.center().x, groove.min.y - px(10.0)),
+                    Align2::CENTER_BOTTOM,
+                ));
             }
-            if resp.clicked() {
-                self.acts.push(format!("group:{key}"));
-            }
-            let tr = caps(
+            widgets::slider(
                 &p,
-                title,
-                row.x + ipx(10.0),
-                row.centery(),
-                11.0,
-                if is_open { th.text } else { th.text_2 },
-                Align2::LEFT_CENTER,
-            );
-            // `neu.icon`: its box centred on the whole pixel
-            let (icx, isz) = (row.right() - ipx(12.0), rpx(14.0).max(6.0));
-            icons::icon(
-                &p,
-                if is_open { Icon::Down } else { Icon::Right },
-                pos2(pt(icx), pt(row.centery())),
+                groove,
+                m.gain / max_gain,
+                None,
                 14.0,
-                th.caption,
+                resp.hovered() || resp.dragged(),
+                if m.on { None } else { Some(th.tick) },
             );
-            let ic_x = icx - (isz / 2.0).floor();
-            txt(
-                &p,
-                hint,
-                tr.right() + ipx(10.0),
-                row.centery(),
-                12.0,
-                th.caption,
-                500,
-                Align2::LEFT_CENTER,
-                Some(ic_x - ipx(8.0) - tr.right() - ipx(10.0)),
-            );
-            for (sub, at, btns) in items {
-                if let Some(sub) = sub {
-                    caps(
-                        &p,
-                        &sub,
-                        inner_x + ipx(2.0),
-                        at + ipx(8.0),
-                        10.0,
-                        th.caption,
-                        Align2::LEFT_CENTER,
-                    );
-                    continue;
-                }
-                for (b, r) in btns {
-                    let style = ButtonStyle {
-                        active: b.active,
-                        value: b.action.is_none(),
-                        size: 12.0,
-                        align: if b.action.is_none() {
-                            widgets::Align::Center
-                        } else {
-                            widgets::Align::Split
-                        },
-                        ..Default::default()
-                    };
-                    let id = (
-                        "ctrl-btn",
-                        b.action.clone().unwrap_or_else(|| b.label.clone()),
-                        (r.x as i32, r.y as i32),
-                    );
-                    if widgets::button(ui, r.rect(), id, &b.label, &b.key, style).clicked()
-                        && let Some(a) = b.action
-                    {
-                        self.acts.push(a);
-                    }
-                }
-            }
+            yy += row_h;
         }
-        module.bottom()
+        yy += px(8.0);
+        self.key_btn(
+            ui,
+            Rect::from_min_max(pos2(lx, yy), pos2(rx, yy + px(30.0))),
+            "As the pack sets them",
+            "",
+            "stem:reset",
+            set.is_default(&self.mixer.mix),
+            true,
+        );
+        r.max.y
     }
-}
 
-fn group_static(k: &str) -> &'static str {
-    match k {
-        "PART" => "PART",
-        "TAB" => "TAB",
-        "TILES" => "TILES",
-        "LYRICS" => "LYRICS",
-        "SOUND" => "SOUND",
-        "PITCH" => "PITCH",
-        _ => "OTHER",
+    /// TIMING: where its settings are. Returns its bottom.
+    fn draw_timing_card(&mut self, ui: &Ui, x: f32, y: f32, w: f32) -> f32 {
+        let p = ui.painter().clone();
+        let h = px(PAD) * 2.0 + px(26.0) + px(20.0) + px(24.0);
+        let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+        card(&p, r);
+        let (lx, rx) = (x + px(PAD), r.max.x - px(PAD));
+        let yy = self.card_top(&p, "TIMING", lx, rx, y + px(PAD), "", &[]);
+        note(
+            &p,
+            "Chart sync, and when your notes count: set once",
+            pos2(lx, yy + px(10.0)),
+            Align2::LEFT_CENTER,
+            Some(rx - lx),
+        );
+        self.link_row(
+            ui,
+            lx,
+            yy + px(20.0) + px(12.0),
+            rx - lx,
+            "Settings › Timing",
+            "",
+            "settings:practice",
+        );
+        r.max.y
+    }
+
+    // -- View ----------------------------------------------------------------------------------------------------
+
+    /// Tab or highway, the tab's options, the highway's, two tiles. Returns the page's bottom.
+    fn draw_view_page(&mut self, ui: &Ui, st: &mut AppState, x: f32, y: f32, w: f32) -> f32 {
+        let p = ui.painter().clone();
+        let row_h = px(36.0);
+        // SHOW THE PART AS
+        let h = px(PAD) * 2.0 + px(26.0) + px(KEY_H);
+        let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+        card(&p, r);
+        let (lx, rx) = (x + px(PAD), r.max.x - px(PAD));
+        let yy = self.card_top(&p, "SHOW THE PART AS", lx, rx, y + px(PAD), "", &["V"]);
+        let hw = self.hw_on;
+        self.choice(
+            ui,
+            Rect::from_min_max(pos2(lx, yy), pos2(rx, yy + px(KEY_H))),
+            "ctrl-view",
+            &["Tab", "Highway"],
+            usize::from(hw),
+            "view",
+        );
+        // ON THE TAB
+        let y = r.max.y + px(GAP);
+        let h = px(PAD) * 2.0 + px(26.0) + 4.0 * row_h + px(18.0);
+        let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+        card(&p, r);
+        let mut yy = self.card_top(&p, "ON THE TAB", lx, rx, y + px(PAD), "", &[]);
+        let nota = self.nota.show;
+        self.switch_row(
+            ui,
+            Rect::from_min_max(pos2(lx, yy), pos2(rx, yy + row_h)),
+            "Rhythm notation",
+            "N",
+            "",
+            nota,
+            "nota:show",
+            true,
+        );
+        yy += row_h;
+        let cy = yy + row_h / 2.0;
+        let nr = self.row_name(&p, "Chord names", "K", lx, cy);
+        let cw = (rx - nr.max.x - px(12.0)).min((rx - lx) * 0.6);
+        let numerals = self.chord_numerals;
+        self.choice(
+            ui,
+            Rect::from_min_size(pos2(rx - cw, cy - px(15.0)), vec2(cw, px(30.0))),
+            "ctrl-chords",
+            &["As charted", "In the key"],
+            usize::from(numerals),
+            "chord_numerals",
+        );
+        yy += row_h;
+        let (compact, full) = (self.tab.compact, self.tab_full);
+        self.switch_row(
+            ui,
+            Rect::from_min_max(pos2(lx, yy), pos2(rx, yy + row_h)),
+            "Compact rows",
+            "C",
+            "",
+            compact,
+            "tab_compact",
+            true,
+        );
+        yy += row_h;
+        self.switch_row(
+            ui,
+            Rect::from_min_max(pos2(lx, yy), pos2(rx, yy + row_h)),
+            "Full screen",
+            "F",
+            "",
+            full,
+            "tab_full",
+            true,
+        );
+        yy += row_h;
+        note(
+            &p,
+            "Zoom, bar width, string spacing: the tab's toolbar",
+            pos2(lx, yy + px(9.0)),
+            Align2::LEFT_CENTER,
+            Some(rx - lx),
+        );
+        // ON THE HIGHWAY
+        let y = r.max.y + px(GAP);
+        let h = px(PAD) * 2.0 + px(26.0) + row_h + px(18.0);
+        let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+        card(&p, r);
+        let yy = self.card_top(&p, "ON THE HIGHWAY", lx, rx, y + px(PAD), "", &[]);
+        let inv = self.highway.invert;
+        self.switch_row(
+            ui,
+            Rect::from_min_max(pos2(lx, yy), pos2(rx, yy + row_h)),
+            "Low E at the bottom",
+            "I",
+            "",
+            inv,
+            "hw_invert",
+            true,
+        );
+        note(
+            &p,
+            "Note speed and camera: the highway's toolbar",
+            pos2(lx, yy + row_h + px(9.0)),
+            Align2::LEFT_CENTER,
+            Some(rx - lx),
+        );
+        // TILES
+        let y = r.max.y + px(GAP);
+        let h = px(PAD) * 2.0 + px(26.0) + 2.0 * row_h + px(24.0);
+        let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+        card(&p, r);
+        let mut yy = self.card_top(&p, "TILES", lx, rx, y + px(PAD), "on: open  ·  off: folded", &[]);
+        let (lyrics, note_on) = (tiles::tile_open(st, "lyrics"), tiles::tile_open(st, "note"));
+        self.switch_row(
+            ui,
+            Rect::from_min_max(pos2(lx, yy), pos2(rx, yy + row_h)),
+            "Lyrics",
+            "Y",
+            "",
+            lyrics,
+            "lyrics",
+            true,
+        );
+        yy += row_h;
+        self.switch_row(
+            ui,
+            Rect::from_min_max(pos2(lx, yy), pos2(rx, yy + row_h)),
+            "Note & chord",
+            "",
+            "",
+            note_on,
+            "tile:note",
+            true,
+        );
+        yy += row_h;
+        self.link_row(
+            ui,
+            lx,
+            yy + px(12.0),
+            rx - lx,
+            "All tiles, their order, the note tile: Settings › Display",
+            "",
+            "settings:display",
+        );
+        r.max.y
     }
 }
 
@@ -1035,16 +1245,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn grid_like_python() {
-        // ui.layout_grid at scale 1: a stepper row (1, 0.46, 1) 300 wide, gap 6
-        let (r, h) = layout_grid(3, 14.0, 100.0, 300.0, &Cols::Fr(STEPPER.to_vec()), 36.0, 6.0);
-        // room 288: 117.07..., 53.85..., 117.07...
-        assert_eq!((r[0].x, r[0].w), (14.0, 117.0));
-        assert_eq!((r[1].x, r[1].w), (137.0, 53.0));
-        assert_eq!((r[2].x, r[2].w), (196.0, 118.0));
-        assert_eq!(h, 36.0);
-        let (r, h) = layout_grid(5, 0.0, 0.0, 100.0, &Cols::N(2), 36.0, 6.0);
-        assert_eq!((r[4].x, r[4].y, r[4].w), (0.0, 84.0, 47.0));
-        assert_eq!(h, 3.0 * 36.0 + 2.0 * 6.0);
+    fn presets_land_on_speeds() {
+        for v in PRESETS {
+            assert!(SPEEDS.iter().any(|s| (s - v).abs() < 1e-9), "{v} is a speed step");
+            assert_eq!(snap_speed(v), v);
+        }
+        assert_eq!(snap_speed(0.77), 0.75);
+        assert_eq!(snap_speed(0.1), 0.25);
+        assert_eq!(snap_speed(9.0), 1.5);
+        assert_eq!(snap_speed(1.36), 1.4);
+    }
+
+    #[test]
+    fn difficulty_steps_to_a_tenth() {
+        assert_eq!(diff_step(1.0, 0.5), -0.5);
+        assert_eq!(diff_step(0.3, 0.84), 0.5);
+        assert_eq!(diff_step(0.7, 0.7), 0.0);
+        assert_eq!(diff_step(0.0, 1.7), 1.0);
+        assert_eq!(diff_step(0.4, -1.0), -0.4);
+        // (applied as change_mastery does, it lands on the target)
+        let cur: f64 = 0.3;
+        let new = ((cur + diff_step(cur, 0.9)).clamp(0.0, 1.0) * 100.0).round() / 100.0;
+        assert_eq!(new, 0.9);
+    }
+
+    #[test]
+    fn the_tab_is_remembered() {
+        let mut cfg = Config::default();
+        assert_eq!(ctrl_tab(&cfg), CtrlTab::Practise);
+        set_ctrl_tab(&mut cfg, CtrlTab::View);
+        assert_eq!(cfg.str("controls_tab", ""), "view");
+        assert_eq!(ctrl_tab(&cfg), CtrlTab::View);
+        set_ctrl_tab(&mut cfg, CtrlTab::Sound);
+        assert_eq!(ctrl_tab(&cfg), CtrlTab::Sound);
+        cfg.set("controls_tab", "nonsense");
+        assert_eq!(ctrl_tab(&cfg), CtrlTab::Practise);
+        // the old folds don't matter
+        let mut old = Config::default();
+        old.set("panel_open", serde_json::json!(["PART", "SOUND"]));
+        assert_eq!(ctrl_tab(&old), CtrlTab::Practise);
     }
 }

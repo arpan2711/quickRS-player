@@ -3,7 +3,7 @@
 //! are what config.json and userdata.json store, so they never change; new models and knobs go at the end of their
 //! kind.
 
-use super::{MAX_KNOBS, Pedal, amp, cab, delay, drive, dynamics, eq, filter, modfx, reverb};
+use super::{MAX_KNOBS, Pedal, amp, cab, delay, drive, dynamics, eq, filter, modfx, nam, reverb};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -143,8 +143,16 @@ impl KnobDef {
         }
     }
 
-    /// The value as a person reads it ("6.5", "+3.0 dB", "450 ms", "1.2 kHz", "Ribbon").
+    /// The value as a person reads it ("6.5", "+3.0 dB", "450 ms", "1.2 kHz", "Ribbon"). A gate at the bottom of
+    /// its range is off, and says so (P37.6c: the NAM unit's Gate read "-90.0 dB").
     pub fn text(&self, v: f32) -> String {
+        if self.key == "gate" && v <= self.lo + 0.05 {
+            return "Off".into();
+        }
+        // (a gate's Range at its bottom shuts it all the way, P41.1)
+        if self.key == "range" && v <= self.lo + 0.05 {
+            return "Full".into();
+        }
         match self.unit {
             Unit::Dial => format!("{v:.1}"),
             Unit::Db => {
@@ -199,6 +207,8 @@ pub struct ModelDef {
     pub face: Face,
     pub knobs: &'static [KnobDef],
     pub make: fn(f32) -> Box<dyn Pedal>,
+    /// It runs a file the user loads (a NAM capture, an IR: `Block::asset`), not a model of ours.
+    pub file: bool,
 }
 
 impl ModelDef {
@@ -232,6 +242,18 @@ impl ModelDef {
 
     pub fn has_back(&self) -> bool {
         self.knobs.iter().any(|k| k.back)
+    }
+
+    /// The family the amp room files it under (its shelf tab, the catalogue's group, its header; P37.6c, D141). The
+    /// same as `kind` but for a boost (a drive pedal to a player, though its DSP and picture are a level stage's) and
+    /// the acoustic simulator (a body EQ, not a filter sweep). `kind` itself never changes: pictures and saved boards
+    /// read it.
+    pub fn family(&self) -> Kind {
+        match self.id {
+            "boost" => Kind::Drive,
+            "acoustic" => Kind::Eq,
+            _ => self.kind,
+        }
     }
 }
 
@@ -362,14 +384,65 @@ const fn diodes(def: f32) -> KnobDef {
     back(choice("diodes", "Diodes", DIODES, def))
 }
 
+/// The bass blends' "Clean low" crossover (`dsp::CLEAN_LOW_HZ`): Off keeps the dry full band (P37.2).
+pub const CLEAN_LOW: &[&str] = &["Off", "80 Hz", "120 Hz", "180 Hz", "250 Hz"];
+/// A delay's Sync: Off (the Time knob) or a note value at the song's tempo (`board::set_tempo`), as quarter notes in
+/// `SYNC_BEATS`.
+pub const SYNC: &[&str] = &["Off", "1/4", "1/8.", "1/8", "1/4T", "1/16", "1/2"];
+pub const SYNC_BEATS: [f32; 7] = [0.0, 1.0, 0.75, 0.5, 2.0 / 3.0, 0.25, 2.0];
+/// The chorus's low cut (bass: the lows stay dry).
+pub const LOW_CUT: &[&str] = &["Off", "80 Hz", "120 Hz", "200 Hz", "300 Hz"];
+pub const LOW_CUT_HZ: [f32; 5] = [0.0, 80.0, 120.0, 200.0, 300.0];
+const ONOFF: &[&str] = &["Off", "On"];
+
+/// The two bass controls every drive and fuzz has (P37.2): how much of the effect, and the lows kept clean.
+const fn blend(def: f32) -> KnobDef {
+    pct("blend", "Blend", def)
+}
+const fn clean_low() -> KnobDef {
+    choice("clean_low", "Clean low", CLEAN_LOW, 0.0)
+}
+
+/// A capture's gain ladder (P37.2): which of the unit's captures plays, by its captured gain (0-10); below 0 the one
+/// the block loaded (`Block::asset`), as boards saved before it do.
+const LADDER: KnobDef = KnobDef {
+    key: "gain",
+    label: "Gain",
+    lo: -1.0,
+    hi: 10.0,
+    def: -1.0,
+    unit: Unit::Dial,
+    log: false,
+    back: false,
+};
+
 const EQ: f32 = 15.0;
 const MICS: &[&str] = &["Dynamic", "Ribbon", "Condenser"];
+/// Named mic voicings (P38.2, D156), after the mics studios put on cabs; "As type" (the default) is the Mic type's
+/// generic voicing, as before. Brand names only in the brands build (D42/D58).
+const MIC_MODELS: &[&str] = if SHOW_BRANDS {
+    &["As type", "SM57", "R-121", "MD 421", "U 87"]
+} else {
+    &["As type", "Dyn 57", "Ribbon 121", "Dyn 421", "LDC 87"]
+};
 const CAB_KNOBS: &[KnobDef] = &[
     dial("mic", "Mic", 4.0),
     dial("distance", "Distance", 2.0),
     choice("mic_type", "Mic type", MICS, 0.0),
     hz("low_cut", "Low cut", 20.0, 300.0, 40.0),
     hz("high_cut", "High cut", 2500.0, 16000.0, 12000.0),
+    choice("mic_model", "Mic model", MIC_MODELS, 0.0),
+];
+/// A bass cab's knobs: the guitar cab's, a horn (tweeter) and the DI blended with the mic (P37.2).
+const BASS_CAB_KNOBS: &[KnobDef] = &[
+    dial("mic", "Mic", 4.0),
+    dial("distance", "Distance", 2.0),
+    choice("mic_type", "Mic type", MICS, 0.0),
+    hz("low_cut", "Low cut", 20.0, 300.0, 40.0),
+    hz("high_cut", "High cut", 2500.0, 16000.0, 12000.0),
+    dial("horn", "Horn", 0.0),
+    pct("di", "DI", 0.0),
+    choice("mic_model", "Mic model", MIC_MODELS, 0.0),
 ];
 
 macro_rules! model {
@@ -385,6 +458,7 @@ macro_rules! model {
             face: Face::$face,
             knobs: $knobs,
             make: $make,
+            file: false,
         }
     };
 }
@@ -462,7 +536,10 @@ pub static MODELS: &[ModelDef] = &[
         Pedal,
         &[
             db("threshold", "Threshold", -80.0, -20.0, -56.0),
-            ms("release", "Release", 10.0, 500.0, 80.0)
+            ms("release", "Release", 10.0, 500.0, 80.0),
+            // (P41.1, D162: how far it turns down; the board's input as its key, so it can sit after the amp)
+            db("range", "Range", -90.0, -6.0, -30.0),
+            back(choice("key", "Key", &["Input", "Here"], 0.0))
         ],
         dynamics::gate
     ),
@@ -478,6 +555,23 @@ pub static MODELS: &[ModelDef] = &[
         &[db("gain", "Gain", 0.0, 20.0, 6.0), dial("bright", "Bright", 5.0)],
         dynamics::boost
     ),
+    model!(
+        "opto_comp",
+        Dynamics,
+        "Glow Opto",
+        "OPTO",
+        "Teletronix LA-2A / Ampeg Opto Comp",
+        "A smooth light-cell compressor: lets go quickly after a note, slowly after a long phrase. Fingerstyle, Motown, dub.",
+        [210, 200, 180],
+        Pedal,
+        &[
+            dial("peak", "Peak reduction", 5.0),
+            dial("gain", "Gain", 5.0),
+            choice("mode", "Mode", &["Compress", "Limit"], 0.0),
+            pct("mix", "Mix", 100.0)
+        ],
+        dynamics::opto
+    ),
     // -- drive
     model!(
         "green",
@@ -492,6 +586,8 @@ pub static MODELS: &[ModelDef] = &[
             dial("drive", "Drive", 5.0),
             dial("tone", "Tone", 5.0),
             dial("level", "Level", 5.0),
+            blend(100.0),
+            clean_low(),
             diodes(0.0)
         ],
         drive::green
@@ -509,6 +605,8 @@ pub static MODELS: &[ModelDef] = &[
             dial("gain", "Gain", 5.0),
             dial("tone", "Tone", 5.0),
             dial("level", "Level", 5.0),
+            blend(100.0),
+            clean_low(),
             diodes(1.0)
         ],
         drive::blues
@@ -526,6 +624,8 @@ pub static MODELS: &[ModelDef] = &[
             dial("gain", "Gain", 4.0),
             dial("treble", "Treble", 5.0),
             dial("output", "Output", 6.0),
+            blend(100.0),
+            clean_low(),
             diodes(3.0)
         ],
         drive::gold
@@ -543,6 +643,8 @@ pub static MODELS: &[ModelDef] = &[
             dial("gain", "Gain", 5.0),
             dial("tone", "Tone", 5.0),
             dial("level", "Level", 5.0),
+            blend(100.0),
+            clean_low(),
             diodes(3.0)
         ],
         drive::germanium
@@ -556,7 +658,12 @@ pub static MODELS: &[ModelDef] = &[
         "Boosts the top end into the amp: the cutting 60s British lead sound.",
         [141, 147, 155],
         Pedal,
-        &[dial("boost", "Boost", 6.0), dial("range", "Range", 5.0)],
+        &[
+            dial("boost", "Boost", 6.0),
+            dial("range", "Range", 5.0),
+            blend(100.0),
+            clean_low()
+        ],
         drive::treble_boost
     ),
     model!(
@@ -572,6 +679,8 @@ pub static MODELS: &[ModelDef] = &[
             dial("dist", "Dist", 6.0),
             dial("tone", "Tone", 5.0),
             dial("level", "Level", 5.0),
+            blend(100.0),
+            clean_low(),
             diodes(0.0)
         ],
         drive::orange
@@ -589,6 +698,8 @@ pub static MODELS: &[ModelDef] = &[
             dial("distortion", "Distortion", 6.0),
             dial("filter", "Filter", 4.0),
             dial("volume", "Volume", 5.0),
+            blend(100.0),
+            clean_low(),
             diodes(0.0)
         ],
         drive::rodent
@@ -607,7 +718,11 @@ pub static MODELS: &[ModelDef] = &[
             db("low", "Low", -12.0, 12.0, 3.0),
             db("mid", "Mid", -12.0, 12.0, -4.0),
             db("high", "High", -12.0, 12.0, 2.0),
-            dial("level", "Level", 5.0)
+            dial("level", "Level", 5.0),
+            blend(100.0),
+            clean_low(),
+            // (P37.6c: the real one's mid frequency; 900 Hz is where its Mid always sat)
+            hz("mid_freq", "Mid freq", 200.0, 5000.0, 900.0)
         ],
         drive::metal
     ),
@@ -624,9 +739,35 @@ pub static MODELS: &[ModelDef] = &[
             dial("gain", "Gain", 4.0),
             pct("blend", "Blend", 60.0),
             dial("tone", "Tone", 5.0),
-            dial("level", "Level", 5.0)
+            dial("level", "Level", 5.0),
+            clean_low()
         ],
         drive::bass_drive
+    ),
+    model!(
+        "bass_grind",
+        Drive,
+        "Glass Grinder",
+        "GRND",
+        "Darkglass Microtubes B7K",
+        "Modern bass grind blended with the clean bass, a 4-band EQ and Grunt and Attack switches: metal, rock.",
+        [52, 54, 58],
+        Pedal,
+        &[
+            dial("drive", "Drive", 5.0),
+            pct("blend", "Blend", 50.0),
+            dial("level", "Level", 5.0),
+            db("bass", "Bass", -12.0, 12.0, 0.0),
+            db("lo_mid", "Lo-mid", -12.0, 12.0, 0.0),
+            db("hi_mid", "Hi-mid", -12.0, 12.0, 0.0),
+            db("treble", "Treble", -12.0, 12.0, 0.0),
+            choice("grunt", "Grunt", &["Fat", "Flat", "Raw"], 1.0),
+            choice("attack", "Attack", &["Cut", "Flat", "Boost"], 1.0),
+            choice("lo_freq", "Lo-mid freq", &["250 Hz", "500 Hz", "1 kHz"], 1.0),
+            choice("hi_freq", "Hi-mid freq", &["750 Hz", "1.5 kHz", "3 kHz"], 1.0),
+            clean_low()
+        ],
+        drive::bass_grind
     ),
     // -- fuzz
     model!(
@@ -638,7 +779,12 @@ pub static MODELS: &[ModelDef] = &[
         "Thick, woolly fuzz that cleans up when you turn the guitar down: Hendrix, Gilmour.",
         [196, 48, 60],
         Pedal,
-        &[dial("fuzz", "Fuzz", 8.0), dial("volume", "Volume", 5.0)],
+        &[
+            dial("fuzz", "Fuzz", 8.0),
+            dial("volume", "Volume", 5.0),
+            blend(100.0),
+            clean_low()
+        ],
         drive::round_fuzz
     ),
     model!(
@@ -653,7 +799,9 @@ pub static MODELS: &[ModelDef] = &[
         &[
             dial("sustain", "Sustain", 7.0),
             dial("tone", "Tone", 5.0),
-            dial("volume", "Volume", 5.0)
+            dial("volume", "Volume", 5.0),
+            blend(100.0),
+            clean_low()
         ],
         drive::big_pi
     ),
@@ -666,7 +814,12 @@ pub static MODELS: &[ModelDef] = &[
         "Raspy, mid-heavy three-transistor fuzz: 60s British rock.",
         [107, 112, 120],
         Pedal,
-        &[dial("attack", "Attack", 7.0), dial("level", "Level", 5.0)],
+        &[
+            dial("attack", "Attack", 7.0),
+            dial("level", "Level", 5.0),
+            blend(100.0),
+            clean_low()
+        ],
         drive::bender
     ),
     model!(
@@ -678,8 +831,32 @@ pub static MODELS: &[ModelDef] = &[
         "Rectified fuzz that adds an octave up: best on the neck pickup above the 12th fret.",
         [108, 62, 166],
         Pedal,
-        &[dial("fuzz", "Fuzz", 7.0), dial("volume", "Volume", 5.0)],
+        &[
+            dial("fuzz", "Fuzz", 7.0),
+            dial("volume", "Volume", 5.0),
+            blend(100.0),
+            clean_low()
+        ],
         drive::octave_fuzz
+    ),
+    model!(
+        "bass_muff",
+        Fuzz,
+        "Low Wool",
+        "BMUF",
+        "Electro-Harmonix Bass Big Muff Pi",
+        "The Big Muff for bass: the same wall of fuzz with the lows kept, a Bass Boost and the clean bass blended in.",
+        [36, 38, 44],
+        Pedal,
+        &[
+            dial("sustain", "Sustain", 6.0),
+            dial("tone", "Tone", 5.0),
+            dial("volume", "Volume", 5.0),
+            pct("blend", "Blend", 70.0),
+            choice("bass_boost", "Bass boost", ONOFF, 1.0),
+            clean_low()
+        ],
+        drive::bass_muff
     ),
     // -- amps
     model!(
@@ -693,11 +870,17 @@ pub static MODELS: &[ModelDef] = &[
         Amp,
         amp_knobs!(
             [
-                dial("gain", "Gain", 4.0),
-                dial("bass", "Bass", 5.0),
-                dial("mid", "Mid", 5.0),
-                dial("treble", "Treble", 6.0),
+                // (P41.2, D169: in the real panel's order, Bright and Volume to Intensity; the gain knob is the
+                // amp's Volume, its key still "gain" so saved boards and song tones load as before)
                 choice("bright", "Bright", &["Off", "On"], 0.0),
+                dial("gain", "Volume", 4.0),
+                dial("treble", "Treble", 6.0),
+                dial("mid", "Middle", 5.0),
+                dial("bass", "Bass", 5.0),
+                // (P37.6c: the real one's reverb and vibrato channel; off by default, so old boards sound the same)
+                dial("reverb", "Reverb", 0.0),
+                dial("speed", "Speed", 5.0),
+                dial("intensity", "Intensity", 0.0),
                 dial("master", "Master", 5.0)
             ],
             2.5,
@@ -804,7 +987,7 @@ pub static MODELS: &[ModelDef] = &[
         "Petaluma Plate",
         "AMP",
         "Mesa/Boogie Dual Rectifier",
-        "Saturated, tight modern metal with a deep low end: Metallica to Mastodon.",
+        "Saturated modern metal with a big, loose low end: Metallica to Mastodon. Turned down, a gritty crunch.",
         [174, 179, 186],
         Amp,
         amp_knobs!(
@@ -815,7 +998,9 @@ pub static MODELS: &[ModelDef] = &[
                 dial("treble", "Treble", 6.0),
                 dial("presence", "Presence", 5.0),
                 dial("depth", "Depth", 5.0),
-                dial("master", "Master", 5.0)
+                dial("master", "Master", 5.0),
+                // (P37.6c: the channel's Raw / Vintage / Modern switch; Modern is the voicing it always had)
+                choice("mode", "Mode", &["Raw", "Vintage", "Modern"], 2.0)
             ],
             6.0,
             1.0,
@@ -839,13 +1024,189 @@ pub static MODELS: &[ModelDef] = &[
                 dial("mid", "Mid", 5.0),
                 hz("freq", "Freq", 200.0, 3000.0, 800.0),
                 dial("treble", "Treble", 5.0),
-                dial("master", "Master", 5.0)
+                dial("master", "Master", 5.0),
+                choice("ultra_lo", "Ultra Lo", ONOFF, 0.0),
+                choice("ultra_hi", "Ultra Hi", ONOFF, 0.0)
             ],
             3.5,
             2.0,
             1.0
         ),
         amp::bass
+    ),
+    model!(
+        "amp_b15",
+        Amp,
+        "Portable 15",
+        "B15",
+        "Ampeg B-15 Portaflex",
+        "The Motown bass amp: a small tube head, round and warm, breaking up softly when you dig in.",
+        [40, 44, 58],
+        Amp,
+        amp_knobs!(
+            [
+                dial("volume", "Volume", 4.0),
+                dial("bass", "Bass", 6.0),
+                dial("treble", "Treble", 4.0),
+                choice("input", "Input", &["Lo", "Hi"], 1.0),
+                dial("master", "Master", 5.0)
+            ],
+            6.0,
+            4.0,
+            0.0
+        ),
+        amp::b15
+    ),
+    model!(
+        "amp_bass_ss",
+        Amp,
+        "Silicon 800",
+        "SS",
+        "Gallien-Krueger 800RB",
+        "A solid-state bass head: clean headroom, an active EQ with a sweepable mid, a Contour scoop for slap.",
+        [30, 30, 32],
+        Amp,
+        amp_knobs!(
+            [
+                dial("gain", "Gain", 3.0),
+                db("bass", "Bass", -15.0, 15.0, 0.0),
+                db("mid", "Mid", -15.0, 15.0, 0.0),
+                hz("freq", "Freq", 100.0, 4000.0, 500.0),
+                db("treble", "Treble", -15.0, 15.0, 0.0),
+                choice("contour", "Contour", ONOFF, 0.0),
+                dial("master", "Master", 5.0)
+            ],
+            1.0,
+            1.0,
+            1.0
+        ),
+        amp::bass_ss
+    ),
+    model!(
+        "amp_bass_tube",
+        Amp,
+        "Citrus 200",
+        "TUBE",
+        "Orange AD200B",
+        "A big all-tube bass head: thick low mids and a gritty growl when it's turned up.",
+        [232, 118, 30],
+        Amp,
+        amp_knobs!(
+            [
+                dial("gain", "Gain", 5.0),
+                dial("bass", "Bass", 6.0),
+                dial("mid", "Mid", 6.0),
+                dial("treble", "Treble", 5.0),
+                dial("master", "Master", 5.0)
+            ],
+            5.0,
+            0.0,
+            1.0
+        ),
+        amp::bass_tube
+    ),
+    // (P41.2, D167: four more guitar voices, after the reviews' "a Mark IIC+, a Laney, a Soldano and a JVM all come
+    // out as the same JCM800")
+    model!(
+        "amp_cali",
+        Amp,
+        "Lagunitas C+",
+        "AMP",
+        "Mesa/Boogie Mark IIC+",
+        "Tight, focused, mid-heavy lead with a five-band graphic EQ: thrash rhythm, singing fusion leads.",
+        [30, 30, 30],
+        Amp,
+        amp_knobs!(
+            [
+                dial("gain", "Drive", 7.0),
+                dial("treble", "Treble", 7.0),
+                dial("bass", "Bass", 3.0),
+                dial("mid", "Middle", 5.0),
+                dial("master", "Master", 5.0),
+                dial("presence", "Presence", 5.0),
+                db("eq80", "80", -12.0, 12.0, 3.0),
+                db("eq240", "240", -12.0, 12.0, 0.0),
+                db("eq750", "750", -12.0, 12.0, -3.0),
+                db("eq2200", "2200", -12.0, 12.0, 0.0),
+                db("eq6600", "6600", -12.0, 12.0, 2.0)
+            ],
+            3.0,
+            1.0,
+            1.0
+        ),
+        amp::cali
+    ),
+    model!(
+        "amp_snake",
+        Amp,
+        "Snakeskin 100",
+        "AMP",
+        "Soldano SLO-100",
+        "A hot-rodded lead head: smooth, thick saturation that sings, tighter and darker than a stock British head.",
+        [24, 24, 26],
+        Amp,
+        amp_knobs!(
+            [
+                dial("gain", "Gain", 7.0),
+                dial("bass", "Bass", 5.0),
+                dial("mid", "Middle", 6.0),
+                dial("treble", "Treble", 6.0),
+                dial("master", "Master", 5.0),
+                dial("presence", "Presence", 5.0)
+            ],
+            4.0,
+            1.0,
+            1.0
+        ),
+        amp::snake
+    ),
+    model!(
+        "amp_tangerine",
+        Amp,
+        "Tangerine 50",
+        "AMP",
+        "Orange Rockerverb 50",
+        "Thick, furry British crunch with fat low mids: stoner rock, indie, Britpop.",
+        [232, 118, 30],
+        Amp,
+        amp_knobs!(
+            [
+                dial("master", "Volume", 5.0),
+                dial("treble", "Treble", 5.0),
+                dial("mid", "Middle", 6.0),
+                dial("bass", "Bass", 6.0),
+                dial("gain", "Gain", 6.0)
+            ],
+            4.5,
+            0.0,
+            1.0
+        ),
+        amp::tangerine
+    ),
+    model!(
+        "amp_surrey",
+        Amp,
+        "Surrey 103",
+        "AMP",
+        "Hiwatt DR103 Custom 100",
+        "Huge, clean and loud with firm lows and even mids; breaks up late into a punchy roar: Townshend, Gilmour.",
+        [28, 28, 30],
+        Amp,
+        amp_knobs!(
+            [
+                dial("gain", "Normal", 5.0),
+                dial("brilliant", "Brilliant", 3.0),
+                dial("bass", "Bass", 5.0),
+                dial("treble", "Treble", 6.0),
+                dial("mid", "Middle", 6.0),
+                dial("presence", "Presence", 4.0),
+                dial("master", "Master", 5.0)
+            ],
+            2.0,
+            0.0,
+            1.0
+        ),
+        amp::surrey
     ),
     // -- cabs
     model!(
@@ -905,7 +1266,7 @@ pub static MODELS: &[ModelDef] = &[
         "The fridge: deep, punchy bass with a growly upper mid.",
         [43, 45, 49],
         Cab,
-        CAB_KNOBS,
+        BASS_CAB_KNOBS,
         cab::c8x10
     ),
     model!(
@@ -917,8 +1278,57 @@ pub static MODELS: &[ModelDef] = &[
         "Round, warm, old-school bass with little top.",
         [43, 45, 49],
         Cab,
-        CAB_KNOBS,
+        BASS_CAB_KNOBS,
         cab::c1x15
+    ),
+    model!(
+        "cab_4x10",
+        Cab,
+        "Punch 410",
+        "4x10",
+        "Eden D410XST / Ampeg 410HLF",
+        "Tight, punchy bass with a bright upper mid: slap, funk, modern rock.",
+        [40, 40, 42],
+        Cab,
+        BASS_CAB_KNOBS,
+        cab::c4x10
+    ),
+    model!(
+        "cab_2x10",
+        Cab,
+        "Compact 210",
+        "2x10",
+        "a ported 2x10 bass cab",
+        "A small, quick bass cab: less low end, a clear mid.",
+        [48, 48, 50],
+        Cab,
+        BASS_CAB_KNOBS,
+        cab::c2x10
+    ),
+    model!(
+        "cab_4x15",
+        Cab,
+        "Big Box 415",
+        "4x15",
+        "a vintage 4x15 bass cab",
+        "Huge, deep and dark: dub, doom, old-school lows.",
+        [34, 34, 36],
+        Cab,
+        BASS_CAB_KNOBS,
+        cab::c4x15
+    ),
+    // (P41.2, D167: the guitar 4x10, for RS's TW-410C and BT-410C)
+    model!(
+        "cab_4x10_open",
+        Cab,
+        "Tweed 410",
+        "4x10",
+        "Fender Bassman / Super Reverb 4x10",
+        "Four open-backed tens: quick, bright and punchy, airy lows: Texas blues, tweed rock and roll.",
+        [199, 164, 106],
+        Cab,
+        CAB_KNOBS,
+        cab::c4x10_open
     ),
     // -- EQ
     model!(
@@ -1037,7 +1447,11 @@ pub static MODELS: &[ModelDef] = &[
             dial("res", "Res", 6.0),
             dial("attack", "Attack", 3.0),
             dial("release", "Release", 4.0),
-            choice("mode", "Mode", &["Low-pass", "Band-pass"], 1.0)
+            choice("mode", "Mode", &["Low-pass", "Band-pass"], 1.0),
+            choice("range", "Range", &["Hi", "Lo"], 0.0),
+            choice("direction", "Direction", &["Up", "Down"], 0.0),
+            pct("mix", "Mix", 100.0),
+            db("boost", "Boost", 0.0, 12.0, 0.0)
         ],
         filter::envelope
     ),
@@ -1086,7 +1500,8 @@ pub static MODELS: &[ModelDef] = &[
         &[
             dial("rate", "Rate", 3.0),
             dial("depth", "Depth", 6.0),
-            pct("mix", "Mix", 50.0)
+            pct("mix", "Mix", 50.0),
+            choice("low_cut", "Low cut", LOW_CUT, 0.0)
         ],
         modfx::chorus
     ),
@@ -1103,7 +1518,18 @@ pub static MODELS: &[ModelDef] = &[
             dial("rate", "Rate", 3.0),
             dial("depth", "Depth", 6.0),
             dial("regen", "Regen", 5.0),
-            pct("mix", "Mix", 50.0)
+            pct("mix", "Mix", 50.0),
+            // (P37.6c: the real one's Manual, the sweep's centre; 0.25 ms is where it always sat)
+            KnobDef {
+                key: "manual",
+                label: "Manual",
+                lo: 0.1,
+                hi: 4.0,
+                def: 0.25,
+                unit: Unit::Ms,
+                log: true,
+                back: false,
+            }
         ],
         modfx::flanger
     ),
@@ -1184,7 +1610,8 @@ pub static MODELS: &[ModelDef] = &[
         &[
             dial("sub", "Sub", 6.0),
             dial("up", "Up", 0.0),
-            dial("dry", "Dry", 7.0)
+            dial("dry", "Dry", 7.0),
+            dial("sub2", "Sub 2", 0.0)
         ],
         modfx::octaver
     ),
@@ -1202,7 +1629,8 @@ pub static MODELS: &[ModelDef] = &[
             ms("time", "Time", 20.0, 600.0, 350.0),
             dial("repeats", "Repeats", 4.0),
             pct("mix", "Mix", 30.0),
-            dial("mod", "Mod", 3.0)
+            dial("mod", "Mod", 3.0),
+            choice("sync", "Sync", SYNC, 0.0)
         ],
         delay::analog
     ),
@@ -1220,7 +1648,8 @@ pub static MODELS: &[ModelDef] = &[
             dial("repeats", "Repeats", 4.0),
             pct("mix", "Mix", 35.0),
             dial("wow", "Wow", 3.0),
-            choice("heads", "Heads", HEADS, 0.0)
+            choice("heads", "Heads", HEADS, 0.0),
+            choice("sync", "Sync", SYNC, 0.0)
         ],
         delay::tape
     ),
@@ -1237,7 +1666,8 @@ pub static MODELS: &[ModelDef] = &[
             ms("time", "Time", 20.0, 1000.0, 380.0),
             dial("repeats", "Repeats", 4.0),
             pct("mix", "Mix", 30.0),
-            dial("tone", "Tone", 7.0)
+            dial("tone", "Tone", 7.0),
+            choice("sync", "Sync", SYNC, 0.0)
         ],
         delay::digital
     ),
@@ -1255,7 +1685,8 @@ pub static MODELS: &[ModelDef] = &[
             dial("repeats", "Repeats", 4.0),
             pct("mix", "Mix", 30.0),
             dial("rate", "Rate", 3.0),
-            dial("depth", "Depth", 4.0)
+            dial("depth", "Depth", 4.0),
+            choice("sync", "Sync", SYNC, 0.0)
         ],
         delay::modulated
     ),
@@ -1326,6 +1757,67 @@ pub static MODELS: &[ModelDef] = &[
         ],
         reverb::hall
     ),
+    // a NAM capture and an IR: the files the user loads (P31, D80; `nam`)
+    ModelDef {
+        id: "amp_nam",
+        kind: Kind::Amp,
+        name: "NAM capture",
+        short: "NAM",
+        after: "a Neural Amp Modeler capture you load",
+        blurb: "A real amp (or pedal, or whole rig) captured with Neural Amp Modeler: load a .nam file or pick one on                 TONE3000.",
+        colour: [52, 58, 66],
+        face: Face::Rack,
+        knobs: &[
+            db("input", "Input", -18.0, 18.0, 0.0),
+            db("output", "Output", -18.0, 18.0, 0.0),
+            // (P37.2) a post-capture EQ: 0 dB is the capture as made
+            db("bass", "Bass", -12.0, 12.0, 0.0),
+            db("mid", "Mid", -12.0, 12.0, 0.0),
+            db("treble", "Treble", -12.0, 12.0, 0.0),
+            db("gate", "Gate", -90.0, -30.0, -90.0),
+            LADDER,
+        ],
+        make: nam::amp_nam,
+        file: true,
+    },
+    ModelDef {
+        id: "pedal_nam",
+        kind: Kind::Drive,
+        name: "NAM pedal",
+        short: "NAM",
+        after: "a Neural Amp Modeler capture of a pedal you load",
+        blurb: "A real drive or boost pedal captured with Neural Amp Modeler, in front of the amp: load a .nam file or \
+                pick one on TONE3000.",
+        colour: [64, 92, 70],
+        face: Face::Pedal,
+        knobs: &[
+            db("input", "Input", -18.0, 18.0, 0.0),
+            db("output", "Output", -18.0, 18.0, 0.0),
+            blend(100.0),
+            clean_low(),
+            LADDER,
+        ],
+        make: nam::pedal_nam,
+        file: true,
+    },
+    ModelDef {
+        id: "cab_ir",
+        kind: Kind::Cab,
+        name: "IR cab",
+        short: "IR",
+        after: "a speaker cab's impulse response you load",
+        blurb: "A real speaker cab and mic as an impulse response (a .wav): for captures of an amp without its cab.",
+        colour: [72, 66, 58],
+        face: Face::Rack,
+        knobs: &[
+            db("level", "Level", -18.0, 12.0, 0.0),
+            hz("low_cut", "Low cut", 20.0, 300.0, 60.0),
+            hz("high_cut", "High cut", 2500.0, 20000.0, 12000.0),
+            pct("di", "DI", 0.0),
+        ],
+        make: nam::cab_ir,
+        file: true,
+    },
 ];
 
 /// The model with this id.
@@ -1356,6 +1848,15 @@ pub fn brand(id: &str) -> &'static str {
         "rodent" => "ProCo RAT",
         "metal" => "Boss MT-2",
         "bass_drive" => "SansAmp Bass Driver",
+        "bass_grind" => "Darkglass B7K",
+        "bass_muff" => "Bass Big Muff",
+        "amp_b15" => "Ampeg B-15",
+        "amp_bass_ss" => "Gallien-Krueger 800RB",
+        "amp_bass_tube" => "Orange AD200B",
+        "cab_4x10" => "Eden D410XST",
+        "cab_2x10" => "bass 2x10",
+        "cab_4x15" => "vintage 4x15",
+        "opto_comp" => "Teletronix LA-2A",
         "round_fuzz" => "Fuzz Face",
         "big_pi" => "Big Muff Pi",
         "bender" => "Tone Bender MkII",
@@ -1367,6 +1868,11 @@ pub fn brand(id: &str) -> &'static str {
         "amp_lead" => "Marshall JCM800",
         "amp_modern" => "Mesa Dual Rectifier",
         "amp_bass" => "Ampeg SVT",
+        "amp_cali" => "Mesa/Boogie Mark IIC+",
+        "amp_snake" => "Soldano SLO-100",
+        "amp_tangerine" => "Orange Rockerverb",
+        "amp_surrey" => "Hiwatt DR103",
+        "cab_4x10_open" => "Fender Bassman 4x10",
         "cab_1x10" => "Fender Princeton 1x10",
         "cab_1x12" => "Fender Deluxe 1x12",
         "cab_2x12" => "Twin / AC30 2x12",
@@ -1411,8 +1917,51 @@ impl ModelDef {
     }
 }
 
+/// Our models of a kind (not the file models, `files`).
 pub fn of_kind(kind: Kind) -> impl Iterator<Item = (usize, &'static ModelDef)> {
-    MODELS.iter().enumerate().filter(move |(_, m)| m.kind == kind)
+    MODELS
+        .iter()
+        .enumerate()
+        .filter(move |(_, m)| m.kind == kind && !m.file)
+}
+
+/// The models that run a file the user loads (a NAM capture, an IR cab).
+pub fn files() -> impl Iterator<Item = (usize, &'static ModelDef)> {
+    MODELS.iter().enumerate().filter(|(_, m)| m.file)
+}
+
+/// Controls of ours the real unit doesn't have (P37.6c, D140): marked "added" wherever they're shown. A drive's
+/// Blend and Clean low are added on every model but the two bass preamps that have a real blend.
+const ADDED: &[(&str, &[&str])] = &[
+    ("amp_clean", &["master"]),
+    ("amp_tweed", &["master"]),
+    ("amp_crunch", &["master"]),
+    ("amp_b15", &["master"]),
+    ("amp_modern", &["depth"]),
+    ("treble_boost", &["range"]),
+    ("squeeze", &["attack"]),
+    ("phaser", &["depth", "mix"]),
+];
+
+/// Whether knob `key` of model `id` is one of ours the real unit doesn't have.
+pub fn is_added(id: &str, key: &str) -> bool {
+    if key == "clean_low" || (key == "blend" && !matches!(id, "bass_drive" | "bass_grind")) {
+        return MODELS.iter().any(|m| m.id == id && m.kind != Kind::Dynamics);
+    }
+    ADDED.iter().any(|(m, ks)| *m == id && ks.contains(&key))
+}
+
+/// Our models the room files under a family (`ModelDef::family`), in the catalogue's order.
+pub fn of_family(kind: Kind) -> impl Iterator<Item = (usize, &'static ModelDef)> {
+    MODELS
+        .iter()
+        .enumerate()
+        .filter(move |(_, m)| m.family() == kind && !m.file)
+}
+
+/// Our own models (not counting the file models).
+pub fn ours() -> usize {
+    MODELS.iter().filter(|m| !m.file).count()
 }
 
 #[cfg(test)]
@@ -1421,9 +1970,10 @@ mod tests {
 
     #[test]
     fn the_catalogue_is_sound() {
-        assert_eq!(MODELS.len(), 54);
+        assert_eq!(ours(), 68);
+        assert_eq!(files().count(), 3);
         let mut ids = std::collections::HashSet::new();
-        for m in MODELS {
+        for m in MODELS.iter().filter(|m| !m.file) {
             assert!(ids.insert(m.id), "duplicate id {}", m.id);
             assert!(m.knobs.len() <= MAX_KNOBS, "{} has too many knobs", m.id);
             assert!(m.short.len() <= 4, "{}'s short name", m.id);

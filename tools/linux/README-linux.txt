@@ -4,7 +4,7 @@ quickRS for Linux: early test build
 You need: a 64-bit PC with a reasonably current distro (Ubuntu 22.04 or newer, Mint 21+, Debian 12+, Fedora 36+,
 current Arch, and their relatives); a normal desktop (GNOME, KDE, Cinnamon, Xfce...) with PipeWire or
 PulseAudio, which nearly every distro has; your guitar on an audio interface (or a Real Tone Cable, or a
-microphone); and your own Rocksmith 2014 songs. quickRS comes with no songs and no Rocksmith keys.
+microphone); and your own RS2014 songs. quickRS comes with no songs and no RS keys.
 
 
 1. Run it
@@ -27,27 +27,27 @@ The same file also holds quickRS's two helpers:
     ./quickRS-*.AppImage cli devices    what audio devices quickRS sees, and what it picks (useful in a report)
 
 
-2. Your songs (from Rocksmith on Windows)
+2. Your songs (from RS on Windows)
 -----------------------------------------
-quickRS plays Rocksmith's .psarc files (and feedpaks) straight from a folder. On Windows they are in
+quickRS plays RS's .psarc files (and feedpaks) straight from a folder. On Windows they are in
     C:\Program Files (x86)\Steam\steamapps\common\Rocksmith2014\dlc
 (songs.psarc next to it, in the Rocksmith2014 folder, holds the on-disc songs). Copy the dlc folder to your Linux
-home, for example ~/Rocksmith/dlc. A Windows drive that Linux can see works too: point quickRS at it there.
+home, for example ~/RS/dlc. A Windows drive that Linux can see works too: point quickRS at it there.
 
-With Steam on Linux and Rocksmith installed through it (Proton), quickRS finds the dlc folder by itself.
+With Steam on Linux and RS installed through it (Proton), quickRS finds the dlc folder by itself.
 
 Then in quickRS: the welcome's "Pick a folder..." or Settings (F2) > Directories > "Add folder...". If no folder
 dialog appears (some minimal desktops have no file-picker service), quickRS says so: drag the folder from your
 file manager onto quickRS's window instead, or install xdg-desktop-portal-gtk (or xdg-desktop-portal-kde on KDE).
 
 
-3. Rocksmith's keys (only for .psarc files)
+3. RS's keys (only for .psarc files)
 -------------------------------------------
 .psarc files are encrypted. quickRS needs the "PSARC key" and the "SNG key for PC": each is 64 characters of 0-9
-and A-F, the same in every copy of Rocksmith; they are not a licence key. quickRS can't include them; they're
-published in open-source Rocksmith modding tools.
+and A-F, the same in every copy of RS; they are not a licence key. quickRS can't include them; they're
+published in open-source RS modding tools.
 
-  1. Settings (F2) > Directories, scroll down to ROCKSMITH KEYS.
+  1. Settings (F2) > Directories, scroll down to RS KEYS.
   2. Paste the PSARC key and the SNG key (or a whole keys.json text into either box), press "Save keys".
 
 Or convert your songs once to feedpaks (the converter, section 1), which play without keys.

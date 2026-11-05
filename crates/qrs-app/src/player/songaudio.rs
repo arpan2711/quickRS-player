@@ -220,6 +220,18 @@ impl PlayerView {
                         m.solo = !m.solo;
                         format!("{name} solo {}", if m.solo { "on" } else { "off" })
                     }
+                    "set" => {
+                        // the controls' level slider: stem:set:<i>:<gain>
+                        let Some(g) = it.next().and_then(|s| s.parse::<f32>().ok()) else {
+                            return;
+                        };
+                        let g = (g * 10.0).round().clamp(0.0, MAX_GAIN * 10.0) / 10.0;
+                        if (g - m.gain).abs() < 1e-4 {
+                            return;
+                        }
+                        m.gain = g;
+                        format!("{name} {}%", (m.gain * 100.0).round() as i64)
+                    }
                     "up" | "down" => {
                         let d = if kind == "up" { GAIN_STEP } else { -GAIN_STEP };
                         m.gain = ((m.gain + d) * 10.0).round().clamp(0.0, MAX_GAIN * 10.0) / 10.0;

@@ -1,8 +1,9 @@
 //! The first-time setup (P23.14, owner request; new code, no Python source): one flow over the app the first time
 //! it runs, replacing the getting-started welcome (P20.2) and the guitar setup's fading first-run card (P23.8).
-//! Its pages, in order: the look (the theme), your guitar (the guided guitar setup of `settings/guide.rs`, run
-//! inside this flow), low latency (Windows only: WASAPI exclusive), the note widget, the folders (keys, songs,
-//! recordings) and a summary. This module is what it decides: the pages and how Back / Next / Skip move through
+//! Its pages, in order: the look (the theme), low latency (Windows only: WASAPI exclusive; before the guitar since
+//! P36.6, so its timing is measured on the output it will play on), your guitar (the guided guitar setup of
+//! `settings/guide.rs`, run inside this flow), Use NAM? (NAM builds only, P36.7), the note widget, the folders
+//! (keys, songs, recordings) and a summary. This module is what it decides: the pages and how Back / Next / Skip move through
 //! them, when it opens by itself, where its choices are saved, and its pictures; `settings/setup.rs` draws it.
 //!
 //! config.json `first_setup`: "done" (Finish) or "skipped" (closed before the end). Either stops it opening by
@@ -29,18 +30,21 @@ pub const KEY: &str = "first_setup";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Page {
     Look,
-    Guitar,
     Latency,
+    Guitar,
+    /// Use NAM? (P36.7, D96): captures of real gear through your own TONE3000 account, or our models.
+    Nam,
     Widget,
     Folders,
     Done,
 }
 
 impl Page {
-    pub const ALL: [Page; 6] = [
+    pub const ALL: [Page; 7] = [
         Page::Look,
-        Page::Guitar,
         Page::Latency,
+        Page::Guitar,
+        Page::Nam,
         Page::Widget,
         Page::Folders,
         Page::Done,
@@ -51,6 +55,7 @@ impl Page {
             Page::Look => "look",
             Page::Guitar => "guitar",
             Page::Latency => "latency",
+            Page::Nam => "nam",
             Page::Widget => "widget",
             Page::Folders => "folders",
             Page::Done => "done",
@@ -65,8 +70,9 @@ impl Page {
     pub fn short(self) -> &'static str {
         match self {
             Page::Look => "Look",
-            Page::Guitar => "Your guitar",
+            Page::Guitar => "Instrument",
             Page::Latency => "Low latency",
+            Page::Nam => "NAM",
             Page::Widget => "Note widget",
             Page::Folders => "Folders",
             Page::Done => "Done",
@@ -77,11 +83,29 @@ impl Page {
     pub fn title(self) -> &'static str {
         match self {
             Page::Look => "Pick a look",
-            Page::Guitar => "Your guitar",
+            Page::Guitar => "Your instrument",
             Page::Latency => "Low-latency output",
+            Page::Nam => "Real-gear captures?",
             Page::Widget => "The note widget",
             Page::Folders => "Keys and folders",
             Page::Done => "You're set",
+        }
+    }
+
+    /// Its name in the step indicator for what you play (P37.6a): "Your bass" once Bass is picked, else
+    /// "Instrument" (a guitar is the default, not a choice made yet; "Your instrument" didn't fit the step).
+    pub fn short_for(self, inst: qrs_analysis::instrument::Instrument) -> &'static str {
+        match self {
+            Page::Guitar if inst.is_bass() => "Your bass",
+            _ => self.short(),
+        }
+    }
+
+    /// Its heading for what you play (as `short_for`).
+    pub fn title_for(self, inst: qrs_analysis::instrument::Instrument) -> &'static str {
+        match self {
+            Page::Guitar if inst.is_bass() => "Your bass",
+            _ => self.title(),
         }
     }
 
@@ -89,8 +113,11 @@ impl Page {
     pub fn settings_section(self) -> Option<&'static str> {
         match self {
             Page::Look => Some("Display"),
-            Page::Guitar | Page::Latency | Page::Widget => Some("Audio input / output"),
-            Page::Folders => Some("Directories"),
+            Page::Guitar => Some("Sound"),
+            Page::Latency => Some("Timing"),
+            Page::Nam => Some("Neural Amp Modeler"),
+            Page::Widget => Some("Display"),
+            Page::Folders => Some("Library"),
             Page::Done => None,
         }
     }
@@ -99,20 +126,28 @@ impl Page {
     pub fn later(self) -> String {
         match self.settings_section() {
             Some(s) => format!("You can change this any time in Settings > {s}."),
-            None => "You can run this again from the top of Settings.".into(),
+            None => "You can run this again from Settings > About.".into(),
         }
     }
 }
 
 /// The pages this computer shows: low latency is WASAPI exclusive mode, Windows only (a Mac's Core Audio is
-/// already direct, so there's nothing to choose there).
+/// already direct, so there's nothing to choose there); Use NAM? only in a build with NAM.
 pub fn pages() -> &'static [Page] {
-    pages_for(cfg!(windows))
+    pages_for(cfg!(windows), crate::captures::ON)
 }
 
-pub fn pages_for(windows: bool) -> &'static [Page] {
-    const MAC: [Page; 5] = [Page::Look, Page::Guitar, Page::Widget, Page::Folders, Page::Done];
-    if windows { &Page::ALL } else { &MAC }
+pub fn pages_for(windows: bool, nam: bool) -> &'static [Page] {
+    use Page::*;
+    const NO_NAM: [Page; 6] = [Look, Latency, Guitar, Widget, Folders, Done];
+    const MAC: [Page; 6] = [Look, Guitar, Nam, Widget, Folders, Done];
+    const MAC_NO_NAM: [Page; 5] = [Look, Guitar, Widget, Folders, Done];
+    match (windows, nam) {
+        (true, true) => &Page::ALL,
+        (true, false) => &NO_NAM,
+        (false, true) => &MAC,
+        (false, false) => &MAC_NO_NAM,
+    }
 }
 
 /// Where the setup is, and how each page was left.
@@ -273,6 +308,23 @@ pub fn note_widget(cfg: &Config) -> bool {
 
 pub use qrs_library::config::default_songs_dir;
 
+/// Use NAM? (P36.7): config.json `nam_setup` ("yes" / "no"), and `nam_songs` to match (songs open on captures, or
+/// on our models; D82's switch).
+pub fn set_nam(cfg: &mut Config, on: bool) {
+    cfg.set("nam_setup", if on { "yes" } else { "no" });
+    cfg.set("nam_songs", on);
+    crate::captures::set_songs_use_nam(on);
+}
+
+/// What was answered (None: not asked yet).
+pub fn nam_choice(cfg: &Config) -> Option<bool> {
+    match cfg.get("nam_setup").and_then(Value::as_str) {
+        Some("yes") => Some(true),
+        Some("no") => Some(false),
+        _ => None,
+    }
+}
+
 // -- the pictures ------------------------------------------------------------------------------------------------
 
 /// The pictures beside the pages: crops of the app's own screenshots (`tools/setup-shots.py` makes them from the
@@ -307,6 +359,7 @@ impl Pic {
             Page::Look => None,
             Page::Guitar => Some(Pic::Guitar),
             Page::Latency => Some(Pic::Latency),
+            Page::Nam => None,
             Page::Widget => Some(Pic::Widget),
             Page::Folders => Some(Pic::Folders),
             Page::Done => Some(Pic::Room),
@@ -340,6 +393,20 @@ pub fn picture(ctx: &egui::Context, pic: Pic) -> Option<(TextureId, [usize; 2])>
 
 #[cfg(test)]
 mod tests {
+    /// P37.6a: the step is "Instrument" ("Your instrument" over it) until Bass is picked, then "Your bass".
+    #[test]
+    fn the_instrument_page_is_named_for_what_you_play() {
+        use qrs_analysis::instrument::Instrument;
+        assert_eq!(super::Page::Guitar.short_for(Instrument::Guitar), "Instrument");
+        assert_eq!(
+            super::Page::Guitar.title_for(Instrument::Guitar),
+            "Your instrument"
+        );
+        assert_eq!(super::Page::Guitar.short_for(Instrument::Bass5), "Your bass");
+        assert_eq!(super::Page::Guitar.title_for(Instrument::Bass), "Your bass");
+        assert_eq!(super::Page::Look.short_for(Instrument::Bass), "Look");
+    }
+
     use super::*;
     use qrs_library::config::songs_in;
 
@@ -387,13 +454,13 @@ mod tests {
 
     #[test]
     fn the_pages_go_in_order_back_and_skip() {
-        let mut f = Flow::new(pages_for(true));
+        let mut f = Flow::new(pages_for(true, false));
         assert_eq!(
             f.pages(),
             [
                 Page::Look,
-                Page::Guitar,
                 Page::Latency,
+                Page::Guitar,
                 Page::Widget,
                 Page::Folders,
                 Page::Done
@@ -402,17 +469,22 @@ mod tests {
         assert_eq!(f.page, Page::Look);
         assert!(!f.back()); // nothing before the first
         f.next();
-        assert_eq!((f.page, f.mark(Page::Look)), (Page::Guitar, Mark::Done));
+        assert_eq!((f.page, f.mark(Page::Look)), (Page::Latency, Mark::Done));
         f.skip();
-        assert_eq!((f.page, f.mark(Page::Guitar)), (Page::Latency, Mark::Skipped));
+        assert_eq!((f.page, f.mark(Page::Latency)), (Page::Guitar, Mark::Skipped));
         assert!(f.back());
-        assert_eq!(f.page, Page::Guitar);
+        assert_eq!(f.page, Page::Latency);
         f.next(); // done after all
-        assert_eq!(f.mark(Page::Guitar), Mark::Done);
+        assert_eq!(f.mark(Page::Latency), Mark::Done);
         assert!(f.back());
         f.skip(); // a skip doesn't undo a page that was done
-        assert_eq!(f.mark(Page::Guitar), Mark::Done);
+        assert_eq!(f.mark(Page::Latency), Mark::Done);
         assert_eq!(f.place(), (2, 6));
+        // low latency comes before the guitar (its timing is measured on that output), NAM after it
+        let all = pages_for(true, true);
+        let at = |p: Page| all.iter().position(|q| *q == p).unwrap();
+        assert!(at(Page::Latency) < at(Page::Guitar) && at(Page::Guitar) < at(Page::Nam));
+        assert!(!pages_for(false, false).contains(&Page::Nam));
         for _ in 0..10 {
             f.next();
         }
@@ -424,11 +496,18 @@ mod tests {
             assert_eq!(Page::parse(p.key()), Some(p));
         }
         // a Mac has no low-latency page
-        let mut m = Flow::new(pages_for(false));
+        let mut m = Flow::new(pages_for(false, false));
         assert!(!m.pages().contains(&Page::Latency));
         m.next();
         m.next();
         assert_eq!(m.page, Page::Widget);
+        let mut c = Config::default();
+        assert_eq!(nam_choice(&c), None);
+        set_nam(&mut c, false);
+        assert_eq!(nam_choice(&c), Some(false));
+        assert_eq!(c.get("nam_songs").and_then(Value::as_bool), Some(false));
+        set_nam(&mut c, true);
+        assert_eq!(nam_choice(&c), Some(true));
         assert!(!m.go(Page::Latency));
     }
 
@@ -441,7 +520,8 @@ mod tests {
                 assert!(l.starts_with("You can change this any time in Settings > "));
             }
         }
-        assert_eq!(Page::Folders.settings_section(), Some("Directories"));
+        assert_eq!(Page::Folders.settings_section(), Some("Library"));
+        assert_eq!(Page::Latency.settings_section(), Some("Timing"));
     }
 
     #[test]
@@ -467,7 +547,7 @@ mod tests {
         assert!(note_widget(&c));
         set_note_widget(&mut c, false);
         assert!(!c.bool("note_widget", true));
-        // folders: a songs folder added is in library_dirs (Settings > Directories' list); recordings' folders
+        // folders: a songs folder added is in library_dirs (Settings > Library's list); recordings' folders
         let songs = songs_in(Some(Path::new("M:/Music")), Path::new("D:/data"));
         assert_eq!(songs, Path::new("M:/Music").join("quickRS Songs"));
         assert_eq!(
@@ -511,7 +591,7 @@ mod tests {
         }
         assert!(total < 600_000, "the pictures are {total} bytes");
         for p in Page::ALL {
-            assert_eq!(Pic::of(p).is_none(), p == Page::Look);
+            assert_eq!(Pic::of(p).is_none(), matches!(p, Page::Look | Page::Nam));
         }
     }
 }

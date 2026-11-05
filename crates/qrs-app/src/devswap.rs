@@ -1,7 +1,7 @@
 //! Dev builds swap themselves in (D67, owner request; new in quickRS): the owner keeps playing while the code changes.
 //!
-//! `tools/dev-build.ps1` builds the release exe while this one runs from it: it renames the running exe (and cargo's
-//! hard link to it in `deps\`) to `.old`, which Windows allows, and builds a new one in its place. This app watches
+//! `tools/dev-build.ps1` builds the release exe aside (`target\devbuild`, D175) while this one runs, then renames the
+//! running exe to `.old`, which Windows allows, and puts the new one in its place. This app watches
 //! the path it was started from; once a different file has been there, unchanged, for `STEADY`, it writes where you
 //! were (the song open, its part, the time in it, whether it was playing, the window) to `resume.json` in the cache,
 //! starts the new exe with `--after-update <pid> --resume <file>` and closes. The new one waits for this one to have

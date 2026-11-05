@@ -5,7 +5,7 @@
 //! passage goes through the guitar tone (clean when the tone is "as is", and for bass) so it sounds like you.
 //!
 //! Changes from the Python version (docs/BUGS.md, "Selection synth sound"; FEEDPAK.md "Bend units"):
-//! - chart bends are in half steps (Rocksmith and feedpak alike), so they're no longer doubled;
+//! - chart bends are in half steps (RS and feedpak alike), so they're no longer doubled;
 //! - looping folds the whole ring-out back onto the start with a fade, so there's no click at the loop point;
 //! - a render that has been superseded stops early (`cancel`);
 //! - the engine cross-fades a replaced clip (no pop when restarting).

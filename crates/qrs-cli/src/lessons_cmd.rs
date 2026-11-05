@@ -285,7 +285,7 @@ fn check_item(keys: &Keys, songs: &[SongEntry], groups: &[qrs_library::Group], r
         }
     ));
     if e.needs_keys {
-        rep.error("the file needs Rocksmith's keys (--keys)");
+        rep.error("the file needs RS's keys (--keys)");
         return rep;
     }
     let names: Vec<&str> = e.arrangements.iter().map(|p| p.name.as_str()).collect();

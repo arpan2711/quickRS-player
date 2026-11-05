@@ -1,7 +1,8 @@
-//! The Guitar tone page (port of settingsview.py `draw_tone`, `tone_display`, `draw_naming`, `tone_curve`,
-//! `echo_taps`): the tone you hear, and the custom tone as three modules of amp knobs (drag up or down, scroll,
-//! double-click to reset), each with a picture of what it does; saved tones along the bottom. quickRS has two
-//! tones more than the Python app (Bass, Acoustic), so its tone keys are a little narrower to fit.
+//! The Tone page (port of settingsview.py `draw_tone`, `tone_display`, `draw_naming`, `tone_curve`, `echo_taps`;
+//! "Raw guitar tone" until P35.3, D92): the tone you hear, and the custom tone as three modules of amp knobs (drag
+//! up or down, scroll, double-click to reset), each with a picture of what it does, shown for Custom and folded for
+//! the other tones (the classic look shows them always); saved tones along the bottom, then what As is means,
+//! folded. quickRS has tones more than the Python app (Bass, Acoustic, Pedalboard), so its tone keys are narrower.
 
 use eframe::egui;
 use egui::{
@@ -20,6 +21,29 @@ use qrs_ui::widgets::{self, ButtonStyle, Segmented, interact, segment_widths};
 use super::{KnobDrag, SettingsView, caption_lines, centre_x, centre_y, centred, snap};
 use crate::state::AppState;
 use crate::tones;
+
+/// The tones Settings › Tone leads with (D138), as (key, label): the rig as the song's tone or your own sounds,
+/// and the three simple ones (on a bass: Bass and Clean).
+pub fn main_tones(bass: bool) -> Vec<(&'static str, &'static str)> {
+    let mut v = vec![("song", "Song's tone")];
+    if bass {
+        v.extend([("bass", "Bass"), ("clean", "Clean")]);
+    } else {
+        v.extend([("clean", "Clean"), ("crunch", "Crunch"), ("lead", "Lead")]);
+    }
+    v.push(("mine", "My sounds"));
+    v
+}
+
+/// The key of the main row's (or the other tones') option the tone playing is: the rig reads as Song's tone while
+/// it follows the song, My sounds when it doesn't.
+pub fn tone_choice_key(cur: &str, follow: bool) -> &str {
+    match cur {
+        "board" if follow => "song",
+        "board" => "mine",
+        c => c,
+    }
+}
 
 pub const GROUPS: [(&str, &[&str]); 3] = [
     ("DYNAMICS & DRIVE", &["gate", "comp", "drive", "volume"]),
@@ -254,6 +278,14 @@ impl SettingsView {
         };
         match verb {
             "tone" => {
+                // the main row's Song's tone and My sounds (D138): the rig, following the song's tones or not
+                let arg = match arg {
+                    "song" | "mine" => {
+                        crate::pedalboard::set_follow(&mut st.config, arg == "song");
+                        "board"
+                    }
+                    a => a,
+                };
                 let spec = tones::spec_for(&st.config, arg);
                 apply(st, spec);
             }
@@ -305,13 +337,43 @@ impl SettingsView {
     }
 
     pub(super) fn draw_tone(&mut self, ui: &mut Ui, st: &mut AppState, body: Rect) -> f32 {
-        let th = t();
-        let p = ui.painter().clone();
-        let ctx = ui.ctx().clone();
         let cur = match &st.audio {
             Some(a) => tones::name_of(&a.engine.tone()),
             None => tones::name_of(&tones::current(&st.config)),
         };
+        let classic = qrs_ui::theme::classic();
+        let mut y = if classic {
+            self.draw_tone_keys(ui, body, cur)
+        } else {
+            self.draw_tone_choice(ui, st, body, cur)
+        };
+        let params = tones::custom(&st.config);
+        let lit = cur == "custom";
+        // the custom tone's knobs: shown for Custom, folded for the other tones (P35.5; the classic look always, then
+        // named for what they are; P37.6b: the fold says it's the advanced way, the amp room the main one)
+        let mut show_knobs = lit || classic;
+        if !show_knobs {
+            let (h, open) = self.fold(
+                ui,
+                body.min.x,
+                y,
+                body.width(),
+                "knobs",
+                "Advanced: the Custom tone's knobs",
+                "a simple amp of eleven knobs; turning one switches to Custom (the amp room does far more)",
+            );
+            y += h + px(14.0);
+            show_knobs = open;
+        }
+        self.draw_tone_rest(ui, st, body, y, params, lit, show_knobs, classic)
+    }
+
+    /// The classic look's (and the Python app's) tone keys: every tone in one row at the top right, the title and
+    /// its line at the left. Returns where the page goes on.
+    fn draw_tone_keys(&mut self, ui: &mut Ui, body: Rect, cur: &str) -> f32 {
+        let th = t();
+        let p = ui.painter().clone();
+        let ctx = ui.ctx().clone();
         // the title, and the tone you hear at the right (its keys narrower than the Python app's, pad 9 for its
         // 14, for the three tones more)
         let labels: Vec<&str> = tones::TONES.iter().map(|n| tones::label(n)).collect();
@@ -351,176 +413,315 @@ impl SettingsView {
             body.min.y + px(34.0),
             seg.min.x - body.min.x - px(20.0),
             13.0,
-            3, // (three lines since the Pedalboard key made the keys wider)
+            3, // (three lines since the Pedalboard (now Rig) key made the keys wider)
         );
-        let mut y = seg.max.y.max(ty) + px(20.0);
-        let params = tones::custom(&st.config);
-        let lit = cur == "custom";
-        // three modules in a chain: dynamics & drive -> EQ -> effects
-        let arrow = px(26.0);
-        let flex = [2.0, 2.0, 3.0];
-        let mw = (body.width() - 2.0 * arrow) / flex.iter().sum::<f32>();
-        let (pad_x, pad_y) = (px(18.0), px(18.0));
-        let bx = px(96.0);
-        let row_h = bx + px(4.0) + px(14.0) + px(2.0) + px(18.0);
-        let mod_h = pad_y + px(16.0) + px(14.0) + px(70.0) + px(14.0) + 2.0 * row_h + px(12.0) + px(18.0);
-        let mut x = body.min.x;
-        let shift = ctx.input(|i| i.modifiers.shift);
-        for (i, (((title, keys), fl), kind)) in GROUPS.iter().zip(flex).zip(["dyn", "eq", "fx"]).enumerate() {
-            if i > 0 {
-                icons::icon(
-                    &p,
-                    Icon::Right,
-                    pos2(snap(x) + snap(arrow / 2.0), y + snap(mod_h / 2.0)),
-                    16.0,
-                    th.tick,
-                );
-                x += arrow;
-            }
-            let module = Rect::from_min_size(pos2(snap(x), y), vec2(snap(mw * fl), mod_h));
-            x += mw * fl;
-            paint::card(&p, module, 24.0, false);
-            let hy = module.min.y + pad_y + px(8.0);
-            text::caps(
-                &p,
-                title,
-                pos2(module.min.x + pad_x, hy),
-                12.0,
-                th.caption,
-                Align2::LEFT_CENTER,
-                None,
-            );
-            let light = pos2(module.max.x - pad_x - px(4.0), hy);
-            if lit {
-                paint::led(&p, light, 8.0, th.accent);
-            } else {
-                paint::dot(&p, light, 4.0, th.tick);
-            }
-            let disp = Rect::from_min_size(
-                pos2(module.min.x + pad_x, module.min.y + pad_y + px(16.0) + px(14.0)),
-                vec2(module.width() - 2.0 * pad_x, px(70.0)),
-            );
-            tone_display(&p, disp, kind, &params);
-            let cap = match kind {
-                "dyn" => "level in \u{2192} out".to_string(),
-                "eq" => "80 Hz \u{2013} 10 kHz".into(),
-                _ if params.delay > 0.01 => format!("echoes every {:.0} ms", params.delay_time * 1000.0),
-                _ => "reverb tail".into(),
-            };
-            let cst = Style::new(10.0, 700, th.caption);
-            if kind == "dyn" {
-                // (the curve rises to the top right; the others leave the top free)
-                text::draw(
-                    &p,
-                    &cap,
-                    pos2(disp.max.x - px(10.0), disp.max.y - px(6.0)),
-                    Align2::RIGHT_BOTTOM,
-                    cst,
-                    None,
-                );
-            } else {
-                text::draw(
-                    &p,
-                    &cap,
-                    pos2(disp.max.x - px(10.0), disp.min.y + px(6.0)),
-                    Align2::RIGHT_TOP,
-                    cst,
-                    None,
-                );
-            }
-            let cols = if keys.len() > 4 { 3 } else { 2 };
-            let cw = (module.width() - 2.0 * pad_x) / cols as f32;
-            let ky = disp.max.y + px(14.0);
-            for (k_i, key) in keys.iter().enumerate() {
-                let Some((key, _, lo, hi, dflt, unit)) = spec(key) else {
-                    continue;
-                };
-                let (r_, c_) = (k_i / cols, k_i % cols);
-                let cx = snap(module.min.x + pad_x + cw * c_ as f32 + cw / 2.0);
-                let top = ky + r_ as f32 * (row_h + px(12.0));
-                // kb.midtop = (cx, top)
-                let kb = Rect::from_min_size(pos2(cx - snap(bx / 2.0), top), Vec2::splat(bx));
-                let v = params.get(key).unwrap_or(dflt);
-                let zero = (lo < 0.0 && 0.0 < hi).then(|| (0.0 - lo) / (hi - lo));
-                knobs::knob(
-                    &p,
-                    pos2(centre_x(kb), centre_y(kb)),
-                    60.0,
-                    (v - lo) / (hi - lo),
-                    Scale {
-                        zero,
-                        ..Default::default()
-                    },
-                    None,
-                );
-                self.knob_rects.push((kb, key));
-                let resp = interact(ui, kb, ("set-knob", key), Sense::click_and_drag());
-                if resp.hovered() || resp.dragged() {
-                    ctx.set_cursor_icon(CursorIcon::ResizeVertical);
-                }
-                if resp.double_clicked() {
-                    self.knob_drag = None;
-                    self.acts.push(format!("param:{key}:{dflt}"));
-                } else if resp.is_pointer_button_down_on()
-                    && self.knob_drag.as_ref().is_none_or(|d| d.key != key)
-                    && let Some(pos) = resp.interact_pointer_pos()
-                {
-                    self.knob_drag = Some(KnobDrag {
-                        key,
-                        y0: pos.y,
-                        v0: v,
-                    });
-                }
-                if let Some(d) = &self.knob_drag
-                    && d.key == key
-                {
-                    if resp.is_pointer_button_down_on() || resp.dragged() {
-                        if let Some(pos) = resp.interact_pointer_pos()
-                            && (d.y0 - pos.y).abs() > 0.5
-                        {
-                            let travel = 200.0 * if shift { 4.0 } else { 1.0 };
-                            let nv = d.v0 + (d.y0 - pos.y) / travel * (hi - lo);
-                            self.acts.push(format!("param:{key}:{nv}"));
-                        }
-                    } else {
-                        self.knob_drag = None;
-                        self.acts.push("saveconfig".into());
-                    }
-                }
-                text::caps(
-                    &p,
-                    knob_name(key),
-                    pos2(cx, kb.max.y + px(11.0)),
-                    11.0,
-                    th.caption,
-                    Align2::CENTER_CENTER,
-                    None,
-                );
-                text::draw(
-                    &p,
-                    &fmt_param(v, unit),
-                    pos2(cx, kb.max.y + px(29.0)),
-                    Align2::CENTER_CENTER,
-                    Style::new(15.0, 800, if lit { th.text } else { th.text_2 }),
-                    None,
-                );
-            }
-        }
-        y += mod_h + px(14.0);
-        let hint = if lit {
-            "Drag a knob up or down (Shift: fine)  \u{b7}  scroll for small steps  \u{b7}  double-click resets it"
-        } else {
-            "Turn a knob to switch to your custom tone; you hear it straight away."
-        };
+        seg.max.y.max(ty) + px(20.0)
+    }
+
+    /// One tone story (P37.6b, D138): the sounds a beginner picks from first (the song's own tone, Clean, Crunch,
+    /// Lead, My sounds: your rig from the amp room), the amp room as the place for everything else, then the other
+    /// tones (As is, Acoustic, Custom; Bass on a guitar) as a quieter row. Returns where the page goes on.
+    fn draw_tone_choice(&mut self, ui: &mut Ui, st: &AppState, body: Rect, cur: &str) -> f32 {
+        let th = t();
+        let p = ui.painter().clone();
+        let ctx = ui.ctx().clone();
         text::draw(
             &p,
-            hint,
-            pos2(body.min.x, y),
+            "Tone",
+            pos2(body.min.x, body.min.y + px(2.0)),
             Align2::LEFT_TOP,
-            Style::new(12.0, 500, th.caption),
+            Style::new(22.0, 800, th.text),
             None,
         );
-        y += px(30.0);
+        let follow = crate::pedalboard::follow(&st.config);
+        let now = tone_choice_key(cur, follow);
+        let main = main_tones(st.instrument().is_bass());
+        let ty = caption_lines(
+            &p,
+            "The sound you play through. Song's tone follows the song's own amps and pedals as it changes; My sounds \
+             is your own rig, set up in the amp room.",
+            body.min.x,
+            body.min.y + px(34.0),
+            body.width(),
+            13.0,
+            2,
+        );
+        let labels: Vec<&str> = main.iter().map(|m| m.1).collect();
+        let widths = segment_widths(&ctx, &labels, 15.0, 16.0);
+        let seg_w = widths.iter().sum::<f32>() + px(4.0) * (widths.len() - 1) as f32 + 2.0 * px(5.0);
+        let seg = Rect::from_min_size(pos2(body.min.x, ty + px(14.0)), vec2(seg_w, px(52.0)));
+        let mut so = Segmented::new(&labels, main.iter().position(|m| m.0 == now));
+        so.size = 15.0;
+        so.widths = Some(widths);
+        so.pad = 5.0;
+        let (_, clicked) = widgets::segmented(ui, seg, "set-tone-main", &so);
+        if let Some(i) = clicked {
+            self.acts.push(format!("tone:{}", main[i].0));
+        }
+        keycap(
+            &p,
+            "T",
+            pos2(seg.max.x + px(10.0), centre_y(seg)),
+            Align2::LEFT_CENTER,
+            11.0,
+            CapOn::Material,
+        );
+        // everything else is the amp room's
+        let bw = widgets::button_width(&ctx, "Edit in the amp room", "A", 14.0, false);
+        let b = Rect::from_min_size(pos2(body.min.x, seg.max.y + px(18.0)), vec2(bw, px(44.0)));
+        self.button(
+            ui,
+            b,
+            "Edit in the amp room",
+            "",
+            "amproom",
+            ButtonStyle {
+                icon: Some(Icon::Sliders),
+                size: 14.0,
+                r: Some(14.0),
+                ..Default::default()
+            },
+        );
+        caption_lines(
+            &p,
+            "Amps, pedals, cabs, NAM captures, scenes and the song's tones: the amp room has them all (A on Home, or \
+             the Rig tile's expand key in a song).",
+            b.max.x + px(18.0),
+            b.min.y + px(4.0),
+            body.max.x - b.max.x - px(18.0),
+            13.0,
+            2,
+        );
+        // the other tones, quieter
+        let others: Vec<(&str, &str)> = tones::TONES
+            .iter()
+            .filter(|n| !main.iter().any(|m| m.0 == **n) && **n != "board")
+            .map(|n| (*n, tones::label(n)))
+            .collect();
+        let oy = b.max.y + px(22.0);
+        let cr = text::caps(
+            &p,
+            "OTHER TONES",
+            pos2(body.min.x, oy + px(20.0)),
+            11.0,
+            th.caption,
+            Align2::LEFT_CENTER,
+            None,
+        );
+        let olabels: Vec<&str> = others.iter().map(|o| o.1).collect();
+        let owidths = segment_widths(&ctx, &olabels, 13.0, 12.0);
+        let ow = owidths.iter().sum::<f32>() + px(4.0) * (owidths.len() - 1) as f32 + 2.0 * px(4.0);
+        let oseg = Rect::from_min_size(pos2(cr.max.x + px(16.0), oy), vec2(ow, px(40.0)));
+        let mut oso = Segmented::new(&olabels, others.iter().position(|o| o.0 == now));
+        oso.size = 13.0;
+        oso.widths = Some(owidths);
+        oso.pad = 4.0;
+        let (_, oclicked) = widgets::segmented(ui, oseg, "set-tone-other", &oso);
+        if let Some(i) = oclicked {
+            self.acts.push(format!("tone:{}", others[i].0));
+        }
+        caption_lines(
+            &p,
+            "As is: your amp or modeller's own sound, nothing added.",
+            oseg.max.x + px(16.0),
+            oy + px(12.0),
+            body.max.x - oseg.max.x - px(16.0),
+            12.0,
+            2,
+        );
+        oseg.max.y + px(24.0)
+    }
+
+    /// The rest of the page: the custom tone's knobs (when shown), the saved tones, what As is means, captures.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_tone_rest(
+        &mut self,
+        ui: &mut Ui,
+        st: &mut AppState,
+        body: Rect,
+        y: f32,
+        params: ToneParams,
+        lit: bool,
+        show_knobs: bool,
+        classic: bool,
+    ) -> f32 {
+        let th = t();
+        let p = ui.painter().clone();
+        let ctx = ui.ctx().clone();
+        let mut y = y;
+        if show_knobs {
+            // three modules in a chain: dynamics & drive -> EQ -> effects
+            let arrow = px(26.0);
+            let flex = [2.0, 2.0, 3.0];
+            let mw = (body.width() - 2.0 * arrow) / flex.iter().sum::<f32>();
+            let (pad_x, pad_y) = (px(18.0), px(18.0));
+            let bx = px(96.0);
+            let row_h = bx + px(4.0) + px(14.0) + px(2.0) + px(18.0);
+            let mod_h = pad_y + px(16.0) + px(14.0) + px(70.0) + px(14.0) + 2.0 * row_h + px(12.0) + px(18.0);
+            let mut x = body.min.x;
+            let shift = ctx.input(|i| i.modifiers.shift);
+            for (i, (((title, keys), fl), kind)) in
+                GROUPS.iter().zip(flex).zip(["dyn", "eq", "fx"]).enumerate()
+            {
+                if i > 0 {
+                    icons::icon(
+                        &p,
+                        Icon::Right,
+                        pos2(snap(x) + snap(arrow / 2.0), y + snap(mod_h / 2.0)),
+                        16.0,
+                        th.tick,
+                    );
+                    x += arrow;
+                }
+                let module = Rect::from_min_size(pos2(snap(x), y), vec2(snap(mw * fl), mod_h));
+                x += mw * fl;
+                paint::card(&p, module, 24.0, false);
+                let hy = module.min.y + pad_y + px(8.0);
+                text::caps(
+                    &p,
+                    title,
+                    pos2(module.min.x + pad_x, hy),
+                    12.0,
+                    th.caption,
+                    Align2::LEFT_CENTER,
+                    None,
+                );
+                let light = pos2(module.max.x - pad_x - px(4.0), hy);
+                if lit {
+                    paint::led(&p, light, 8.0, th.accent);
+                } else {
+                    paint::dot(&p, light, 4.0, th.tick);
+                }
+                let disp = Rect::from_min_size(
+                    pos2(module.min.x + pad_x, module.min.y + pad_y + px(16.0) + px(14.0)),
+                    vec2(module.width() - 2.0 * pad_x, px(70.0)),
+                );
+                tone_display(&p, disp, kind, &params);
+                let cap = match kind {
+                    "dyn" => "level in \u{2192} out".to_string(),
+                    "eq" => "80 Hz \u{2013} 10 kHz".into(),
+                    _ if params.delay > 0.01 => format!("echoes every {:.0} ms", params.delay_time * 1000.0),
+                    _ => "reverb tail".into(),
+                };
+                let cst = Style::new(10.0, 700, th.caption);
+                if kind == "dyn" {
+                    // (the curve rises to the top right; the others leave the top free)
+                    text::draw(
+                        &p,
+                        &cap,
+                        pos2(disp.max.x - px(10.0), disp.max.y - px(6.0)),
+                        Align2::RIGHT_BOTTOM,
+                        cst,
+                        None,
+                    );
+                } else {
+                    text::draw(
+                        &p,
+                        &cap,
+                        pos2(disp.max.x - px(10.0), disp.min.y + px(6.0)),
+                        Align2::RIGHT_TOP,
+                        cst,
+                        None,
+                    );
+                }
+                let cols = if keys.len() > 4 { 3 } else { 2 };
+                let cw = (module.width() - 2.0 * pad_x) / cols as f32;
+                let ky = disp.max.y + px(14.0);
+                for (k_i, key) in keys.iter().enumerate() {
+                    let Some((key, _, lo, hi, dflt, unit)) = spec(key) else {
+                        continue;
+                    };
+                    let (r_, c_) = (k_i / cols, k_i % cols);
+                    let cx = snap(module.min.x + pad_x + cw * c_ as f32 + cw / 2.0);
+                    let top = ky + r_ as f32 * (row_h + px(12.0));
+                    // kb.midtop = (cx, top)
+                    let kb = Rect::from_min_size(pos2(cx - snap(bx / 2.0), top), Vec2::splat(bx));
+                    let v = params.get(key).unwrap_or(dflt);
+                    let zero = (lo < 0.0 && 0.0 < hi).then(|| (0.0 - lo) / (hi - lo));
+                    let resp = interact(ui, kb, ("set-knob", key), Sense::click_and_drag());
+                    // (the dark themes' baked knobs show hover and a hold)
+                    let held = resp.is_pointer_button_down_on()
+                        || self.knob_drag.as_ref().is_some_and(|d| d.key == key);
+                    knobs::knob_in(
+                        &p,
+                        pos2(centre_x(kb), centre_y(kb)),
+                        60.0,
+                        (v - lo) / (hi - lo),
+                        Scale {
+                            zero,
+                            ..Default::default()
+                        },
+                        None,
+                        qrs_ui::glass::State::of(resp.hovered(), held),
+                    );
+                    self.knob_rects.push((kb, key));
+                    if resp.hovered() || resp.dragged() {
+                        ctx.set_cursor_icon(CursorIcon::ResizeVertical);
+                    }
+                    if resp.double_clicked() {
+                        self.knob_drag = None;
+                        self.acts.push(format!("param:{key}:{dflt}"));
+                    } else if resp.is_pointer_button_down_on()
+                        && self.knob_drag.as_ref().is_none_or(|d| d.key != key)
+                        && let Some(pos) = resp.interact_pointer_pos()
+                    {
+                        self.knob_drag = Some(KnobDrag {
+                            key,
+                            y0: pos.y,
+                            v0: v,
+                        });
+                    }
+                    if let Some(d) = &self.knob_drag
+                        && d.key == key
+                    {
+                        if resp.is_pointer_button_down_on() || resp.dragged() {
+                            if let Some(pos) = resp.interact_pointer_pos()
+                                && (d.y0 - pos.y).abs() > 0.5
+                            {
+                                let travel = 200.0 * if shift { 4.0 } else { 1.0 };
+                                let nv = d.v0 + (d.y0 - pos.y) / travel * (hi - lo);
+                                self.acts.push(format!("param:{key}:{nv}"));
+                            }
+                        } else {
+                            self.knob_drag = None;
+                            self.acts.push("saveconfig".into());
+                        }
+                    }
+                    text::caps(
+                        &p,
+                        knob_name(key),
+                        pos2(cx, kb.max.y + px(11.0)),
+                        11.0,
+                        th.caption,
+                        Align2::CENTER_CENTER,
+                        None,
+                    );
+                    text::draw(
+                        &p,
+                        &fmt_param(v, unit),
+                        pos2(cx, kb.max.y + px(29.0)),
+                        Align2::CENTER_CENTER,
+                        Style::new(15.0, 800, if lit { th.text } else { th.text_2 }),
+                        None,
+                    );
+                }
+            }
+            y += mod_h + px(14.0);
+            let hint = if lit {
+                "Drag a knob up or down (Shift: fine)  \u{b7}  scroll for small steps  \u{b7}  double-click resets it"
+            } else {
+                "Turn a knob to switch to your custom tone; you hear it straight away."
+            };
+            text::draw(
+                &p,
+                hint,
+                pos2(body.min.x, y),
+                Align2::LEFT_TOP,
+                Style::new(12.0, 500, th.caption),
+                None,
+            );
+            y += px(30.0);
+        }
         // saved tones: chips flow after the title, wrapping; the tools sit at the right of the last row
         let presets = tones::presets(&st.config);
         let chosen = st.config.str("tone_preset", "");
@@ -626,7 +827,79 @@ impl SettingsView {
             );
             tx += bw + gx;
         }
-        card.max.y
+        if classic {
+            return card.max.y;
+        }
+        // what As is means, folded: it's the kind of input that decides (Sound > This input is)
+        let y = card.max.y + px(18.0);
+        let (h, open) = self.fold(
+            ui,
+            body.min.x,
+            y,
+            body.width(),
+            "asis",
+            "What \u{201c}As is\u{201d} means",
+            "your input heard as it comes in: for an amp, a modeller or a mic",
+        );
+        let mut y = y + h;
+        if open {
+            let x = body.min.x + px(42.0);
+            let bw = widgets::button_width(&ctx, "Open Sound", "", 13.0, false);
+            let ty = caption_lines(
+                &p,
+                "As is plays your input as it comes in: no amp, pedals or cab from quickRS. It's the tone for an amp, \
+                 an amp modeller or a microphone. Sound > This input is tells quickRS what kind of input it is; a dry \
+                 guitar there gets the rig, an amp or modeller As is.",
+                x,
+                y + px(12.0),
+                body.max.x - x - bw - px(24.0),
+                13.0,
+                4,
+            );
+            self.button(
+                ui,
+                Rect::from_min_size(pos2(body.max.x - bw, y + px(12.0)), vec2(bw, px(40.0))),
+                "Open Sound",
+                "",
+                "section:sound",
+                ButtonStyle {
+                    size: 13.0,
+                    r: Some(12.0),
+                    ..Default::default()
+                },
+            );
+            y = ty.max(y + px(52.0));
+        }
+        // real-gear captures (P36.7): everything NAM is on its own page now (P37.15, D146): a pointer to it
+        if crate::captures::ON && !qrs_ui::theme::classic() {
+            y += px(24.0);
+            let label = "Open Neural Amp Modeler";
+            let bw = widgets::button_width(&ctx, label, "", 13.0, false).max(px(200.0));
+            let x = body.min.x;
+            let words = match crate::setup::nam_choice(&st.config) {
+                Some(true) => {
+                    "NAM captures of real gear play where you have them. Captures, your TONE3000 account,                      suggestions and their level: Settings › Neural Amp Modeler."
+                }
+                _ => {
+                    "NAM captures of real gear, through your own TONE3000 account: set them up in Settings ›                      Neural Amp Modeler. The amp room has MODELLED or NAM on each unit."
+                }
+            };
+            let ty = caption_lines(&p, words, x, y + px(4.0), body.width() - bw - px(24.0), 13.0, 2);
+            self.button(
+                ui,
+                Rect::from_min_size(pos2(body.max.x - bw, y), vec2(bw, px(40.0))),
+                label,
+                "",
+                "section:nam",
+                ButtonStyle {
+                    size: 13.0,
+                    r: Some(12.0),
+                    ..Default::default()
+                },
+            );
+            y = ty.max(y + px(40.0));
+        }
+        y
     }
 
     /// Name this tone: a sunken field ringed in the accent; Cancel / Save.
@@ -706,6 +979,17 @@ impl SettingsView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_main_tones_lead_and_the_rig_reads_as_song_or_mine() {
+        let keys: Vec<&str> = main_tones(false).iter().map(|m| m.0).collect();
+        assert_eq!(keys, ["song", "clean", "crunch", "lead", "mine"]);
+        assert_eq!(main_tones(true)[1].0, "bass");
+        assert_eq!(tone_choice_key("board", true), "song");
+        assert_eq!(tone_choice_key("board", false), "mine");
+        assert_eq!(tone_choice_key("clean", true), "clean");
+        assert_eq!(tone_choice_key("as is", false), "as is");
+    }
 
     #[test]
     fn values_read_like_the_python_app() {

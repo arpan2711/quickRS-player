@@ -1,4 +1,4 @@
-//! The two AES-256 modes Rocksmith uses, written on the raw block cipher: CFB with 128-bit segments and a zero
+//! The two AES-256 modes RS uses, written on the raw block cipher: CFB with 128-bit segments and a zero
 //! IV (the PSARC table of contents) and CTR with a 128-bit big-endian counter (SNG charts).
 
 use aes::Aes256;

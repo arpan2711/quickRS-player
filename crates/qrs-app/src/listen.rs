@@ -38,6 +38,8 @@ pub struct Listen {
     last: Option<Instant>,
     /// Screenshots: a level and note to show instead of the input's.
     fake: Option<(f32, f64)>,
+    /// What the input plays (P32.5): a bass's notes are read lower, over a longer window.
+    instrument: qrs_analysis::instrument::Instrument,
 }
 
 impl Default for Listen {
@@ -58,6 +60,7 @@ impl Default for Listen {
             lamp_until: None,
             last: None,
             fake: None,
+            instrument: qrs_analysis::instrument::Instrument::Guitar,
         }
     }
 }
@@ -82,6 +85,15 @@ impl Listen {
         self.hold_db = level_db + 11.0;
         self.needle = vu_pos(level_db);
         self.midi = Some(midi);
+    }
+
+    /// The instrument the input plays (a guitar unless set).
+    pub fn set_instrument(&mut self, inst: qrs_analysis::instrument::Instrument) {
+        if inst != self.instrument {
+            self.instrument = inst;
+            self.buf = vec![0.0; inst.pitch_window(48000)];
+            self.hist.clear();
+        }
     }
 
     /// Read the input (once a frame it's drawn). Returns whether it's live: sound coming in or the needle still
@@ -123,7 +135,8 @@ impl Listen {
             self.pitch_at = Some(now);
             let rate = e.capture().rate();
             if e.capture().latest(&mut self.buf).is_some() {
-                let (hz, clarity) = qrs_analysis::pitch::pitch(&mut self.sp, &self.buf, rate);
+                let (hz, clarity) =
+                    qrs_analysis::instrument::pitch_for(self.instrument, &mut self.sp, &self.buf, rate);
                 if hz > 0.0 && clarity > 0.85 {
                     self.hist.push_back(69.0 + 12.0 * (hz / 440.0).log2());
                     while self.hist.len() > 5 {

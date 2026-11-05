@@ -285,7 +285,7 @@ impl PlayerView {
             Take::Done(o) => match o.accuracy {
                 None => (
                     "THE TAKE",
-                    "No guitar".into(),
+                    "Nothing heard".into(),
                     "no input to judge it: Settings (F2) > Audio input / output".into(),
                     th.miss,
                 ),

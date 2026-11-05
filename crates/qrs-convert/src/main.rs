@@ -1,4 +1,4 @@
-//! quickRS Converter: a window for `quickrs-cli convert-folder`. Pick the folder with your Rocksmith .psarc songs
+//! quickRS Converter: a window for `quickrs-cli convert-folder`. Pick the folder with your RS .psarc songs
 //! and where the feedpaks go, press Convert; every song becomes a .feedpak (qrs_library::feedpak_export::folder).
 //! Drawn with quickRS's own look (qrs-ui: the Midnight theme, its cards, keys and type).
 
@@ -77,12 +77,12 @@ fn keys_home() -> PathBuf {
     }
 }
 
-/// Rocksmith's dlc folder in Steam, when it's there.
+/// RS's dlc folder in Steam, when it's there.
 fn steam_dlc() -> Option<PathBuf> {
     #[cfg(windows)]
     return Some(PathBuf::from(STEAM_DLC)).filter(|d| d.is_dir());
     #[cfg(not(windows))]
-    return qrs_library::config::steam_rocksmith_dlc().into_iter().next();
+    return qrs_library::config::steam_rs_dlc().into_iter().next();
 }
 
 /// A "feedpak" folder next to a "dlc" folder (quickRS finds that one by itself), else one inside the folder.
@@ -102,7 +102,7 @@ fn default_to(from: &str) -> String {
     .to_string()
 }
 
-/// Rocksmith's keys; what's wrong with keys.json when it's there but doesn't give both (named without its long
+/// RS's keys; what's wrong with keys.json when it's there but doesn't give both (named without its long
 /// folder, which "Open the folder" shows); and the folder it's in, else this program's.
 fn load_keys() -> (Keys, Option<String>, PathBuf) {
     let mut dirs = vec![exe_dir()];
@@ -262,7 +262,7 @@ impl eframe::App for App {
         y += 40.0;
         y = para(
             &p,
-            "Makes a feedpak of every Rocksmith song in a folder: one open, unencrypted file per song that quickRS plays \
+            "Makes a feedpak of every RS song in a folder: one open, unencrypted file per song that quickRS plays \
              without keys. Your .psarc files are only read, never changed. Songs already converted are skipped, so run \
              it again after adding songs.",
             pos2(x0, y),
@@ -281,7 +281,7 @@ impl eframe::App for App {
             None => (
                 "keys.json is missing",
                 format!(
-                    "Put Rocksmith's two keys in keys.example.json and save it as keys.json, {KEYS_WHERE}. Then press \
+                    "Put RS's two keys in keys.example.json and save it as keys.json, {KEYS_WHERE}. Then press \
                      Check again."
                 ),
             ),
@@ -404,7 +404,7 @@ impl eframe::App for App {
         if field(
             ui,
             "1",
-            "Your Rocksmith songs (.psarc)",
+            "Your RS songs (.psarc)",
             "the folder with your songs, e.g. ...\\Rocksmith2014\\dlc",
             &mut self.from,
             "from",

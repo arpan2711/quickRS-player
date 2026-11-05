@@ -417,6 +417,77 @@ pub struct Numeral {
     pub diatonic: bool,
 }
 
+/// A chart's chord name ("F#5/C#", "Bbm7", "Dsus2") as a number in `key`: the root's numeral as `Guess::numeral`
+/// gives it (a quality it doesn't know keeps its own spelling, its case from a leading "m"), and a slash chord's
+/// bass as its degree ("I/5", "V/b7"). The name back unchanged when it doesn't start with a note.
+pub fn name_in_key(name: &str, key: Key) -> String {
+    let pc = |s: &str| -> Option<(u8, usize)> {
+        let base = match s.chars().next()? {
+            'C' => 0,
+            'D' => 2,
+            'E' => 4,
+            'F' => 5,
+            'G' => 7,
+            'A' => 9,
+            'B' => 11,
+            _ => return None,
+        };
+        match s[1..].chars().next() {
+            Some('#' | '♯') => Some(((base + 1) % 12, 1 + s[1..].chars().next()?.len_utf8())),
+            Some('b' | '♭') => Some(((base + 11) % 12, 1 + s[1..].chars().next()?.len_utf8())),
+            _ => Some((base, 1)),
+        }
+    };
+    let (head, bass) = match name.split_once('/') {
+        Some((h, b)) => (h, pc(b.trim()).map(|p| p.0)),
+        None => (name, None),
+    };
+    let Some((root, used)) = pc(head.trim()) else {
+        return name.to_string();
+    };
+    let suffix = &head.trim()[used..];
+    let known = QUALITIES.iter().find(|q| q.suffix == suffix);
+    let minor = suffix.starts_with('m') && !suffix.starts_with("maj");
+    let guess = Guess {
+        root,
+        suffix: known.map_or(if minor { "m" } else { "" }, |q| q.suffix),
+        bass: root,
+        tones: known.map_or_else(Vec::new, |q| {
+            q.tones
+                .iter()
+                .map(|&(iv, _)| ((root + iv) % 12, interval_name(iv)))
+                .collect()
+        }),
+        score: 0.0,
+        margin: 0.0,
+    };
+    let mut out = guess.numeral(key).text;
+    if known.is_none() {
+        out += if minor { &suffix[1..] } else { suffix };
+    }
+    if let Some(b) = bass.filter(|&b| b != root) {
+        // the bass's degree in the key, flat or sharp when it's outside the scale
+        let scale: [u8; 7] = match key.1 {
+            Mode::Major => [0, 2, 4, 5, 7, 9, 11],
+            Mode::Minor => [0, 2, 3, 5, 7, 8, 10],
+        };
+        let rel = (b + 12 - key.0 % 12) % 12;
+        let deg = match scale.iter().position(|&s| s == rel) {
+            Some(d) => format!("{}", d + 1),
+            None => match scale.iter().position(|&s| s == (rel + 1) % 12) {
+                Some(d) => format!("b{}", d + 1),
+                None => format!(
+                    "#{}",
+                    scale.iter().position(|&s| s == (rel + 11) % 12).unwrap_or(0) + 1
+                ),
+            },
+        };
+        out += "/";
+        out += &deg;
+    }
+    out
+}
+
 fn interval_name(semis: u8) -> &'static str {
     ["R", "b9", "9", "b3", "3", "4", "b5", "5", "#5", "6", "b7", "7"][semis as usize % 12]
 }
@@ -932,6 +1003,25 @@ mod tests {
             all.iter().any(|s| s[..] == [5, 7, 7, 6, 5, 5]),
             "the E-shape barre: {all:?}"
         );
+    }
+
+    /// A chart's names as numbers: Someday in A major (D A A5/E E E7 F#m F#5/C# C#m), a flat, an unknown quality, a
+    /// name that isn't a chord.
+    #[test]
+    fn chart_names_are_numbered_in_the_key() {
+        let a = (9, Mode::Major);
+        let n = |s: &str| name_in_key(s, a);
+        assert_eq!(n("D"), "IV");
+        assert_eq!(n("A"), "I");
+        assert_eq!(n("A5/E"), "I/5");
+        assert_eq!(n("E7"), "V7");
+        assert_eq!(n("F#m"), "vi");
+        assert_eq!(n("F#5/C#"), "vi/3");
+        assert_eq!(n("C#m"), "iii");
+        assert_eq!(n("Bbmaj7"), "bIImaj7");
+        assert_eq!(n("Bm7(11)"), "ii7(11)");
+        assert_eq!(n("G/F#"), "bVII/6");
+        assert_eq!(n("N.C."), "N.C.");
     }
 
     /// Chords as numbers in a key: Someday's A5 E7 F#m in A major are I V7 vi; in A minor the C is III and the G

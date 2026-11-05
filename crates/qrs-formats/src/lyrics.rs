@@ -1,6 +1,6 @@
 //! Lyrics grouped into display lines. Port of rsplay/lyrics.py.
 //!
-//! Rocksmith (and feedpak) store lyrics as timed syllables: a trailing "-" joins the syllable to the next one
+//! RS (and feedpak) store lyrics as timed syllables: a trailing "-" joins the syllable to the next one
 //! without a space, and a trailing "+" ends the line.
 
 #[derive(Clone, Debug, PartialEq)]
@@ -9,7 +9,7 @@ pub struct Syllable {
     pub end: f64,
     /// As displayed, including the following space when there is one.
     pub text: String,
-    /// MIDI pitch when the source has one (Rocksmith vocals); None otherwise.
+    /// MIDI pitch when the source has one (RS vocals); None otherwise.
     pub pitch: Option<i32>,
 }
 

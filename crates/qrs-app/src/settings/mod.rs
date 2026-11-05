@@ -1,33 +1,49 @@
 //! Settings (F2, or the Settings strip on the home page): every setting of the app in one panel floating over the
-//! page you were on, in sections (port of rsplay/settingsview.py; the Audio page is new, on `qrs_audio::devices`).
+//! page you were on, in six pages (port of rsplay/settingsview.py, rebuilt in P35.3 on the settings review, D92;
+//! the Sound page's devices are new, on `qrs_audio::devices`). Common things first, rare ones in "›" folds:
 //!
-//!     Audio         the guitar input and the output (automatic, or a device you pick), the guitar's channel with
-//!                   a meter each, hearing the guitar, latency, volumes, the Rocksmith 2014 setup
-//!     Guitar tone   As is / Clean / Crunch / Lead / Bass / Acoustic / Custom; the custom tone as amp knobs;
-//!                   saved tones
-//!     Display       theme and knobs, string colours, note-tile instrument, notation, the tiles and their order
-//!     Practice      level-up in loops, audio sync and guitar timing
-//!     Library       song folders (add, remove, Rocksmith's dlc folder or not), rescan, psarc or feedpak, expand &
-//!                   preview in the list, Rocksmith's keys
-//!     Updates       this version, check for a newer one (on start, or now), install it (P20.1, `update.rs`)
+//!     Sound     the guided setup's status, [the instrument on this input], the guitar input and the output (the
+//!               chosen device, Change… for the list), the channel with a meter each, hearing yourself and the
+//!               volumes, the input level (Check level, what kind of input it is); folds: trim by hand, the
+//!               RS2014 setup, all devices
+//!     Timing    [Calibrate timing…], Your hits (`input_offset`), Reduce delay (low-latency output, the buffer, the
+//!               latency chip); fold: Chart sync (`av_offset`)
+//!     Tone      As is / Pedalboard / Clean / ... / Custom; the custom tone's knobs (Custom only, else a fold);
+//!               saved tones
+//!     Display   theme and knobs, string colours, the note tile, the song screen's tiles and their order, the note
+//!               widget window, notation (fold: fine-tune)
+//!     Library   song folders (add, remove, RS's dlc folder or not), rescan, the song list, RS's keys
+//!               (folded once found), the recordings folders
+//!     About     this version and its updates, report a bug, the first-time setup again, Reset all settings…
+//!
+//! Old ids still open their page (audio, practice, updates: `nav::resolve`); the classic look (the Python app's,
+//! for parity screenshots) keeps its five. Each page ends in "Reset <page> to defaults" (`reset.rs`).
 //!
 //! Everything is stored in config.json straight away; an open song picks the changes up
 //! (`PlayerView::reload_settings`). The keys shown in the panel work here too (T, N, Y, 7 8 9 0, M, the sync keys,
-//! F5). Esc, Done or a click outside the panel closes it.
+//! F5). Esc, Done or a click outside the panel closes it; Up / Down scroll, Tab and Ctrl+Up / Down switch pages.
 //!
 //! The layout is the Python app's in its whole pixels (`qrs_ui::units`): `px(n)` where it has `int(n * s)`, `snap`
 //! where it truncates a position or halves a length (`a // 2`), pygame's `Rect` arithmetic spelled out where it
 //! matters (`centre_x`, `centre_y`, `centred`, `inflate`).
 
 mod audio;
+pub mod fastout;
 mod guide;
 mod library;
+mod nam;
+pub mod nav;
 mod pages;
+mod play_along;
+pub mod reset;
 mod setup;
+mod timing;
+mod timing_tool;
 mod tone;
 mod updates;
 
 pub use setup::FirstSetup;
+pub use timing::{NUDGE_MS, delay_label};
 
 use std::time::{Duration, Instant};
 
@@ -46,19 +62,21 @@ use crate::library::wheel_notches;
 use crate::player::{PlayerView, tiles};
 use crate::state::AppState;
 
-/// Home's five pages, then Updates (P20.1).
-const ALL_SECTIONS: [(&str, &str); 6] = {
-    let h = crate::home::SECTIONS;
-    [h[0], h[1], h[2], h[3], h[4], ("updates", "Updates")]
-};
+/// The pages in the panel: (id, name, hint). The Python look's screenshots have its five, without hints.
+pub fn sections() -> &'static [(&'static str, &'static str, &'static str)] {
+    nav::pages(theme::classic())
+}
 
-/// The pages in the panel (the Python look's screenshots have Home's five: no Updates there).
-fn sections() -> &'static [(&'static str, &'static str)] {
-    if theme::classic() {
-        &ALL_SECTIONS[..5]
-    } else {
-        &ALL_SECTIONS
-    }
+/// The Sound page's id in this look (the guided setup and the level tool run there).
+fn sound_id() -> &'static str {
+    nav::sound(theme::classic())
+}
+
+/// A question asked before a reset: its words, and the action its Reset key queues.
+struct Confirm {
+    title: String,
+    text: String,
+    action: String,
 }
 
 /// `int(v)` of a position or length in points: `qrs_ui::units::snap`, with room for the f32 noise that sums of
@@ -155,25 +173,35 @@ pub struct SettingsView {
     setup: Option<guide::Guide>,
     /// How a guided setup run inside the first-time setup was left (P23.14).
     guide_exit: Option<guide::GuideExit>,
-    /// The Library page's key boxes, what the last save or load said, and Rocksmith's dlc folders on this machine
+    /// How its steps were left, once it's gone (the first-time setup's summary says Skipped for a skipped step).
+    guide_flow: Option<crate::guitar_setup::Flow>,
+    /// The Library page's key boxes, what the last save or load said, and RS's dlc folders on this machine
     /// (looked for once).
     psarc_in: String,
     sng_in: String,
     key_note: Option<(String, bool)>,
     dlc_found: Option<Vec<std::path::PathBuf>>,
-    /// Set with `closed`: open the first-time setup (P23.14).
+    /// Set with `closed`: open the first-time setup (P23.14), on this page if set (Tone's Suggested captures: "nam").
     pub first_setup: bool,
+    pub first_setup_at: Option<String>,
+    /// Closed to open the amp room (Settings › Tone's "Edit in the amp room", D138).
+    pub open_room: bool,
+    /// The folds open (P35.5).
+    folds: nav::Folds,
+    /// A reset waiting for its Reset (P35.7).
+    confirm: Option<Confirm>,
+    /// Sound's All devices fold: every input and output (the `input:a<i>` / `output:a<i>` acts index them).
+    inputs_all: Vec<Choice>,
+    outputs_all: Vec<Choice>,
+    /// The Neural Amp Modeler page's state (its guided setup's step, a TONE3000 pick, the key being typed).
+    nam: nam::NamPage,
 }
 
 impl SettingsView {
     pub fn new(section: &str) -> SettingsView {
         let mut v = SettingsView {
             hint_color: None,
-            section: sections()
-                .iter()
-                .find(|s| s.0 == section)
-                .map(|s| s.0)
-                .unwrap_or("audio"),
+            section: nav::resolve(section, theme::classic()).unwrap_or(sound_id()),
             closed: false,
             message: None,
             naming: None,
@@ -194,11 +222,19 @@ impl SettingsView {
             cal_out: None,
             setup: None,
             guide_exit: None,
+            guide_flow: None,
             psarc_in: String::new(),
             sng_in: String::new(),
             key_note: None,
             dlc_found: None,
             first_setup: false,
+            first_setup_at: None,
+            open_room: false,
+            folds: nav::Folds::default(),
+            confirm: None,
+            inputs_all: Vec::new(),
+            outputs_all: Vec::new(),
+            nam: nam::NamPage::default(),
         };
         v.show(section);
         v
@@ -206,6 +242,15 @@ impl SettingsView {
 
     pub fn say(&mut self, msg: impl Into<String>) {
         self.message = Some((msg.into(), Instant::now()));
+    }
+
+    /// Whether the page showing is the guide's: Sound's, or Timing's for Calibrate timing.
+    fn guide_here(&self) -> bool {
+        match &self.setup {
+            Some(g) if g.only_timing => matches!(self.section, "timing" | "practice"),
+            Some(_) => self.section == sound_id(),
+            None => false,
+        }
     }
 
     /// Show another section.
@@ -216,9 +261,20 @@ impl SettingsView {
         // (and "setup_measure": calibrating, held mid-strum; "calibrate" / "calibrate_<step>": the Audio page's own
         // Calibrate, P23.10)
         if let Some(rest) = section.strip_prefix("setup") {
-            self.section = "audio";
+            self.section = sound_id();
             match rest.strip_prefix('_') {
                 Some("measure") => self.open_staged_measure(false),
+                Some("timingmeasure") => self.open_staged_timing("measure"),
+                Some("timingscreen") => self.open_staged_timing("screenmeasure"),
+                Some("timingresult") => self.open_staged_timing("result"),
+                // (the play-along, P38.4: listening, playing mid-tune, its result; "timingclicks": the click tool)
+                Some(k @ ("playlisten" | "playing" | "playresult" | "timingclicks")) => {
+                    self.open_staged_timing(k)
+                }
+                Some("settingsfold") => {
+                    self.open_guide(crate::guitar_setup::Step::Settings, true);
+                    self.folds.open("setup-levels");
+                }
                 Some(k) => match crate::guitar_setup::Step::parse(k) {
                     Some(step) => self.open_guide(step, true),
                     None => self.open_guide(crate::guitar_setup::Step::Input, false),
@@ -227,8 +283,18 @@ impl SettingsView {
             }
             return;
         }
+        // Settings > Timing's Calibrate timing ("timingtool"; "timingtool_<state>": a screenshot of it, P36.2)
+        if let Some(rest) = section.strip_prefix("timingtool") {
+            self.section = nav::resolve("timing", theme::classic()).unwrap_or("timing");
+            self.open_timing_guide(match rest.strip_prefix('_') {
+                Some(k) => Some(k),
+                None if rest.is_empty() => None,
+                None => Some(""),
+            });
+            return;
+        }
         if let Some(rest) = section.strip_prefix("calibrate") {
-            self.section = "audio";
+            self.section = sound_id();
             match rest.strip_prefix('_') {
                 Some("measure") => self.open_staged_measure(true),
                 Some(k) => {
@@ -240,16 +306,25 @@ impl SettingsView {
             }
             return;
         }
-        if section == "audio_level" {
-            // (the screenshots: the Audio page scrolled to its end, the input level; clamped as it's drawn)
-            self.section = "audio";
+        if section == "audio_level" || section == "sound_level" {
+            // (the screenshots: the Sound page scrolled to its input level and the folds under it, the trim open;
+            // clamped as it's drawn)
+            self.section = sound_id();
+            self.folds.open("trim");
             self.scroll = 2000.0;
             return;
         }
-        if section == "audio_lowlat" {
-            // (the first-time setup's picture: the Audio page with its output card's switches in view, P23.14)
-            self.section = "audio";
-            self.scroll = 560.0;
+        if section == "audio_lowlat" || section == "timing_lowlat" {
+            // (the first-time setup's picture, P23.14: Timing's Reduce delay; the classic look's Practice has none)
+            self.section = nav::resolve("timing", theme::classic()).unwrap_or(sound_id());
+            self.scroll = 0.0;
+            return;
+        }
+        if section == "tone_knobs" {
+            // (the screenshots: the Tone page with the custom knobs out, P34.8)
+            self.section = "tone";
+            self.folds.open("knobs");
+            self.scroll = 0.0;
             return;
         }
         if section == "library_rec" {
@@ -259,13 +334,22 @@ impl SettingsView {
             return;
         }
         if section == "library_keys" {
-            // (the welcome's Add keys, and the screenshots: the Library page at its end, the keys)
+            // (the welcome's Add keys, and the screenshots: the Library page at its end, the keys open)
             self.section = "library";
+            self.folds.open("keys");
             self.scroll = 2000.0;
             return;
         }
-        if let Some(s) = sections().iter().find(|s| s.0 == section) {
-            self.section = s.0;
+        // Neural Amp Modeler ("nam"; "nam_<state>": a screenshot of its setup's step or its management page)
+        if let Some(rest) = section.strip_prefix("nam")
+            && (rest.is_empty() || rest.starts_with('_'))
+            && nav::resolve("nam", theme::classic()).is_some()
+        {
+            self.show_nam(rest.trim_start_matches('_'));
+            return;
+        }
+        if let Some(s) = nav::resolve(section, theme::classic()) {
+            self.section = s;
             self.scroll = 0.0;
         }
     }
@@ -277,15 +361,36 @@ impl SettingsView {
             self.handle_naming(ev);
             return;
         }
+        // a reset asking first: Enter resets, Esc doesn't
+        if let Some(c) = &self.confirm {
+            if let Event::Key {
+                key, pressed: true, ..
+            } = ev
+            {
+                match key {
+                    Key::Enter => {
+                        let a = c.action.clone();
+                        self.confirm = None;
+                        self.acts.push(a);
+                    }
+                    Key::Escape => self.confirm = None,
+                    _ => {}
+                }
+            }
+            return;
+        }
         // typing a key: the box has the keys (Esc leaves it)
         let typing = st.ctx.memory(|m| {
-            m.focused()
-                .is_some_and(|id| id == library::key_box_id("psarc") || id == library::key_box_id("sng"))
+            m.focused().is_some_and(|id| {
+                ["psarc", "sng", "t3k"]
+                    .iter()
+                    .any(|k| id == library::key_box_id(k))
+            })
         });
         if typing {
             return;
         }
-        if self.setup.is_some() && self.section == "audio" && self.guide_key(ev) {
+        if self.setup.is_some() && self.guide_here() && self.guide_key(ev) {
             return;
         }
         match ev {
@@ -295,26 +400,30 @@ impl SettingsView {
                 modifiers,
                 ..
             } => {
+                // the panel's own keys (P35.7): Esc closes, Up / Down scroll, Tab and Ctrl+Up / Down switch pages
+                if let Some(nav) = nav::nav_key(*key, *modifiers) {
+                    match nav {
+                        nav::Nav::Close => self.closed = true,
+                        nav::Nav::Scroll(d) => self.scroll = (self.scroll + d).clamp(0.0, self.max_scroll),
+                        nav::Nav::Page(by) => {
+                            self.section = nav::step(theme::classic(), self.section, by);
+                            self.scroll = 0.0;
+                        }
+                    }
+                    return;
+                }
                 let act = match key {
-                    Key::Escape | Key::Backspace => {
-                        self.closed = true;
-                        None
-                    }
-                    Key::ArrowUp | Key::ArrowDown | Key::Tab => {
-                        let n = sections().len();
-                        let i = sections().iter().position(|s| s.0 == self.section).unwrap_or(0);
-                        let back = *key == Key::ArrowUp || modifiers.shift;
-                        self.section = sections()[(i + if back { n - 1 } else { 1 }) % n].0;
-                        self.scroll = 0.0;
-                        None
-                    }
                     Key::Comma | Key::Period => {
                         let k = if modifiers.command {
                             "input_offset"
                         } else {
                             "av_offset"
                         };
-                        Some(format!("ms:{k}:{}", if *key == Key::Period { 10 } else { -10 }))
+                        // (5 ms a press, 1 ms with Shift, as everywhere; P37.6a. Ctrl+. makes the delay longer:
+                        // `input_offset` down, D132)
+                        let step = if modifiers.shift { 1 } else { timing::NUDGE_MS };
+                        let up = (*key == Key::Period) != (k == "input_offset");
+                        Some(format!("ms:{k}:{}", if up { step } else { -step }))
                     }
                     Key::Num9 => Some("vol:-0.1".into()),
                     Key::Num0 => Some("vol:0.1".into()),
@@ -390,20 +499,36 @@ impl SettingsView {
             "close" => self.closed = true,
             "saveconfig" => st.save_config(),
             "section" => self.show(arg),
+            "fold" => self.folds.toggle(arg),
+            "reset" => self.ask_reset(arg),
+            "doreset" => self.do_reset(st, player, arg),
+            "noconfirm" => self.confirm = None,
             "theme" => st.apply_theme(ThemeName::parse(arg)),
             "knobs" => {
                 st.config.set("knobs", arg);
                 knobs::set_style(KnobStyle::parse(arg));
                 st.save_config();
             }
-            "input" | "output" | "ch" | "buffer" | "exclusive" | "rocksmith" | "devrescan" => {
+            "input" | "output" | "ch" | "buffer" | "exclusive" | "rs_setup" | "devrescan" => {
                 self.audio_act(st, verb, arg)
             }
-            "cal" | "settrim" | "setpluck" | "trimstep" | "pluckstep" | "calrec" | "calkind" => {
+            "cal" | "settrim" | "setpluck" | "trimstep" | "pluckstep" | "calrec" | "calkind" | "calinst" => {
                 self.cal_act(st, verb, arg)
             }
             "setup" => self.guide_act(st, arg),
+            "band" => {
+                self.band_act(st);
+            }
+            "pa" => {
+                self.play_act(st, arg);
+                self.changed(st, player);
+            }
+            "tcal" => {
+                self.timing_act(st, arg);
+                self.changed(st, player);
+            }
             "update" => crate::update::act(st, arg),
+            "nam" => self.nam_act(st, arg),
             "set" => {
                 if let Some((k, v)) = arg.split_once(':') {
                     st.config.set(k, v);
@@ -471,16 +596,21 @@ impl SettingsView {
                 let on = !st.config.search_dlc();
                 st.set_search_dlc(on);
                 self.say(if on {
-                    "Searching Rocksmith's dlc folder for songs"
+                    "Searching RS's dlc folder for songs"
                 } else {
-                    "Rocksmith's dlc folder left out: the folders you added only"
+                    "RS's dlc folder left out: the folders you added only"
                 });
             }
             "savekeys" => self.save_keys(st),
             "recdir_change" | "recdir_open" | "recdir_reset" => self.rec_folder(st, verb, arg),
             "loadkeys" => self.load_keys_file(st),
+            "amproom" => {
+                self.open_room = true;
+                self.closed = true;
+            }
             "firstsetup" => {
                 self.first_setup = true;
+                self.first_setup_at = (!arg.is_empty()).then(|| arg.to_string());
                 self.closed = true;
             }
             "prefer" => {
@@ -533,11 +663,110 @@ impl SettingsView {
             }
             "tone" | "tonecycle" | "preset" | "delpreset" | "savepreset" | "savenamed" | "resettone"
             | "param" => {
+                if verb == "tone"
+                    && matches!(arg, "song" | "mine")
+                    && let Some(p) = player.as_deref_mut()
+                {
+                    p.rack.set_follow(st, arg == "song"); // (a tone picked by hand on the Rig tile gives way)
+                }
                 self.tone_act(st, verb, arg);
                 self.changed(st, player);
             }
             _ => {}
         }
+    }
+
+    /// Ask before a reset (`page`, or "all").
+    fn ask_reset(&mut self, page: &str) {
+        let name = sections()
+            .iter()
+            .find(|p| p.0 == page)
+            .map(|p| p.1)
+            .unwrap_or("this page");
+        let (title, text) = match page {
+            "all" => (
+                "Reset all settings?".to_string(),
+                "Every page but your tone goes back to its defaults: the devices (Automatic again), volumes, \
+                 timing, low-latency output and the buffer, the display, the song list and updates. Kept: your song \
+                 folders, RS's keys, scores, saved licks, your tone and saved tones, each input's level \
+                 check and the theme.",
+            ),
+            "sound" | "audio" => (
+                format!("Reset {name} to defaults?"),
+                "Song and guitar volume, Hear guitar, the guitar input and the output (Automatic again), the \
+                 channel and the RS2014 setup. Each input's level check is kept.",
+            ),
+            "timing" | "practice" => (
+                format!("Reset {name} to defaults?"),
+                "The delay and Chart sync back to 0 ms, Low-latency output off and the buffer on Auto.",
+            ),
+            "tone" => (
+                format!("Reset {name} to defaults?"),
+                "The tone back to As is and the custom knobs to where they start. Your saved tones are kept.",
+            ),
+            "display" => (
+                format!("Reset {name} to defaults?"),
+                "The knobs, string colours, the note tile, notation, the tiles and their order, the lyrics' next \
+                 line and the note widget window. The theme is kept.",
+            ),
+            "library" => (
+                format!("Reset {name} to defaults?"),
+                "Expand & preview, which copy of a song in both formats plays, and the recordings folders. Your \
+                 song folders and keys are kept.",
+            ),
+            "nam" => (
+                format!("Reset {name} to defaults?"),
+                "The interface reference level back to +12 dBu. Kept: your captures, your TONE3000 key and NAM for                  songs on or off.",
+            ),
+            _ => (
+                format!("Reset {name} to defaults?"),
+                "Checking for updates on start, and a version you skipped.",
+            ),
+        };
+        self.confirm = Some(Confirm {
+            title,
+            text: text.to_string(),
+            action: format!("doreset:{page}"),
+        });
+    }
+
+    /// Reset a page (or all of them, "all") and put it into effect: the engine's devices, volumes, monitoring and
+    /// tone, the knobs' look, an open song.
+    fn do_reset(&mut self, st: &mut AppState, player: Option<&mut PlayerView>, page: &str) {
+        if page == "all" {
+            reset::reset_all(&mut st.config);
+        } else {
+            reset::reset(&mut st.config, page);
+        }
+        if let Some(a) = &st.audio {
+            let prefs = reset::prefs_of(&st.config);
+            if a.prefs() != prefs {
+                a.set_prefs(prefs);
+            }
+            let (k, d) = st.monitor_key();
+            a.engine.set_monitor(st.config.bool(k, d));
+            a.engine.set_song_gain(st.config.f64("volume", 0.8) as f32);
+            a.engine
+                .set_guitar_gain(st.config.f64("guitar_volume", 0.8) as f32);
+            if page == "tone" {
+                a.engine.set_tone(crate::tones::current(&st.config));
+            }
+        }
+        if matches!(page, "nam" | "all") {
+            qrs_audio::board::nam::set_input_dbu(nam::input_dbu(&st.config));
+        }
+        knobs::set_style(KnobStyle::parse(&st.config.str("knobs", "amp")));
+        self.say(if page == "all" {
+            "Every setting is back to its default (your folders, keys, scores and tones kept)".to_string()
+        } else {
+            let name = sections()
+                .iter()
+                .find(|p| p.0 == page)
+                .map(|p| p.1)
+                .unwrap_or("The page");
+            format!("{name}: back to the defaults")
+        });
+        self.changed(st, player);
     }
 
     // -- drawing --------------------------------------------------------------------------------------------------
@@ -579,13 +808,14 @@ impl SettingsView {
         let p = ui.painter().clone();
         let panel = Self::panel_rect(area);
         self.panel = panel;
+        let modal = self.naming.is_some() || self.confirm.is_some();
         // modal: a click outside the panel closes it
         let outside = interact(ui, area, "settings-modal", Sense::click());
         if outside.clicked()
             && outside
                 .interact_pointer_pos()
                 .is_some_and(|pos| !panel.contains(pos))
-            && self.naming.is_none()
+            && !modal
         {
             self.closed = true;
         }
@@ -605,19 +835,22 @@ impl SettingsView {
             None,
         );
         // (while the guitar setup runs, Esc closes the setup: Done shows no key)
-        let done_key = if self.setup.is_some() && self.section == "audio" {
+        let done_key = if self.setup.is_some() && self.guide_here() {
             ""
         } else {
             "Esc"
         };
-        let dw = widgets::button_width(&ctx, "Done", done_key, 15.0, false) + px(8.0);
+        // (P37.6a: with the guided setup open, Done would read as "the setup's done": it closes Settings, and says so)
+        let guiding = self.setup.is_some() && self.guide_here();
+        let done_label = if guiding { "Close Settings" } else { "Done" };
+        let dw = widgets::button_width(&ctx, done_label, done_key, 15.0, false) + px(8.0);
         let done = Rect::from_min_size(pos2(head.max.x - dw, head.min.y), vec2(dw, head.height()));
-        if self.naming.is_none()
+        if !modal
             && widgets::button(
                 ui,
                 done,
                 "set-done",
-                "Done",
+                done_label,
                 done_key,
                 ButtonStyle {
                     size: 15.0,
@@ -629,83 +862,84 @@ impl SettingsView {
         {
             self.acts.push("close".into());
         }
-        // the first-time setup again (P23.14), prominent at the top (not in the Python look's parity shots)
-        let mut right = done.min.x;
-        if !theme::classic() && self.naming.is_none() {
-            let label = "Run the first-time setup again";
-            let rw = widgets::button_width(&ctx, label, "", 14.0, false) + px(8.0);
-            let r = Rect::from_min_size(
-                pos2(done.min.x - px(14.0) - rw, head.min.y),
-                vec2(rw, head.height()),
-            );
-            if r.min.x > head.min.x + nav_w + px(200.0) {
-                self.button(
-                    ui,
-                    r,
-                    label,
-                    "",
-                    "firstsetup",
-                    ButtonStyle {
-                        size: 14.0,
-                        r: Some(14.0),
-                        accent: true,
-                        ..Default::default()
-                    },
-                );
-                right = r.min.x;
-            }
-        }
+        // (the first-time setup again is About's now, P35.3: one way into each setup)
+        let classic = theme::classic();
         text::draw(
             &p,
-            "Changes are saved straight away",
+            if guiding {
+                "Each step saves as you go: closing keeps what's done"
+            } else if classic {
+                "Changes are saved straight away"
+            } else {
+                "Changes save straight away"
+            },
             pos2(head.min.x + nav_w + px(28.0), centre_y(head)),
             Align2::LEFT_CENTER,
             Style::new(13.0, 500, th.caption),
-            Some(right - head.min.x - nav_w - px(48.0)),
+            Some(done.min.x - head.min.x - nav_w - px(48.0)),
         );
+        // the pages, each with its hint under its name (the classic look: names only, as the Python app's)
         let n = sections().len() as f32;
+        let row_h = px(if classic { 48.0 } else { 56.0 });
         let nav = Rect::from_min_size(
             pos2(head.min.x, head.max.y + px(24.0)),
-            vec2(nav_w, 2.0 * px(10.0) + n * px(48.0) + (n - 1.0) * px(6.0)),
+            vec2(nav_w, 2.0 * px(10.0) + n * row_h + (n - 1.0) * px(6.0)),
         );
         paint::well(&p, nav, 22.0);
         let mut y = nav.min.y + px(10.0);
-        for &(key, label) in sections() {
-            let r = Rect::from_min_size(
-                pos2(nav.min.x + px(10.0), y),
-                vec2(nav.width() - px(20.0), px(48.0)),
-            );
+        for &(key, label, hint) in sections() {
+            let r = Rect::from_min_size(pos2(nav.min.x + px(10.0), y), vec2(nav.width() - px(20.0), row_h));
             let on = key == self.section;
             if on {
                 paint::raised(&p, r, Some(14.0), 4.0, Fill::Base, 0.0);
             }
             let resp = interact(ui, r, ("set-nav", key), Sense::click());
-            let hot = resp.hovered() && self.naming.is_none();
+            let hot = resp.hovered() && !modal;
             if hot {
                 ctx.set_cursor_icon(CursorIcon::PointingHand);
             }
-            if resp.clicked() && self.naming.is_none() {
+            if resp.clicked() && !modal {
                 self.acts.push(format!("section:{key}"));
             }
-            text::draw(
-                &p,
-                label,
-                pos2(r.min.x + px(16.0), centre_y(r)),
-                Align2::LEFT_CENTER,
-                Style::new(
-                    15.0,
-                    if on { 800 } else { 600 },
-                    if on {
-                        th.accent_ink
-                    } else if hot {
-                        th.text
-                    } else {
-                        th.text_2
-                    },
-                ),
-                None,
+            let style = Style::new(
+                15.0,
+                if on { 800 } else { 600 },
+                if on {
+                    th.accent_ink
+                } else if hot {
+                    th.text
+                } else {
+                    th.text_2
+                },
             );
-            y += px(54.0);
+            if hint.is_empty() {
+                text::draw(
+                    &p,
+                    label,
+                    pos2(r.min.x + px(16.0), centre_y(r)),
+                    Align2::LEFT_CENTER,
+                    style,
+                    None,
+                );
+            } else {
+                text::draw(
+                    &p,
+                    label,
+                    pos2(r.min.x + px(16.0), centre_y(r) - px(9.0)),
+                    Align2::LEFT_CENTER,
+                    style,
+                    Some(r.width() - px(24.0)),
+                );
+                text::draw(
+                    &p,
+                    hint,
+                    pos2(r.min.x + px(16.0), centre_y(r) + px(11.0)),
+                    Align2::LEFT_CENTER,
+                    Style::new(12.0, 500, if on { th.text_2 } else { th.caption }),
+                    Some(r.width() - px(24.0)),
+                );
+            }
+            y += row_h + px(6.0);
         }
         let content = Rect::from_min_size(
             pos2(nav.max.x + px(28.0), nav.min.y),
@@ -723,17 +957,29 @@ impl SettingsView {
         let bottom = {
             let mut child = ui.new_child(UiBuilder::new().max_rect(clip));
             child.set_clip_rect(clip.intersect(ui.clip_rect()));
-            if self.naming.is_some() {
+            if modal {
                 child.disable();
             }
-            match self.section {
-                "audio" if self.setup.is_some() => self.draw_guide(&mut child, st, body),
-                "audio" => self.draw_audio(&mut child, st, body),
+            let guide = self.setup.is_some();
+            let bottom = match self.section {
+                "timing" | "practice" if self.setup.as_ref().is_some_and(|g| g.only_timing) => {
+                    self.draw_guide(&mut child, st, body)
+                }
+                "sound" | "audio" if guide => self.draw_guide(&mut child, st, body),
+                "sound" | "audio" => self.draw_sound(&mut child, st, body),
+                "timing" => self.draw_timing(&mut child, st, body),
+                "practice" => self.draw_practice(&mut child, st, body),
                 "tone" => self.draw_tone(&mut child, st, body),
                 "display" => self.draw_display(&mut child, st, body),
-                "practice" => self.draw_practice(&mut child, st, body),
-                "updates" => self.draw_updates(&mut child, st, body),
+                "about" => self.draw_about(&mut child, st, body),
+                "nam" => self.draw_nam(&mut child, st, body),
                 _ => self.draw_library(&mut child, st, body),
+            };
+            // each page ends in its reset (not the classic look's: the Python app had none)
+            if classic || (guide && self.guide_here()) {
+                bottom
+            } else {
+                self.reset_link(&child, st, body, bottom + px(18.0))
             }
         };
         // cards scrolled under the top or bottom edge fade there instead of being cut off by it
@@ -758,9 +1004,133 @@ impl SettingsView {
         if self.naming.is_some() {
             self.draw_naming(ui, area);
         }
+        if self.confirm.is_some() {
+            self.draw_confirm(ui, area);
+        }
         if self.knob_drag.is_some() {
             ctx.set_cursor_icon(CursorIcon::ResizeVertical);
         }
+    }
+
+    /// "Reset <page> to defaults" at the right under the page's cards (greyed out when nothing is off its
+    /// default). Returns the y under it.
+    fn reset_link(&mut self, ui: &Ui, st: &AppState, body: Rect, y: f32) -> f32 {
+        let ctx = ui.ctx().clone();
+        let Some(&(page, name, _)) = sections().iter().find(|p| p.0 == self.section) else {
+            return y;
+        };
+        // (About's is Reset all, on the page itself)
+        if page == "about" {
+            return y - px(18.0);
+        }
+        let label = format!("Reset {name} to defaults");
+        let bw = widgets::button_width(&ctx, &label, "", 13.0, false);
+        let r = Rect::from_min_size(pos2(body.max.x - bw, y), vec2(bw, px(40.0)));
+        if !reset::differs(&st.config, page) {
+            // nothing to reset: the words only, faint
+            text::draw(
+                ui.painter(),
+                &label,
+                pos2(r.max.x - px(14.0), centre_y(r)),
+                Align2::RIGHT_CENTER,
+                Style::new(13.0, 600, t().tick),
+                None,
+            );
+            return r.max.y;
+        }
+        self.button(
+            ui,
+            r,
+            &label,
+            "",
+            &format!("reset:{page}"),
+            ButtonStyle {
+                size: 13.0,
+                r: Some(12.0),
+                plain: true,
+                ..Default::default()
+            },
+        );
+        r.max.y
+    }
+
+    /// A reset's question over the panel: what goes back and what's kept; Cancel (Esc) / Reset (Enter).
+    fn draw_confirm(&mut self, ui: &Ui, area: Rect) {
+        let Some(c) = &self.confirm else { return };
+        let (title, text_, action) = (c.title.clone(), c.text.clone(), c.action.clone());
+        let th = t();
+        let p = ui.painter().clone();
+        let ctx = ui.ctx().clone();
+        paint::dim(&p, area, None);
+        let _ = interact(ui, area, "set-confirm-modal", Sense::click());
+        let pad = px(24.0);
+        let w = snap((540.0f32).min(area.width() - 40.0));
+        let cst = Style::new(14.0, 500, th.text_2);
+        let lines = text::wrap(&ctx, &text_, cst, w - 2.0 * pad);
+        let lh = line_h(&ctx, 14.0) + px(3.0);
+        let panel = centred(
+            area,
+            vec2(
+                w,
+                pad + px(28.0) + px(14.0) + lines.len() as f32 * lh + px(20.0) + px(48.0) + pad,
+            ),
+        );
+        paint::floating(&p, panel, Some(26.0));
+        text::draw(
+            &p,
+            &title,
+            pos2(panel.min.x + pad, panel.min.y + pad),
+            Align2::LEFT_TOP,
+            Style::new(20.0, 800, th.text),
+            Some(w - 2.0 * pad),
+        );
+        let mut y = panel.min.y + pad + px(28.0) + px(14.0);
+        for line in &lines {
+            text::draw(&p, line, pos2(panel.min.x + pad, y), Align2::LEFT_TOP, cst, None);
+            y += lh;
+        }
+        let ow = widgets::button_width(&ctx, "Reset", "Enter", 14.0, false);
+        let cw = widgets::button_width(&ctx, "Cancel", "Esc", 14.0, false);
+        let by = panel.max.y - pad - px(48.0);
+        let ok = Rect::from_min_size(pos2(panel.max.x - pad - ow, by), vec2(ow, px(48.0)));
+        let cancel = Rect::from_min_size(pos2(ok.min.x - px(12.0) - cw, by), vec2(cw, px(48.0)));
+        let bs = ButtonStyle {
+            size: 14.0,
+            r: Some(14.0),
+            ..Default::default()
+        };
+        if widgets::button(ui, cancel, "set-confirm-cancel", "Cancel", "Esc", bs).clicked() {
+            self.confirm = None;
+        }
+        if widgets::button(
+            ui,
+            ok,
+            "set-confirm-ok",
+            "Reset",
+            "Enter",
+            ButtonStyle { danger: true, ..bs },
+        )
+        .clicked()
+        {
+            self.confirm = None;
+            self.acts.push(action);
+        }
+    }
+
+    /// A fold (`widgets::fold_row`) at (x, y), `w` wide: returns its height and whether it's open.
+    #[allow(clippy::too_many_arguments)]
+    fn fold(&mut self, ui: &Ui, x: f32, y: f32, w: f32, id: &str, title: &str, hint: &str) -> (f32, bool) {
+        let open = self.folds.is_open(id);
+        let r = Rect::from_min_size(pos2(x, y), vec2(w, px(widgets::FOLD_ROW_H)));
+        if widgets::fold_row(ui, r, ("set-fold", id), title, hint, open).clicked() {
+            self.acts.push(format!("fold:{id}"));
+        }
+        (r.height(), open)
+    }
+
+    /// The accent dot beside a value off its default (P35.7), centred on `at`.
+    fn changed_dot(p: &Painter, at: egui::Pos2) {
+        paint::dot(p, at, 3.5, t().accent);
     }
 
     // -- building blocks ------------------------------------------------------------------------------------------

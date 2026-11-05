@@ -4,6 +4,7 @@
 
 pub mod art;
 pub mod config;
+pub mod difficulty;
 pub mod feedpak_export;
 pub mod group;
 pub mod lessons;
@@ -13,6 +14,7 @@ pub mod scan;
 pub mod userdata;
 
 pub use config::Config;
+pub use difficulty::PartLevel;
 pub use group::{Group, Prefer, group};
 pub use lessons::{Lesson, Riff, RiffProgress};
 pub use paths::DataDir;

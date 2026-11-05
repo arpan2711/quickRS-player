@@ -1,7 +1,7 @@
-//! A Rocksmith tone as a board: each piece of gear in the song's rig (qrs-formats `rig`) becomes the model that
+//! An RS tone as a board: each piece of gear in the song's rig (qrs-formats `rig`) becomes the model that
 //! stands in for it, with its knobs carried over in their own units. What each piece of gear is and its knobs'
 //! units come from the game's own gear manifests and descriptions (gears.psarc `manifests/gears/*.json`,
-//! static.psarc `localization/maingame.csv`; D43): Rocksmith's amps with code names are mapped by what they are
+//! static.psarc `localization/maingame.csv`; D43): RS's amps with code names are mapped by what they are
 //! ("EN-30, a UK-style mid-gain amp" with Top Boost = a Vox AC30), and only an amp this table doesn't know falls
 //! back to the tone's descriptors and Gain. Cabs are mapped by their speakers (and open or closed back) and the
 //! mic by the key's ending (`_57_Edge`, `_Ribbon_Cone`, `_Tube_OffAxis`). Knob units: "number" knobs are
@@ -14,12 +14,12 @@ use qrs_formats::rig::{Gear, RigTone};
 
 use super::{Block, Board, MAX_BLOCKS};
 
-/// A Rocksmith 0-100 knob as a 0-10 dial.
+/// An RS 0-100 knob as a 0-10 dial.
 fn dial(g: &Gear, name: &str) -> Option<f32> {
     g.knob(name).map(|v| (v / 10.0).clamp(0.0, 10.0))
 }
 
-/// A Rocksmith time knob as milliseconds (some old tones store seconds).
+/// An RS time knob as milliseconds (some old tones store seconds).
 fn millis(g: &Gear, name: &str) -> Option<f32> {
     g.knob(name).map(|v| if v <= 5.0 { v * 1000.0 } else { v })
 }
@@ -50,19 +50,19 @@ fn set_raw(b: &mut Block, key: &str, g: &Gear, name: &str) {
     }
 }
 
-/// A Rocksmith rate in Hz onto a model's rate dial (`lo`..`hi` Hz is the model's sweep).
+/// An RS rate in Hz onto a model's rate dial (`lo`..`hi` Hz is the model's sweep).
 fn set_hz(b: &mut Block, key: &str, g: &Gear, name: &str, lo: f32, hi: f32) {
     if let Some(v) = g.knob(name) {
         b.set(key, sweep_dial(v, lo, hi));
     }
 }
 
-/// A kHz knob (Rocksmith's studio EQs) as Hz; old tones may already hold Hz.
+/// A kHz knob (RS's studio EQs) as Hz; old tones may already hold Hz.
 fn khz(v: f32) -> f32 {
     if v < 30.0 { v * 1000.0 } else { v }
 }
 
-/// One of Rocksmith's code-named (or named) amps: what it is, and the voicing that stands in for it.
+/// One of RS's code-named (or named) amps: what it is, and the voicing that stands in for it.
 struct AmpId {
     key: &'static str,
     /// What it is (the game's description, and the real amp it is modelled on where that is clear).
@@ -81,7 +81,7 @@ const fn a(key: &'static str, real: &'static str, voicing: &'static str, clean_b
     }
 }
 
-/// Rocksmith 2014's guitar amps. Sources: the game's descriptions (maingame.csv), the knobs and the faceplates
+/// RS2014's guitar amps. Sources: the game's descriptions (maingame.csv), the knobs and the faceplates
 /// (gears.psarc), and CustomsForge's "Tone Designer to real-world gear" list (D43).
 const AMPS: &[AmpId] = &[
     a(
@@ -106,14 +106,14 @@ const AMPS: &[AmpId] = &[
     a(
         "Amp_BT45",
         "BTQ-45: high-gain boutique (Bogner/Friedman-style)",
-        "amp_lead",
+        "amp_snake",
         2.5,
     ),
-    a("Amp_CA38", "Cali-38: Mesa/Boogie Mark I ('70s)", "amp_lead", 4.0),
+    a("Amp_CA38", "Cali-38: Mesa/Boogie Mark I ('70s)", "amp_cali", 4.0),
     a(
         "Amp_CA85",
         "Cali-85: Mesa/Boogie Mark IIC+/III ('80s)",
-        "amp_lead",
+        "amp_cali",
         3.0,
     ),
     a(
@@ -153,14 +153,14 @@ const AMPS: &[AmpId] = &[
     a(
         "Amp_HG100",
         "HG-100: Soldano SLO-100 (the snakeskin front)",
-        "amp_lead",
+        "amp_snake",
         2.5,
     ),
     a("Amp_HG180", "HG-180: boutique high-gain", "amp_modern", 2.5),
     a(
         "Amp_HG500",
         "HG-500: ultra high-gain with active EQ (Peavey 5150-style)",
-        "amp_modern",
+        "amp_snake",
         2.5,
     ),
     a("Amp_TW22", "AMTW-22: Fender tweed (5E3 Deluxe)", "amp_tweed", 0.0),
@@ -225,14 +225,14 @@ const AMPS: &[AmpId] = &[
     a("Amp_MarshallDSL15H", "Marshall DSL15H", "amp_lead", 2.5),
     a("Amp_MarshallDSL100H", "Marshall DSL100H", "amp_lead", 2.5),
     a("Amp_MarshallJVM410H", "Marshall JVM410H", "amp_lead", 2.5),
-    a("Amp_OrangeAD50", "Orange AD50", "amp_crunch", 0.0),
-    a("Amp_OrangeOR50H", "Orange OR50H", "amp_crunch", 0.0),
-    a("Amp_OrangeOR100", "Orange OR100", "amp_crunch", 0.0),
-    a("Amp_OrangeTinyTerror", "Orange Tiny Terror", "amp_crunch", 0.0),
+    a("Amp_OrangeAD50", "Orange AD50", "amp_tangerine", 0.0),
+    a("Amp_OrangeOR50H", "Orange OR50H", "amp_tangerine", 0.0),
+    a("Amp_OrangeOR100", "Orange OR100", "amp_tangerine", 0.0),
+    a("Amp_OrangeTinyTerror", "Orange Tiny Terror", "amp_tangerine", 0.0),
     a(
         "Amp_OrangeRockerverb",
         "Orange Rockerverb 50 MkII",
-        "amp_lead",
+        "amp_tangerine",
         2.5,
     ),
     a(
@@ -256,9 +256,115 @@ const DB_STACK: &[&str] = &[
     "Bass_Amp_HT400B",
 ];
 
-/// What a Rocksmith amp or cab key stands for, when known (for reports).
+/// RS2014's bass amps (P37.2): what each is and which of our bass voices plays it. Before, every one was the
+/// SVT voice. Sources: the game's descriptions and CustomsForge's list (`soundroom-review/BASS-GEAR.md`); keys we
+/// have not seen fall back on the SVT (`bass_voicing`).
+const BASS_AMPS: &[AmpId] = &[
+    a(
+        "Bass_Amp_HT300B",
+        "HW-300B: classic tube bass head (an Ampeg SVT-CL)",
+        "amp_bass",
+        0.0,
+    ),
+    a(
+        "Bass_Amp_HT400B",
+        "HW-400B: boutique tube bass head with plenty of drive",
+        "amp_bass_tube",
+        0.0,
+    ),
+    a(
+        "Bass_Amp_CH300B",
+        "CLH-300B: classic tube/transistor hybrid (a Gallien-Krueger 800RB)",
+        "amp_bass_ss",
+        0.0,
+    ),
+    a(
+        "Bass_Amp_CH600B",
+        "CLH-600B: hybrid with graphic EQ and compression (an Ampeg SVT-4 Pro)",
+        "amp_bass_ss",
+        0.0,
+    ),
+    a(
+        "Bass_Amp_CS75B",
+        "CSS-75B: boutique transistor bass head (Hartke / Markbass style)",
+        "amp_bass_ss",
+        0.0,
+    ),
+    a(
+        "Bass_Amp_BT880B",
+        "BH-880B: boutique hybrid with parametric EQ",
+        "amp_bass_ss",
+        0.0,
+    ),
+    a(
+        "Bass_Amp_BT975B",
+        "BH-975B: boutique tube bass head (an Aguilar DB751)",
+        "amp_bass_tube",
+        0.0,
+    ),
+    a(
+        "Bass_Amp_LT25B",
+        "LW-25B: classic low-wattage tube bass (an Ampeg B-15 Portaflex)",
+        "amp_b15",
+        0.0,
+    ),
+    // (P38.2: the CustomsForge list's other bass heads, by family: HW tube heads, CLH hybrids, CSS transistor
+    // heads, BH boutique hybrids, LW low-wattage tube combos; ~750 of the owner's bass tones were on the SVT voice)
+    a(
+        "Bass_Amp_HT100B",
+        "HW-100B: classic tube bass head (an Ampeg SVT-style head with Hi/Lo shift)",
+        "amp_bass",
+        0.0,
+    ),
+    a(
+        "Bass_Amp_CH350B",
+        "CLH-350B: tube/transistor hybrid with a graphic EQ (Gallien-Krueger style)",
+        "amp_bass_ss",
+        0.0,
+    ),
+    a(
+        "Bass_Amp_CS240B",
+        "CSS-240B: transistor bass head",
+        "amp_bass_ss",
+        0.0,
+    ),
+    a(
+        "Bass_Amp_CS300B",
+        "CSS-300B: transistor bass head with split mids",
+        "amp_bass_ss",
+        0.0,
+    ),
+    a(
+        "Bass_Amp_BT600B",
+        "BH-600B: boutique hybrid with compression and parametric EQ",
+        "amp_bass_ss",
+        0.0,
+    ),
+    a(
+        "Bass_Amp_LT85B",
+        "LW-85B: classic low-wattage tube bass combo (Portaflex style)",
+        "amp_b15",
+        0.0,
+    ),
+    a("Bass_Amp_OrangeAD200B", "Orange AD200B", "amp_bass_tube", 0.0),
+    a("Bass_Amp_EdenE300", "Eden E300", "amp_bass_ss", 0.0),
+    a("Bass_Amp_EdenWT550", "Eden WT550", "amp_bass_ss", 0.0),
+    a("Bass_Amp_EdenWT800", "Eden WT800", "amp_bass_ss", 0.0),
+];
+
+/// Our bass voice for an RS bass amp key (the SVT for one no table knows, unless its name says Orange).
+pub fn bass_voicing(key: &str) -> &'static str {
+    match BASS_AMPS.iter().find(|a| a.key == key) {
+        Some(a) => a.voicing,
+        None if key.to_lowercase().contains("orange") => "amp_bass_tube",
+        None => "amp_bass",
+    }
+}
+
+/// What an RS amp or cab key stands for, when known (for reports).
 pub fn real_gear(key: &str) -> Option<&'static str> {
     AMPS.iter()
+        .chain(BASS_AMPS)
         .find(|a| a.key == key)
         .map(|a| a.real)
         .or_else(|| cab_id(key).map(|c| c.real))
@@ -269,13 +375,17 @@ pub fn amp_known(key: &str) -> bool {
     AMPS.iter().any(|a| a.key == key) || is_bass_amp(key)
 }
 
+fn bass_amp_known(key: &str) -> bool {
+    key.starts_with("DI_Amp") || BASS_AMPS.iter().any(|a| a.key == key)
+}
+
 fn is_bass_amp(key: &str) -> bool {
     key.starts_with("Bass_Amp") || key.starts_with("DI_Amp")
 }
 
-/// A tone for a bass: it says so, or it has a bass amp or cab. (Not a bass pedal: Rocksmith's acoustic guitar
+/// A tone for a bass: it says so, or it has a bass amp or cab. (Not a bass pedal: RS's acoustic guitar
 /// tones often use the bass multiband compressor.)
-fn is_bass_tone(tone: &RigTone) -> bool {
+pub fn is_bass_tone(tone: &RigTone) -> bool {
     if tone.has("BASS") {
         return true;
     }
@@ -291,8 +401,21 @@ fn is_bass_tone(tone: &RigTone) -> bool {
 /// An amp no table knows: the tone's descriptors and the amp's Gain pick the voicing.
 fn guess_amp(key: &str, tone: &RigTone, gain: f32) -> &'static str {
     let k = key.to_lowercase();
-    if k.contains("plexi") || k.contains("jtm45") || k.contains("bluesbreaker") || k.contains("orange") {
+    if k.contains("plexi") || k.contains("jtm45") || k.contains("bluesbreaker") {
         return "amp_crunch";
+    }
+    // (P41.2, D167: the new voices for the gear the reviews named; RS's own amps are in `AMPS`)
+    if k.contains("orange") {
+        return "amp_tangerine";
+    }
+    if k.contains("hiwatt") {
+        return "amp_surrey";
+    }
+    if k.contains("soldano") || k.contains("5150") || k.contains("6505") || k.contains("bogner") {
+        return "amp_snake";
+    }
+    if k.contains("boogie") || k.contains("mark") {
+        return "amp_cali";
     }
     if k.contains("jcm800") || k.contains("dsl") || k.contains("jvm") {
         return "amp_lead";
@@ -323,6 +446,9 @@ fn guess_amp(key: &str, tone: &RigTone, gain: f32) -> &'static str {
     }
 }
 
+/// Under this gain (0..10) a channel-switching amp plays its clean channel, whatever the tone's descriptors say.
+pub const LOW_GAIN: f32 = 1.5;
+
 fn amp(g: &Gear, tone: &RigTone) -> Option<Vec<Block>> {
     if is_bass_amp(&g.key) {
         return bass_amp(g, tone);
@@ -335,15 +461,26 @@ fn amp(g: &Gear, tone: &RigTone) -> Option<Vec<Block>> {
         })
         .unwrap_or(5.0);
     // a channel amp turned down for a tone that doesn't call itself driven is its clean channel (a Rectifier
-    // at Gain 20 is still a crunch, and Rocksmith's "distortion" tones on it are)
+    // at Gain 20 is still a crunch, and RS's "distortion" tones on it are)
     let driven = ["OVERDRIVE", "DISTORTION", "HIGH GAIN", "CRUNCH", "FUZZ"]
         .iter()
         .any(|d| tone.has(d));
-    let clean_channel = |below: f32| !driven && (gain < below || (tone.has("CLEAN") && gain < 2.0 * below));
+    // (P41.1, the gigging guitarist's #3: a channel amp nearly off, under `LOW_GAIN`, is its clean channel whatever
+    // the tone calls itself: Black Hole Sun's "rotomod", a Mark IIC+ at gain 0.1, is no lead tone)
+    let clean_channel = |below: f32| {
+        gain < LOW_GAIN || (!driven && (gain < below || (tone.has("CLEAN") && gain < 2.0 * below)))
+    };
     let id = match AMPS.iter().find(|a| a.key == g.key) {
         Some(a) if a.clean_below > 0.0 && clean_channel(a.clean_below) => "amp_clean",
         Some(a) => a.voicing,
         None => guess_amp(&g.key, tone, gain),
+    };
+    // (P41.1: a channel amp's clean channel has its own volume: RS's gain 0.1 on a Mark is its clean channel played
+    // at a normal level, not our Twin all but off; at least 3, still clean, so the level match has headroom)
+    let gain = if id == "amp_clean" && AMPS.iter().any(|a| a.key == g.key && a.clean_below > 0.0) {
+        gain.max(3.0)
+    } else {
+        gain
     };
     let mut b = Block::of(id)?;
     // a one-knob amp (Tiny Terror, Electric Hawaiian) has a Tone for its treble
@@ -429,25 +566,61 @@ fn bass_amp(g: &Gear, tone: &RigTone) -> Option<Vec<Block>> {
         x.set("compress", c / 10.0);
         out.push(x);
     }
-    let mut b = Block::of("amp_bass")?;
-    b.set("gain", dial(g, "Gain").unwrap_or(4.0));
-    let mut bass = stack("Bass");
-    let mut treble = stack("Treble");
-    let mut mid = stack("Mid").or_else(|| match (stack("LoMid"), stack("HiMid")) {
+    let voicing = bass_voicing(k);
+    let mut b = Block::of(voicing)?;
+    let gain = dial(g, "Gain").unwrap_or(4.0);
+    b.set(if voicing == "amp_b15" { "volume" } else { "gain" }, gain);
+    let bass = stack("Bass");
+    let treble = stack("Treble");
+    let mid = stack("Mid").or_else(|| match (stack("LoMid"), stack("HiMid")) {
         (Some(l), Some(h)) => Some((l + h) / 2.0),
         (l, h) => l.or(h),
     });
-    // the Ampeg-style Ultra Hi / Ultra Lo switches: a treble lift; a bass lift with the mids cut
-    if g.knob("HiShift").is_some_and(|v| v >= 0.5) {
-        treble = Some((treble.unwrap_or(5.0) + 1.0).min(10.0));
+    if voicing == "amp_bass_ss" {
+        // the active EQ in dB: a 0..10 dial at 5 is flat, +-15 dB at its ends
+        let to_db = |d: Option<f32>| d.map(|d| ((d - 5.0) * 3.0).clamp(-15.0, 15.0));
+        for (key, v) in [
+            ("bass", to_db(bass)),
+            ("mid", to_db(mid)),
+            ("treble", to_db(treble)),
+        ] {
+            if let Some(v) = v {
+                b.set(key, v);
+            }
+        }
+    } else {
+        for (key, v) in [("bass", bass), ("mid", mid), ("treble", treble)] {
+            if let Some(v) = v {
+                b.set(key, v);
+            }
+        }
     }
-    if g.knob("LoShift").is_some_and(|v| v >= 0.5) {
-        bass = Some((bass.unwrap_or(5.0) + 1.0).min(10.0));
-        mid = Some((mid.unwrap_or(5.0) - 1.0).max(0.0));
-    }
-    for (key, v) in [("bass", bass), ("mid", mid), ("treble", treble)] {
-        if let Some(v) = v {
-            b.set(key, v);
+    // the Ampeg-style Ultra Hi / Ultra Lo switches: the SVT's own (P37.2); on another voice a treble lift, and a
+    // bass lift with the mids cut, as before
+    let (hi_shift, lo_shift) = (
+        g.knob("HiShift").is_some_and(|v| v >= 0.5),
+        g.knob("LoShift").is_some_and(|v| v >= 0.5),
+    );
+    if voicing == "amp_bass" {
+        b.set("ultra_hi", if hi_shift { 1.0 } else { 0.0 });
+        b.set("ultra_lo", if lo_shift { 1.0 } else { 0.0 });
+    } else if voicing != "amp_bass_ss" {
+        if hi_shift {
+            let t = b.get("treble").unwrap_or(5.0);
+            b.set("treble", (t + 1.0).min(10.0));
+        }
+        if lo_shift {
+            let (bb, mm) = (b.get("bass").unwrap_or(5.0), b.get("mid").unwrap_or(5.0));
+            b.set("bass", (bb + 1.0).min(10.0));
+            b.set("mid", (mm - 1.0).max(0.0));
+        }
+    } else {
+        if hi_shift {
+            let t = b.get("treble").unwrap_or(0.0);
+            b.set("treble", t + 3.0);
+        }
+        if lo_shift {
+            b.set("contour", 1.0);
         }
     }
     if let Some(f) = g.knob("MidFreq") {
@@ -509,7 +682,7 @@ fn bass_amp(g: &Gear, tone: &RigTone) -> Option<Vec<Block>> {
     Some(out)
 }
 
-/// One of Rocksmith's cabs: its speakers as our model, and what it is.
+/// One of RS's cabs: its speakers as our model, and what it is.
 struct CabId {
     body: &'static str,
     model: &'static str,
@@ -520,14 +693,14 @@ const fn c(body: &'static str, model: &'static str, real: &'static str) -> CabId
     CabId { body, model, real }
 }
 
-/// By the key's model part (`Cab_<body>_<mic>_<position>`). A 4x10 guitar cab is open-backed and wide, closer
-/// to the open 2x12 than the closed 4x12; a closed-back modern 2x12 or 2x15 is closer to the 4x12.
+/// By the key's model part (`Cab_<body>_<mic>_<position>`). A 4x10 guitar cab has its own model (P41.2, the
+/// Bassman / Super Reverb 4x10); a closed-back modern 2x12 or 2x15 is closer to the 4x12.
 const CABS: &[CabId] = &[
     c("AT0112C", "cab_1x12", "AT-0112C: US open-back 1x12"),
     c("AT1121C", "cab_1x12", "AT-112.1C: US open-back 1x12"),
     c("BT1120C", "cab_1x12", "BT-1120C: boutique open-back 1x12"),
     c("BT1121C", "cab_1x12", "BT-112.1C: boutique closed-back 1x12"),
-    c("BT410C", "cab_2x12", "BT-410C: boutique 4x10"),
+    c("BT410C", "cab_4x10_open", "BT-410C: boutique 4x10"),
     c("CA112C", "cab_1x12", "CA-112C: Mesa-style open-back 1x12"),
     c("CA215C", "cab_2x12", "CA-215C: Mesa-style 2x15"),
     c("CA412C", "cab_4x12", "CA-412C: Mesa-style 4x12"),
@@ -551,7 +724,11 @@ const CABS: &[CabId] = &[
     c("OrangePPC412", "cab_4x12", "Orange PPC412 4x12"),
     c("TW110C", "cab_1x10", "TW-110C: Fender tweed 1x10"),
     c("TW112C", "cab_1x12", "TW-112C: Fender silverface 1x12"),
-    c("TW410C", "cab_2x12", "TW-410C: Fender Bassman 4x10 (open back)"),
+    c(
+        "TW410C",
+        "cab_4x10_open",
+        "TW-410C: Fender Bassman 4x10 (open back)",
+    ),
     // bass
     c(
         "AT1150BC",
@@ -560,23 +737,23 @@ const CABS: &[CabId] = &[
     ),
     c("AT810BC", "cab_8x10", "AT-810BC: 8x10 (Ampeg SVT-810)"),
     c("BT115BC", "cab_1x15", "BH-115BC: boutique ported 1x15"),
-    c("BT212BC", "cab_8x10", "BH-212BC: boutique ported 2x12"),
-    c("BT410BC", "cab_8x10", "BH-410BC: boutique 4x10"),
+    c("BT212BC", "cab_2x10", "BH-212BC: boutique ported 2x12"),
+    c("BT410BC", "cab_4x10", "BH-410BC: boutique 4x10"),
     c("CA1510BC", "cab_1x15", "CA-1510BC: 1x15 + 10 multi-speaker"),
-    c("CH210BC", "cab_8x10", "CH-21BC: ported 2x10"),
+    c("CH210BC", "cab_2x10", "CH-21BC: ported 2x10"),
     c("CH310BC", "cab_8x10", "CH-3120BC: folded 3x12"),
-    c("CH410BC", "cab_8x10", "CH-410BC: 4x10 alloy cones"),
+    c("CH410BC", "cab_4x10", "CH-410BC: 4x10 alloy cones"),
     c("CS112BC", "cab_1x15", "CS-112BC: 1x12"),
     c("CS15BC", "cab_1x15", "CS-15BC: folded 1x15"),
-    c("CS410BC", "cab_8x10", "CS-410BC: punchy 4x10"),
+    c("CS410BC", "cab_4x10", "CS-410BC: punchy 4x10"),
     c("EdenD115XLT", "cab_1x15", "Eden D115XLT 1x15"),
-    c("EdenD212XLT", "cab_8x10", "Eden D212XLT 2x12"),
-    c("EdenD410XST", "cab_8x10", "Eden D410XST 4x10"),
+    c("EdenD212XLT", "cab_2x10", "Eden D212XLT 2x12"),
+    c("EdenD410XST", "cab_4x10", "Eden D410XST 4x10"),
     c("EdenD610XST", "cab_8x10", "Eden D610XST 6x10"),
-    c("GB415BC", "cab_1x15", "GB-415BC: vintage 4x15"),
+    c("GB415BC", "cab_4x15", "GB-415BC: vintage 4x15"),
     c("OrangeOBC115", "cab_1x15", "Orange OBC115 1x15"),
     c("OrangeOBC810", "cab_8x10", "Orange OBC810 8x10"),
-    c("TW215BC", "cab_1x15", "TW-215BC: closed 2x15"),
+    c("TW215BC", "cab_4x15", "TW-215BC: closed 2x15"),
     // full-range: no speaker colour (a PA system, hi-fi speakers)
     c("PA1152C", "", "PS-115.2C: small PA"),
     c("PA600C", "", "PS-600: PA"),
@@ -591,7 +768,8 @@ const CABS: &[CabId] = &[
 ];
 
 /// "Cab_GB412CMKIII_Ribbon_Cone" → "GB412CMKIII".
-fn cab_body(key: &str) -> &str {
+/// A cab key's model part ("Cab_GB412CMKII_57_Cap" -> "GB412CMKII").
+pub fn cab_body(key: &str) -> &str {
     let rest = key
         .strip_prefix("Bass_Cab_")
         .or_else(|| key.strip_prefix("Cab_"))
@@ -614,15 +792,18 @@ fn guess_cab(key: &str) -> &'static str {
     let digits: String = cab_body(key).chars().filter(|c| c.is_ascii_digit()).collect();
     let layout: String = digits.chars().take(3).collect();
     if bass {
-        return if layout.ends_with("15") || layout.starts_with("15") {
-            "cab_1x15"
-        } else {
-            "cab_8x10"
+        return match layout.as_str() {
+            "410" => "cab_4x10",
+            "210" | "212" => "cab_2x10",
+            "415" | "215" => "cab_4x15",
+            l if l.ends_with("15") || l.starts_with("15") => "cab_1x15",
+            _ => "cab_8x10",
         };
     }
     match layout.as_str() {
         "110" => "cab_1x10",
         "112" => "cab_1x12",
+        "410" => "cab_4x10_open",
         l if l.starts_with('4') => "cab_4x12",
         l if l.starts_with('1') => "cab_1x12",
         _ => "cab_2x12",
@@ -806,7 +987,9 @@ fn effect(g: &Gear) -> Option<Vec<Block>> {
                 .with("attack", 1.0)
         }
         "Pedal_NoiseGate" => {
+            // (P41.1: RS's own gate is a full one; it moves after the amp, keyed on the input, in `board_keyed`)
             let mut x = b("gate")?;
+            x.set("range", -60.0);
             set_raw(&mut x, "threshold", g, "Thresh");
             // the higher the rate, the faster it closes
             if let Some(r) = g.knob("Rate") {
@@ -960,9 +1143,29 @@ fn effect(g: &Gear) -> Option<Vec<Block>> {
             }
             x
         }
+        // (P41.1: in a slot after the amp, RS's booster is a level boost for a lead, not a treble booster clipping a
+        // preamp-level signal: our clean boost, a dB a step of its Boost)
+        "Pedal_RangeBooster" if g.slot.starts_with("Post") || g.slot.starts_with("Rack") => {
+            let mut x = b("boost")?;
+            x.set("gain", dial(g, "Boost").unwrap_or(5.0)).set("bright", 5.0);
+            x
+        }
         "Pedal_RangeBooster" => {
             let mut x = b("treble_boost")?;
             set_dial(&mut x, "boost", g, "Boost");
+            x
+        }
+        "Bass_Pedal_BassDistortion" if dial(g, "Gain").unwrap_or(5.0) >= 6.0 => {
+            // a distortion turned up: the modern grinder (P37.2)
+            let mut x = b("bass_grind")?;
+            set_dial(&mut x, "drive", g, "Gain");
+            if let Some(t) = dial(g, "Tone") {
+                x.set("treble", (t - 5.0) * 2.4);
+            }
+            match g.knob("Blend") {
+                Some(v) => x.set("blend", v),
+                None => x.set("blend", 100.0),
+            };
             x
         }
         "Bass_Pedal_BassOverdrive" | "Bass_Pedal_BassDistortion" => {
@@ -989,7 +1192,17 @@ fn effect(g: &Gear) -> Option<Vec<Block>> {
             set_dial(&mut x, "attack", g, "Gain");
             x
         }
-        "Pedal_BuzzToo" | "Pedal_FuzzWasHe" | "Bass_Pedal_BassFuzz" => {
+        "Bass_Pedal_BassFuzz" => {
+            // the bass Muff (P37.2: the guitar one took the bass's lows out)
+            let mut x = b("bass_muff")?;
+            set_dial(&mut x, "sustain", g, "Gain");
+            set_dial(&mut x, "tone", g, "Tone");
+            if let Some(v) = g.knob("Blend").or_else(|| g.knob("Mix")) {
+                x.set("blend", v);
+            }
+            x
+        }
+        "Pedal_BuzzToo" | "Pedal_FuzzWasHe" => {
             // "an ultra-dense wooly fuzz", "tons of fuzz with extended tone control": a Muff
             let mut x = b("big_pi")?;
             set_dial(&mut x, "sustain", g, "Gain");
@@ -1042,6 +1255,10 @@ fn effect(g: &Gear) -> Option<Vec<Block>> {
             }
             x
         }
+        // (P41.1: a LoFi turned down to 1% or less does nothing but sit on the board)
+        "Pedal_LoFiFilter" | "Pedal_BitCruncher" if g.knob("Mix").is_some_and(|m| m <= 1.0) => {
+            return Some(Vec::new());
+        }
         "Pedal_LoFiFilter" | "Pedal_BitCruncher" => {
             let mut x = b("lofi")?;
             x.set("type", if k == "Pedal_BitCruncher" { 2.0 } else { 0.0 });
@@ -1065,6 +1282,10 @@ fn effect(g: &Gear) -> Option<Vec<Block>> {
             set_hz(&mut x, "rate", g, "Rate", 0.12, 6.0);
             set_dial(&mut x, "depth", g, "Depth");
             set_raw(&mut x, "mix", g, "Mix");
+            if k.starts_with("Bass_") {
+                // the CEB-3's low filter: the bass's lows stay dry (P37.2)
+                x.set("low_cut", 3.0);
+            }
             x
         }
         "Pedal_Enbiggenator" | "Pedal_SendInTheClones" => {
@@ -1148,21 +1369,199 @@ fn effect(g: &Gear) -> Option<Vec<Block>> {
 /// that is flat on purpose (a PA cab, a guitar's DI preamp); an amp with a built-in EQ or compressor brings
 /// those too. None: nothing here stands in for it.
 pub fn blocks_for(g: &Gear, tone: &RigTone) -> Option<Vec<Block>> {
-    match g.slot.as_str() {
-        "Amp" => amp(g, tone),
-        "Cabinet" => cab(g),
-        _ => effect(g),
+    matched(g, tone).0
+}
+
+/// How a piece of a tone's gear is matched (P38.2, the library coverage report and the room's song tone view).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Match {
+    /// Mapped by what it is (a known amp, cab or pedal).
+    Known,
+    /// An amp or cab no table knows: its voicing guessed from the tone and its name, its speakers from its digits.
+    Guessed,
+    /// A DI or PA on a bass or acoustic part: no block, as the song has it.
+    Flat,
+    /// A DI or PA on an electric part: our cleanest amp or an open 1x12 stands in (D141).
+    StandIn,
+    /// Nothing here stands in for it (a ring mod, a harmony): left out.
+    LeftOut,
+}
+
+impl Match {
+    pub fn label(self) -> &'static str {
+        match self {
+            Match::Known => "known",
+            Match::Guessed => "guessed",
+            Match::Flat => "flat on purpose",
+            Match::StandIn => "stand-in",
+            Match::LeftOut => "left out",
+        }
     }
 }
 
-/// The board for a Rocksmith tone. Unknown gear is skipped.
+/// How `g` is matched in `tone`.
+pub fn match_of(g: &Gear, tone: &RigTone) -> Match {
+    matched(g, tone).1
+}
+
+fn matched(g: &Gear, tone: &RigTone) -> (Option<Vec<Block>>, Match) {
+    let bass = is_bass_tone(tone);
+    // (P37.6c: RS's acoustic tones often use the bass multiband compressor; on a guitar it becomes our clean
+    // studio compressor, not a bass unit)
+    if g.key == "Bass_Pedal_MBComp" && !bass {
+        let c = g.knob("Compress").unwrap_or(40.0).clamp(0.0, 100.0);
+        let Some(mut x) = Block::of("studio_comp") else {
+            return (None, Match::LeftOut);
+        };
+        x.set("threshold", -6.0 - 0.3 * c)
+            .set("ratio", 3.0)
+            .set("makeup", 0.1 * c);
+        x.on = true;
+        return (Some(vec![x]), Match::Known);
+    }
+    // (P41.1: RS puts its acoustic emulator on some electric parts to thin a guitar out, Seven Nation Army's lead;
+    // played through an amp it is only a boomy filter: left out on an electric part)
+    if g.key == "Pedal_AcousticEmulator" && !tone.has("ACOUSTIC") && !bass {
+        return (Some(Vec::new()), Match::Flat);
+    }
+    let out = match g.slot.as_str() {
+        "Amp" => amp(g, tone),
+        "Cabinet" => cab(g),
+        _ => effect(g),
+    };
+    // (P41.1: a bass part on one of RS's guitar cabs, Another One Bites the Dust's 1x12: a bass cab of the same
+    // size, half DI, so the bass keeps its low end)
+    let out = match out {
+        Some(v) if bass && g.slot == "Cabinet" && v.iter().any(|b| GUITAR_CABS.contains(&b.def().id)) => {
+            let id = match v[0].def().id {
+                "cab_4x12" => "cab_4x10",
+                _ => "cab_2x10",
+            };
+            return (Block::of(id).map(|b| vec![b.with("di", 50.0)]), Match::StandIn);
+        }
+        o => o,
+    };
+    let known = match g.slot.as_str() {
+        "Amp" => amp_known(&g.key) && (!is_bass_amp(&g.key) || bass_amp_known(&g.key)),
+        "Cabinet" => cab_id(&g.key).is_some(),
+        _ => true,
+    };
+    // (P37.6c, D141: an electric guitar tone always gets an amp and a cab: a DI preamp or a PA speaker RS
+    // uses on an electric part becomes our cleanest amp or an open 1x12, not "nothing")
+    let electric = !bass && !tone.has("ACOUSTIC");
+    let stand_in = |id: &str| Block::of(id).map(|b| vec![b]);
+    match (out, g.slot.as_str()) {
+        (Some(v), "Amp") if v.is_empty() && electric => {
+            let gain = g.knob("Gain").map(|v| (v / 10.0).clamp(0.0, 10.0)).unwrap_or(3.0);
+            (
+                Block::of("amp_clean").map(|b| vec![b.with("gain", gain.min(4.0))]),
+                Match::StandIn,
+            )
+        }
+        (Some(v), "Cabinet") if v.is_empty() && electric => (stand_in("cab_1x12"), Match::StandIn),
+        // (P38.2: a bass straight into a PA, as RS has it, is still a bass through a cab: one that's mostly DI, so
+        // it sounds as recorded and has a cab to swap for an IR)
+        (Some(v), "Cabinet") if v.is_empty() && bass => (
+            Block::of("cab_4x10").map(|b| vec![b.with("di", BASS_DI_PCT)]),
+            Match::StandIn,
+        ),
+        (None, "Cabinet") if bass => (
+            Block::of("cab_4x10").map(|b| vec![b.with("di", BASS_DI_PCT)]),
+            Match::StandIn,
+        ),
+        (None, "Amp") if electric => (stand_in("amp_clean"), Match::StandIn),
+        (None, "Cabinet") if electric => (stand_in("cab_1x12"), Match::StandIn),
+        (Some(v), _) if v.is_empty() => (Some(v), Match::Flat),
+        (Some(v), _) => (Some(v), if known { Match::Known } else { Match::Guessed }),
+        (None, _) => (None, Match::LeftOut),
+    }
+}
+
+/// A clean or low-gain tone (P41.1): no drive or fuzz on before the amp, and the amp itself clean (a clean, tweed,
+/// chime or bass voice under 5, any other under `LOW_GAIN`). Such a tone gets no automatic gate.
+pub fn clean_tone(b: &Board) -> bool {
+    let Some(i) = b
+        .blocks
+        .iter()
+        .position(|x| x.on && x.def().kind == super::Kind::Amp)
+    else {
+        return !b
+            .blocks
+            .iter()
+            .any(|x| x.on && matches!(x.def().kind, super::Kind::Drive | super::Kind::Fuzz));
+    };
+    if b.blocks[..i]
+        .iter()
+        .any(|x| x.on && matches!(x.def().kind, super::Kind::Drive | super::Kind::Fuzz))
+    {
+        return false;
+    }
+    let amp = &b.blocks[i];
+    let gain = amp.get("gain").or_else(|| amp.get("volume")).unwrap_or(5.0);
+    match amp.def().id {
+        "amp_clean" | "amp_tweed" | "amp_chime" => gain < 5.0,
+        id if id.contains("bass") || id == "amp_b15" => gain < 5.0,
+        _ => gain < LOW_GAIN,
+    }
+}
+
+/// RS's Octavia (its octave-up pedal) next to a fuzz is Hendrix's Octavia: our octave fuzz in the fuzz's place, at its
+/// fuzz (P41.1, the gigging guitarist's #5; Purple Haze's solo).
+fn octavia_into_fuzz(blocks: &mut Vec<Block>, keys: &[(u32, String)]) {
+    let key = |b: &Block| keys.iter().find(|(u, _)| *u == b.uid).map(|(_, k)| k.as_str());
+    let amp = blocks
+        .iter()
+        .position(|b| b.def().kind == super::Kind::Amp)
+        .unwrap_or(blocks.len());
+    let Some(o) = blocks[..amp]
+        .iter()
+        .position(|b| key(b) == Some("Pedal_OctaveUp") && b.get("up").unwrap_or(0.0) > 0.0)
+    else {
+        return;
+    };
+    let Some(f) = blocks[..amp]
+        .iter()
+        .position(|b| b.def().kind == super::Kind::Fuzz)
+    else {
+        return;
+    };
+    let fuzz = &blocks[f];
+    let amount = ["fuzz", "sustain", "attack", "gain"]
+        .iter()
+        .find_map(|k| fuzz.get(k))
+        .unwrap_or(7.0);
+    let Some(mut of) = Block::of("octave_fuzz") else {
+        return;
+    };
+    of.set("fuzz", amount);
+    of.on = fuzz.on;
+    blocks[f] = of;
+    blocks.remove(o);
+}
+
+/// Our guitar cabs (a bass part on one gets a bass cab instead).
+const GUITAR_CABS: [&str; 4] = ["cab_1x10", "cab_1x12", "cab_2x12", "cab_4x12"];
+
+/// The DI share of the bass cab standing in for a PA or a missing cab on a bass part (P38.2): mostly the DI, as such
+/// a part is recorded.
+pub const BASS_DI_PCT: f32 = 80.0;
+
+/// The board for an RS tone. Unknown gear is skipped.
 pub fn board_for(tone: &RigTone) -> Board {
+    board_keyed(tone).0
+}
+
+/// The board for an RS tone and, for each block, the gear key it stands for (None for what the board adds:
+/// a gate, an acoustic sim and its room). For the NAM picker (P33.2), which swaps gear for captures of it.
+pub fn board_keyed(tone: &RigTone) -> (Board, Vec<Option<String>>) {
     let mut blocks: Vec<Block> = Vec::new();
+    let mut keys: Vec<(u32, String)> = Vec::new();
     for g in &tone.gear {
         match blocks_for(g, tone) {
             Some(bs) => {
                 for b in bs {
                     if blocks.len() < MAX_BLOCKS {
+                        keys.push((b.uid, g.key.clone()));
                         blocks.push(b);
                     }
                 }
@@ -1182,25 +1581,73 @@ pub fn board_for(tone: &RigTone) -> Board {
             blocks.push(Block::new(super::catalog::find("room").expect("room")).with("mix", 15.0));
         }
     }
+    // (P38.2: an electric or bass tone always has an amp and a cab, even when its rig has none: our cleanest amp
+    // (a bass's SVT at low gain) and an open 1x12 (a bass cab that's mostly DI))
+    let bass = is_bass_tone(tone);
+    if !tone.has("ACOUSTIC") || bass {
+        let has = |k: super::Kind, bs: &[Block]| bs.iter().any(|b| b.def().kind == k);
+        if !has(super::Kind::Amp, &blocks)
+            && !tone.has("ACOUSTIC")
+            && let Some(a) = Block::of(if bass { "amp_bass" } else { "amp_clean" })
+        {
+            let at = blocks
+                .iter()
+                .position(|b| b.def().kind == super::Kind::Cab)
+                .unwrap_or(blocks.len());
+            blocks.insert(at, a.with("gain", if bass { 2.0 } else { 3.0 }));
+        }
+        if !has(super::Kind::Cab, &blocks) && has(super::Kind::Amp, &blocks) {
+            let cab = if bass {
+                Block::of("cab_4x10").map(|b| b.with("di", BASS_DI_PCT))
+            } else {
+                Block::of("cab_1x12")
+            };
+            if let Some(c) = cab {
+                let at = blocks
+                    .iter()
+                    .position(|b| b.def().kind == super::Kind::Amp)
+                    .map(|i| i + 1)
+                    .unwrap_or(blocks.len());
+                blocks.insert(at, c);
+            }
+        }
+    }
     blocks.truncate(MAX_BLOCKS);
-    // Rocksmith evens out its tones' loudness with this trim; our amps already level themselves, so a little of it
-    let level_db = if tone.volume_db != 0.0 {
-        (0.15 * (tone.volume_db + 20.0)).clamp(-3.0, 3.0)
+    octavia_into_fuzz(&mut blocks, &keys);
+    let mut board = Board {
+        blocks,
+        level_db: 0.0,
+    };
+    // high gain hisses between notes: a gate, as a player would put one (RS gates its own amps). (P41.1, D162: none on
+    // a clean or low-gain tone, whose decays it would choke; the gate after the amp, keyed on the DI)
+    let hiss = if board.blocks.len() < MAX_BLOCKS
+        && !board.blocks.iter().any(|b| b.def().id == "gate")
+        && !clean_tone(&board)
+    {
+        super::hiss_gain_db(&board)
     } else {
         0.0
     };
-    let mut board = Board { blocks, level_db };
-    // high gain hisses between notes: a gate first, as a player would put one (Rocksmith gates its own amps)
-    if board.blocks.len() < MAX_BLOCKS
-        && !board.blocks.iter().any(|b| b.def().id == "gate")
-        && super::hiss_gain_db(&board) > 28.0
-    {
-        let gate = Block::new(super::catalog::find("gate").expect("gate"))
-            .with("threshold", -54.0)
-            .with("release", 120.0);
-        board.blocks.insert(0, gate);
+    // (RS's own gate pedal, where RS put it before the amp: after the amp, keyed on the input, like ours)
+    if let Some(i) = board.blocks.iter().position(|b| b.def().id == "gate") {
+        let g = board.blocks.remove(i);
+        let at = super::gate_slot(&board);
+        board.blocks.insert(at, g);
     }
-    board
+    if hiss > super::GATE_HISS_DB {
+        // (P38.2: a crunch from 20 dB gets a gentle gate, only closing on the guitar's idle noise; high gain a firm one)
+        let gate = super::new_gate(hiss > 28.0);
+        let at = super::gate_slot(&board);
+        board.blocks.insert(at, gate);
+    }
+    // (P41.1, D161) every tone at one loudness, then RS's own volume within 3 dB
+    board.level_db = super::level::song_level(&board, bass, tone.volume_db);
+    let keyed = board
+        .blocks
+        .iter()
+        .map(|b| keys.iter().find(|(u, _)| *u == b.uid).map(|(_, k)| k.clone()))
+        .collect();
+    (board, keyed)
 }
 
 #[cfg(test)]
@@ -1281,8 +1728,24 @@ mod tests {
             one(&["CLEAN"], gear("Amp", "Amp_HG500", &[("Gain", 60.0)]))
                 .def()
                 .id,
-            "amp_modern"
+            "amp_snake"
         );
+        // (P41.2, D167: the Mark, the SLO, the Orange and the 4x10 have their own voices now)
+        for (key, id) in [
+            ("Amp_CA85", "amp_cali"),
+            ("Amp_HG100", "amp_snake"),
+            ("Amp_BT45", "amp_snake"),
+            ("Amp_OrangeOR100", "amp_tangerine"),
+            ("Amp_OrangeRockerverb", "amp_tangerine"),
+            ("Amp_MarshallJCM800", "amp_lead"),
+            ("Amp_HiwattCustom100", "amp_surrey"),
+        ] {
+            assert_eq!(
+                one(&["DISTORTION"], gear("Amp", key, &[("Gain", 70.0)])).def().id,
+                id,
+                "{key}"
+            );
+        }
         assert_eq!(
             one(&[], gear("Amp", "Amp_GibsonGA8", &[("Gain", 88.0)])).def().id,
             "amp_tweed"
@@ -1353,12 +1816,30 @@ mod tests {
                 ],
             ),
         );
-        assert!(near(b.get("bass"), 6.0) && near(b.get("treble"), 6.0) && near(b.get("freq"), 1600.0));
+        assert!(near(b.get("bass"), 6.0) && near(b.get("treble"), 5.0) && near(b.get("freq"), 1600.0));
+        assert!(near(b.get("ultra_hi"), 1.0) && near(b.get("ultra_lo"), 0.0));
         // the three-way switch; a mid frequency in Hz
-        let b = one(&["BASS"], gear("Amp", "Bass_Amp_LT25B", &[("MidFreq", 2.0)]));
+        let b = one(&["BASS"], gear("Amp", "Bass_Amp_CH300B", &[("MidFreq", 2.0)]));
         assert!(near(b.get("freq"), 3000.0));
         let b = one(&["BASS"], gear("Amp", "Bass_Amp_CH300B", &[("MidFreq", 480.0)]));
         assert!(near(b.get("freq"), 480.0));
+        // (P37.2) each bass amp on its own voice; the SVT's Ultra switches are its own
+        let b = one(&["BASS"], gear("Amp", "Bass_Amp_LT25B", &[("Gain", 30.0)]));
+        assert_eq!(b.def().id, "amp_b15");
+        assert!(near(b.get("volume"), 3.0));
+        assert!(near(
+            one(&["BASS"], gear("Amp", "Bass_Amp_HT300B", &[("HiShift", 1.0)])).get("ultra_hi"),
+            1.0
+        ));
+        assert_eq!(
+            one(&["BASS"], gear("Amp", "Bass_Amp_BT975B", &[])).def().id,
+            "amp_bass_tube"
+        );
+        assert_eq!(
+            one(&["BASS"], gear("Amp", "Bass_Amp_CS75B", &[])).def().id,
+            "amp_bass_ss"
+        );
+        assert_eq!(bass_voicing("Bass_Amp_Future99"), "amp_bass");
         // a graphic EQ and a compressor built in: the compressor first, the EQ after, on the nearest bands
         let g = gear(
             "Amp",
@@ -1373,7 +1854,7 @@ mod tests {
         );
         let t = tone(&["BASS"], vec![g.clone()]);
         let bs = blocks_for(&g, &t).unwrap();
-        assert_eq!(ids(&bs), vec!["bass_comp", "amp_bass", "bass_eq8"]);
+        assert_eq!(ids(&bs), vec!["bass_comp", "amp_bass_ss", "bass_eq8"]);
         assert!(near(bs[0].get("compress"), 5.5));
         assert!(
             near(bs[2].get("b30"), -4.0) && near(bs[2].get("b75"), 2.0) && near(bs[2].get("b1100"), -6.0)
@@ -1385,7 +1866,7 @@ mod tests {
             &[("Lo", -9.0), ("LoFreq", 220.0), ("Hi", 3.0), ("HiFreq", 1.6)],
         );
         let bs = blocks_for(&g, &tone(&["BASS"], vec![g.clone()])).unwrap();
-        assert_eq!(ids(&bs), vec!["amp_bass", "studio_eq"]);
+        assert_eq!(ids(&bs), vec!["amp_bass_ss", "studio_eq"]);
         assert!(near(bs[1].get("bass"), -9.0) && near(bs[1].get("bass_freq"), 220.0));
         assert!(near(bs[1].get("hi_freq"), 1600.0));
         // the SansAmp DI
@@ -1404,13 +1885,13 @@ mod tests {
             vec![
                 gear("PrePedal1", "Pedal_AcousticEmulator", &[("Body", 60.0)]),
                 gear("Amp", "DI_Amp_TubePre", &[("Gain", 10.0)]),
-                // Rocksmith's acoustic tones often use the bass multiband compressor: still a guitar
+                // RS's acoustic tones often use the bass multiband compressor: still a guitar
                 gear("PostPedal1", "Bass_Pedal_MBComp", &[("Compress", 40.0)]),
                 gear("Cabinet", "Cab_PA600C", &[]),
             ],
         );
         let b = board_for(&acoustic);
-        assert_eq!(ids(&b.blocks), vec!["acoustic", "bass_comp", "room"]);
+        assert_eq!(ids(&b.blocks), vec!["acoustic", "studio_comp", "room"]);
         let bass = tone(
             &["BASS"],
             vec![
@@ -1418,18 +1899,22 @@ mod tests {
                 gear("Cabinet", "Cab_PA999C", &[]),
             ],
         );
-        assert_eq!(ids(&board_for(&bass).blocks), vec!["amp_bass"]);
+        // (P38.2: a bass into a PA gets a bass cab, mostly DI)
+        assert_eq!(ids(&board_for(&bass).blocks), vec!["amp_bass", "cab_4x10"]);
     }
 
     #[test]
     fn cabs_by_their_speakers_and_mic() {
         let cab = |key: &str| one(&[], gear("Cabinet", key, &[]));
         // a Bassman 4x10 is open-backed: the open 2x12, not the closed 4x12
-        assert_eq!(cab("Cab_TW410C_57_Edge").def().id, "cab_2x12");
+        assert_eq!(cab("Cab_TW410C_57_Edge").def().id, "cab_4x10_open");
         assert_eq!(cab("Cab_AT0112C_57_Cone").def().id, "cab_1x12");
         assert_eq!(cab("Cab_Marshall1936_Ribbon_Cone").def().id, "cab_4x12");
         assert_eq!(cab("Cab_CS1515C_57_Edge").def().id, "cab_2x12");
-        assert_eq!(cab("Bass_Cab_GB415BC_Tube_Edge").def().id, "cab_1x15");
+        assert_eq!(cab("Bass_Cab_GB415BC_Tube_Edge").def().id, "cab_4x15");
+        assert_eq!(cab("Bass_Cab_CH410BC_57_Edge").def().id, "cab_4x10");
+        assert_eq!(cab("Bass_Cab_CH210BC_57_Edge").def().id, "cab_2x10");
+        assert_eq!(cab("Bass_Cab_XY410BC_57_Edge").def().id, "cab_4x10");
         assert_eq!(cab("Bass_Cab_EdenD610XST_57_Edge").def().id, "cab_8x10");
         // mics: a tube mic is a condenser; on the cone is bright, off axis darker and further back
         let b = cab("Cab_TW112C_Tube_OffAxis");
@@ -1439,7 +1924,12 @@ mod tests {
         // an unknown cab by its digits; a PA is flat; a boom box is the lo-fi radio
         assert_eq!(cab("Cab_ZZ412C_57_Edge").def().id, "cab_4x12");
         let pa = gear("Cabinet", "Cab_PA999C", &[]);
-        assert!(blocks_for(&pa, &tone(&[], vec![])).unwrap().is_empty());
+        assert!(blocks_for(&pa, &tone(&["ACOUSTIC"], vec![])).unwrap().is_empty());
+        // (on an electric part a PA becomes an open 1x12, never "nothing", D141)
+        assert_eq!(
+            blocks_for(&pa, &tone(&[], vec![])).unwrap()[0].def().id,
+            "cab_1x12"
+        );
         assert_eq!(cab("Cab_BoomBox").def().id, "lofi");
     }
 
@@ -1578,5 +2068,73 @@ mod tests {
                 assert!((sweep_dial(v, lo, hi) - d).abs() < 1e-3);
             }
         }
+    }
+
+    #[test]
+    fn every_bass_head_in_the_library_is_known() {
+        for (k, v) in [
+            ("Bass_Amp_HT100B", "amp_bass"),
+            ("Bass_Amp_CH350B", "amp_bass_ss"),
+            ("Bass_Amp_CS240B", "amp_bass_ss"),
+            ("Bass_Amp_CS300B", "amp_bass_ss"),
+            ("Bass_Amp_BT600B", "amp_bass_ss"),
+            ("Bass_Amp_LT85B", "amp_b15"),
+            ("Bass_Amp_OrangeAD200B", "amp_bass_tube"),
+        ] {
+            let g = gear("Amp", k, &[("Gain", 30.0)]);
+            let t = tone(&["BASS"], vec![g.clone()]);
+            assert_eq!(match_of(&g, &t), Match::Known, "{k}");
+            assert_eq!(bass_voicing(k), v, "{k}");
+        }
+    }
+
+    #[test]
+    fn matches_are_told_apart() {
+        let t = tone(&["CLEAN"], vec![]);
+        assert_eq!(match_of(&gear("Amp", "Amp_AT20", &[]), &t), Match::Known);
+        assert_eq!(match_of(&gear("Amp", "Amp_Nobody99", &[]), &t), Match::Guessed);
+        assert_eq!(
+            match_of(&gear("Cabinet", "Cab_XY999C_57_Cone", &[]), &t),
+            Match::Guessed
+        );
+        assert_eq!(match_of(&gear("Cabinet", "Cab_PA600C", &[]), &t), Match::StandIn);
+        assert_eq!(match_of(&gear("Pedal", "Pedal_RingMod", &[]), &t), Match::LeftOut);
+        let ac = tone(&["ACOUSTIC"], vec![]);
+        assert_eq!(match_of(&gear("Cabinet", "Cab_PA600C", &[]), &ac), Match::Flat);
+    }
+
+    #[test]
+    fn a_bass_or_electric_tone_always_has_an_amp_and_a_cab() {
+        let kinds = |b: &Board| b.blocks.iter().map(|x| x.def().kind).collect::<Vec<_>>();
+        // a bass into a PA: a bass cab that's mostly DI
+        let t = tone(
+            &["BASS"],
+            vec![
+                gear("Amp", "Bass_Amp_HT300B", &[("Gain", 30.0)]),
+                gear("Cabinet", "Cab_PA600C", &[]),
+            ],
+        );
+        let b = board_for(&t);
+        let cab = b
+            .blocks
+            .iter()
+            .find(|x| x.def().kind == super::super::Kind::Cab)
+            .expect("a cab");
+        assert_eq!(cab.def().id, "cab_4x10");
+        assert_eq!(cab.get("di"), Some(BASS_DI_PCT));
+        // a bass rig of pedals only: an amp and a cab added
+        let t = tone(&["BASS"], vec![gear("Pedal", "Bass_Pedal_BassFuzz", &[])]);
+        let k = kinds(&board_for(&t));
+        assert!(
+            k.contains(&super::super::Kind::Amp) && k.contains(&super::super::Kind::Cab),
+            "{k:?}"
+        );
+        // an electric one with no cab
+        let t = tone(&["DISTORTION"], vec![gear("Amp", "Amp_AT20", &[("Gain", 60.0)])]);
+        let k = kinds(&board_for(&t));
+        assert!(k.contains(&super::super::Kind::Cab), "{k:?}");
+        // an acoustic one keeps its simulator and no amp
+        let t = tone(&["ACOUSTIC"], vec![gear("Cabinet", "Cab_PA600C", &[])]);
+        assert!(!kinds(&board_for(&t)).contains(&super::super::Kind::Amp));
     }
 }

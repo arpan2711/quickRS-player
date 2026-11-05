@@ -11,12 +11,18 @@
 //! R (or the Record key) records what you hear to a file, R pauses, Shift R stops and saves (`crate::recording`, P23.9); leaving the
 //! room stops and saves it. The Rig tab's key is G.
 
+mod catalogue;
 pub(crate) mod draw;
+pub mod noise;
+pub(crate) mod plain;
+pub mod rig;
 pub mod rigs;
 mod save;
 mod sounds;
 mod stage;
 mod strip;
+#[cfg(test)]
+mod tests;
 
 use std::time::{Duration, Instant};
 
@@ -25,9 +31,9 @@ use egui::{Align2, Color32, Event, Key, Pos2, Rect, Ui, pos2, vec2};
 use qrs_audio::board::{self, Board, Kind};
 use qrs_audio::tone::ToneSpec;
 use qrs_library::Config;
-use qrs_ui::paint::{self, Fill};
+use qrs_ui::paint;
 use qrs_ui::text::{self, Style};
-use qrs_ui::theme::{IVORY_INK, t};
+use qrs_ui::theme::t;
 use qrs_ui::units::px;
 use qrs_ui::widgets;
 
@@ -51,7 +57,15 @@ enum Typing {
     Shelf,
     Sounds,
     SaveName,
+    /// A scene's name (double-click on it in the strip).
+    Scene(usize),
 }
+
+/// The compare key (the one left of 1) in words (P41.3, D172): its glyph, a lone backtick, read as a stray mark in
+/// the room's caps and toasts, so no text of the room prints it (`no_text_prints_the_backtick`).
+pub(crate) const AB_KEY: &str = "the key left of 1";
+/// A toast's tail naming it.
+const AB_TAIL: &str = "  \u{b7}  the key left of 1 flips back";
 
 /// The rig as the home screen's button names it: the saved sound it is, else its chain ("Perspex 100 · Mean
 /// Green · 2 more").
@@ -90,12 +104,16 @@ pub struct RoomView {
     tone_before: Option<ToneSpec>,
     monitor_before: Option<bool>,
     toast: Option<(String, String, Instant)>,
+    /// The toast says a unit was removed: a click on it undoes that (P41.3).
+    toast_undo: bool,
     /// A/B: hearing the saved sound instead of the rig as it is now.
     pub ab: bool,
     /// The shelf's family, its search, and where it adds (after the selected unit unless a + said where).
     pub shelf_kind: Kind,
     pub shelf_query: String,
     shelf_at: Option<usize>,
+    /// The shelf's page (its cells don't all fit in a row: hundreds of NAM captures, P33.6).
+    pub shelf_page: usize,
     typing: Option<Typing>,
     pub save: Option<save::Sheet>,
     pub sounds: sounds::Sounds,
@@ -107,11 +125,25 @@ pub struct RoomView {
     /// The wheel's places this frame (the selected card's knobs; the strip's trim, gate and master).
     spots: Vec<stage::Spot>,
     strip_spots: Vec<(Rect, strip::What)>,
-    drag: Option<stage::Drag>,
     /// When the wheel last turned one of the room's own knobs (the edit is kept once it rests).
     wheel_at: Option<Instant>,
     /// The Record key (the recording's badge hangs under it).
     rec_at: Rect,
+    /// The one screen's own state (the drawer, quick controls, song tone explained: `rig`).
+    pub rig_ui: rig::RigUi,
+    /// A strip knob being dragged: (which, where it started, its turn there).
+    strip_drag: Option<(&'static str, f32, f32)>,
+    /// Settings asked for (the strip's Calibrate...): the app opens that page over the room.
+    pub want_settings: Option<&'static str>,
+    /// Opened from a song's Pedalboard tile: the song's tones are here (SONG TONE), and leaving goes back to it.
+    pub song: bool,
+    /// The Catalogue page over the rig (P37.13, D127), and the "i" dot's info card over the room.
+    pub cat: Option<catalogue::Cat>,
+    pub info: Option<stage::Entry>,
+    /// Where the recording badge's right end goes this frame (the chain card's header), when there's a chain.
+    pub badge_at: Option<Pos2>,
+    /// The strip's "Learn noise" listening (P41.1).
+    pub noise: noise::LearnNoise,
 }
 
 impl RoomView {
@@ -133,10 +165,13 @@ impl RoomView {
             tone_before: None,
             monitor_before: None,
             toast: None,
+            noise: noise::LearnNoise::default(),
+            toast_undo: false,
             ab: false,
             shelf_kind: Kind::Drive,
             shelf_query: String::new(),
             shelf_at: None,
+            shelf_page: 0,
             typing: None,
             save: None,
             sounds: sounds::Sounds::default(),
@@ -146,9 +181,15 @@ impl RoomView {
             area: Rect::NOTHING,
             spots: Vec::new(),
             strip_spots: Vec::new(),
-            drag: None,
             wheel_at: None,
             rec_at: Rect::NOTHING,
+            rig_ui: rig::RigUi::default(),
+            cat: None,
+            info: None,
+            badge_at: None,
+            strip_drag: None,
+            want_settings: None,
+            song: false,
         };
         if let Some(e) = &engine {
             v.tone_before = Some(e.tone());
@@ -159,6 +200,21 @@ impl RoomView {
             });
         }
         v.refresh_saved(st);
+        // (no sounds of your own: the drawer opens on the starters)
+        if v.saved.is_empty() {
+            v.rig_ui.seg = rig::Seg::Starters;
+        }
+        // (P37.6c: the first time, with no sounds of your own yet, the room opens on its Sounds drawer: picking a
+        // sound by ear before any knob)
+        if st.config.get("room_seen").is_none() {
+            // (P41.3: and the starters first in it, as big cards over the song tones)
+            v.sounds.starters_first = true;
+            if v.saved.is_empty() && st.audio_mode != crate::state::AudioMode::Shots {
+                v.go(st, Tab::Sounds);
+            }
+            st.config.set("room_seen", serde_json::json!(true));
+            st.save_config();
+        }
         v.rack.title = Some(v.title());
         // the songs' tones for the Sounds tab (read in the background, once a session)
         if st.audio_mode != crate::state::AudioMode::Shots {
@@ -171,11 +227,29 @@ impl RoomView {
         v
     }
 
+    /// The room in a song's context (the player's Pedalboard tile, D102): the song's tones beside your sounds, the
+    /// tone the player had playing.
+    pub fn open_song(
+        st: &mut AppState,
+        song: crate::player::board::SongCtx,
+        pick: Option<Pick>,
+        song_tone: usize,
+    ) -> RoomView {
+        let mut v = RoomView::open(st);
+        v.song = true;
+        v.rack.for_song(st, song, pick, song_tone);
+        v.rig_ui.seg = rig::Seg::Song;
+        v.rack.board_send(st);
+        v
+    }
+
     /// Leave: the edits kept, the room's state saved, the engine's tone and monitoring as they were.
     pub fn leave(&mut self, st: &mut AppState) {
         self.rack.board.audition = None;
         self.rack.board_commit(st);
-        self.keep_scene(st);
+        if self.source_now(st) != Source::Song {
+            self.keep_scene(st);
+        }
         self.state.save(&mut st.config);
         if let Some(e) = self.rack.engine().cloned() {
             match self.tone_before.take() {
@@ -226,6 +300,7 @@ impl RoomView {
     }
 
     pub fn say(&mut self, text: impl Into<String>, tail: impl Into<String>) {
+        self.toast_undo = false;
         self.toast = Some((
             text.into(),
             tail.into(),
@@ -244,8 +319,13 @@ impl RoomView {
         rig: Option<String>,
         based_on: String,
     ) {
+        // (P38.2: a capture whose file is gone gives way to a model of ours, never the guitar dry)
+        let mut b = b;
+        let healed = crate::captures::heal(&mut b);
         self.ab = false;
         self.rack.board.audition = None;
+        // (a whole rig goes on your sound, never over a song's tone)
+        self.rack.board.pick = Some(Pick::Mine);
         let name = rig.clone().unwrap_or_else(|| based_on.clone());
         self.rack.load_board(st, &name, b);
         self.rack.said.clear();
@@ -262,6 +342,12 @@ impl RoomView {
         }
         self.rack.board.sel = None;
         self.rack.title = Some(self.title());
+        if healed > 0 {
+            self.rack.say(
+                "A capture's file is missing",
+                "  \u{b7}  playing the model of ours in its place",
+            );
+        }
         self.state.save(&mut st.config);
         st.save_config();
         self.say(format!("{name} on"), "  \u{b7}  Ctrl Z takes it back");
@@ -333,7 +419,7 @@ impl RoomView {
         self.typing = Some(Typing::SaveName);
     }
 
-    fn shuffle(&mut self, st: &mut AppState) {
+    pub(super) fn shuffle(&mut self, st: &mut AppState) {
         let b = rigs::shuffle(&mut self.dice);
         let name = format!("Shuffle: {}", rigs::shuffle_name(&b));
         self.load(st, b, Default::default(), None, name);
@@ -387,7 +473,50 @@ impl RoomView {
         }
     }
 
+    /// The Catalogue page on or off (the C key, the top line's key).
+    pub fn toggle_catalogue(&mut self, st: &mut AppState) {
+        if self.cat.take().is_none() {
+            self.go(st, Tab::Rig);
+            self.cat = Some(catalogue::Cat::new(st.instrument().is_bass()));
+        }
+    }
+
+    /// The Catalogue page found on a capture by its name (the downloads card's Open in the amp room, P38.3).
+    pub fn show_capture(&mut self, st: &mut AppState, name: &str) {
+        self.go(st, Tab::Rig);
+        let mut c = catalogue::Cat::new(st.instrument().is_bass());
+        c.query = name.to_string();
+        self.cat = Some(c);
+    }
+
     fn toggle_ab(&mut self, st: &mut AppState) {
+        // a song's tone: A/B against RS's original (the tone before your edits)
+        if self.source_now(st) == Source::Song {
+            if self.rack.board.audition.take().is_some() {
+                self.say("Hearing the tone as it is now", AB_TAIL);
+            } else {
+                let i = match self.rack.board.pick {
+                    Some(Pick::Tone(i)) => i,
+                    _ => self.rack.board.song_tone,
+                };
+                let orig = crate::pedalboard::SongRig::new(
+                    &self.rack.song.arr,
+                    &self.rack.song.sid,
+                    &self.rack.song.part_name,
+                    &qrs_library::UserData::default(),
+                )
+                .and_then(|r| r.tones.get(i).map(|t| t.board.clone()));
+                match orig {
+                    Some(b) => {
+                        self.rack.board.audition = Some(b.renewed());
+                        self.say("Hearing the song's original tone", AB_TAIL);
+                    }
+                    None => self.say("No original to compare with", ""),
+                }
+            }
+            self.rack.board_send(st);
+            return;
+        }
         let Some(r) = self.saved_rig().cloned() else {
             self.say("Nothing saved to compare with", "  \u{b7}  save the rig first");
             return;
@@ -409,13 +538,22 @@ impl RoomView {
             } else {
                 "Hearing your rig"
             },
-            "  \u{b7}  ` flips back",
+            AB_TAIL,
         );
     }
 
     // -- keys ---------------------------------------------------------------------------------------------------------
 
     pub fn handle(&mut self, st: &mut AppState, ev: &Event) {
+        // the info card, then the Catalogue, take the keys while they're open
+        if self.info.is_some() {
+            catalogue::info_handle(self, ev);
+            return;
+        }
+        if self.cat.is_some() && self.save.is_none() && !self.rack.board.editing && self.tab == Tab::Rig {
+            catalogue::handle(self, st, ev);
+            return;
+        }
         // typing first
         if let Some(t) = self.typing {
             match ev {
@@ -432,6 +570,7 @@ impl RoomView {
                                 push_text(&mut sh.name, &s, 40);
                             }
                         }
+                        Typing::Scene(n) => push_text(&mut self.state.names[n], &s, 24),
                     }
                     return;
                 }
@@ -452,6 +591,9 @@ impl RoomView {
                             if let Some(sh) = &mut self.save {
                                 sh.name.pop();
                             }
+                        }
+                        Typing::Scene(n) => {
+                            self.state.names[n].pop();
                         }
                     }
                     return;
@@ -519,6 +661,14 @@ impl RoomView {
             }
             return;
         }
+        if let Some(Typing::Scene(_)) = self.typing
+            && matches!(key, Key::Enter | Key::Escape)
+        {
+            self.typing = None;
+            self.state.save(&mut st.config);
+            st.save_config();
+            return;
+        }
         match key {
             Key::Escape => {
                 if self.typing.is_some() {
@@ -573,6 +723,7 @@ impl RoomView {
                 }
             }
             Key::Backtick => self.toggle_ab(st),
+            Key::C if !ctrl => self.toggle_catalogue(st),
             Key::E if self.tab == Tab::Rig && !ctrl => {
                 if self.rack.board.sel.is_some() {
                     self.rack.board.editing = true;
@@ -596,8 +747,9 @@ impl RoomView {
                     self.rack.toggle_block(st, u);
                 }
             }
-            Key::ArrowLeft if self.tab == Tab::Rig => self.step_rig(st, -1),
-            Key::ArrowRight if self.tab == Tab::Rig => self.step_rig(st, 1),
+            // (Page Up / Down step the rigs; the arrows used to, and threw unsaved edits away: B13)
+            Key::PageUp if self.tab == Tab::Rig => self.step_rig(st, -1),
+            Key::PageDown if self.tab == Tab::Rig => self.step_rig(st, 1),
             _ if self.tab == Tab::Sounds => sounds::key(self, st, *key, *modifiers),
             _ => {}
         }
@@ -655,7 +807,9 @@ impl RoomView {
 
     /// The wheel over the room's own controls (the selected unit's knobs, the gate, the trim, the master).
     fn wheel(&mut self, st: &mut AppState, pos: Pos2, notches: f32, shift: bool) -> bool {
-        if self.tab == Tab::Rig && stage::wheel(self, st, pos, notches, shift) {
+        if self.tab == Tab::Rig
+            && (stage::wheel(self, st, pos, notches, shift) || rig::wheel(self, st, pos, notches, shift))
+        {
             return true;
         }
         strip::wheel(self, st, pos, notches, shift)
@@ -672,7 +826,9 @@ impl RoomView {
         // the engine in step: the board sent when it changes, edits kept when the mouse lets go
         self.rack.engine = st.audio.as_ref().map(|a| a.engine.clone());
         self.rack.title = Some(self.title());
+        self.rack.begin_frame(ui.ctx());
         self.rack.board_update(st);
+        self.listen.set_instrument(st.instrument());
         let live = self.listen.update(self.rack.engine.as_deref());
         if live || self.rack.board.editing {
             ui.ctx().request_repaint_after(Duration::from_millis(33));
@@ -688,29 +844,23 @@ impl RoomView {
             self.wheel_at = None;
             self.rack.board_commit(st);
         }
-        let m = px(20.0);
-        let top = Rect::from_min_size(
-            pos2(area.min.x + m, area.min.y + px(18.0)),
-            vec2(area.width() - 2.0 * m, px(44.0)),
-        );
-        let strip_r = Rect::from_min_max(
-            pos2(area.min.x + m, area.max.y - px(12.0) - px(72.0)),
-            pos2(area.max.x - m, area.max.y - px(12.0)),
-        );
-        let body = Rect::from_min_max(
-            pos2(area.min.x + m, top.max.y + px(22.0)),
-            pos2(area.max.x - m, strip_r.min.y - px(10.0)),
-        );
+        let (top, body, strip_r) = room_rects(area);
         self.top_bar(ui, st, top);
+        // (the editor over the stage: the stage is drawn only, B1/B4)
+        self.rack.board.inert = self.rack.board.editing && self.tab == Tab::Rig;
         match self.tab {
-            Tab::Rig => stage::rig_page(self, ui, st, body),
+            Tab::Rig if self.cat.is_some() => catalogue::page(self, ui, st, body),
+            Tab::Rig => rig::page(self, ui, st, body),
             Tab::Sounds => sounds::page(self, ui, st, body),
         }
+        noise::update(self, st);
         strip::strip(self, ui, st, strip_r);
         // the detailed editor, over the stage and cards
+        self.rack.board.inert = false;
         if self.rack.board.editing && self.tab == Tab::Rig {
             paint::dim(&p, area, Some(150));
             let panel = body;
+            p.rect_filled(panel, 24.0, th.base);
             paint::floating(&p, panel, Some(24.0));
             self.rack.editor_view(ui, st, panel.shrink(px(20.0)), 0.0);
             if !self.rack.board.open {
@@ -719,6 +869,9 @@ impl RoomView {
                 self.rack.board.editing = false;
             }
         }
+        // the captures dialog (NAM captures and IR cabs, P31), over the room
+        self.rack.captures_ui(ui, st, area);
+        catalogue::info_card(self, ui, area);
         if let Some(sh) = &mut self.save {
             let act = sh.ui(ui, st, area);
             match act {
@@ -734,8 +887,14 @@ impl RoomView {
         // recording: the lamp, time and keys under the Record key (a click stops it)
         if let Some(s) = st.rec.status() {
             let w = crate::recording::badge_width(ui, s);
-            let x = (self.rec_at.center().x - w / 2.0).min(area.max.x - m - w);
-            let at = pos2(x, self.rec_at.max.y + px(4.0) + px(13.0));
+            // (in the chain card's header at its right, P37.13: hung under the key it sat on the card's edge)
+            let at = match self.badge_at.take() {
+                Some(right) => pos2(right.x - w, right.y),
+                None => pos2(
+                    (self.rec_at.center().x - w / 2.0).min(area.max.x - px(20.0) - w),
+                    body.min.y + px(20.0),
+                ),
+            };
             if crate::recording::badge(ui, at, s).clicked()
                 && let Some((a, b)) = crate::recording::toggle(st, crate::recording::Page::Room, "")
             {
@@ -745,14 +904,38 @@ impl RoomView {
         // what the rack said, as the room's toast; its tooltip (its requests are the player's: none here)
         self.rack.reqs.clear();
         for (a, b) in std::mem::take(&mut self.rack.said) {
+            // (a unit removed: "Removed Mean Green · Undo", the toast itself the undo, longer on screen, P41.3)
+            let removed = a.starts_with("Removed ") && self.rack.can_undo();
             self.say(a, b);
+            if removed {
+                self.toast_undo = true;
+                if let Some(t) = &mut self.toast {
+                    t.2 = Instant::now() + Duration::from_millis(4500);
+                }
+            }
         }
         if let Some((msg, tail, until)) = self.toast.clone() {
             if Instant::now() < until {
-                widgets::toast(&p, &msg, pos2(body.center().x, body.max.y - px(40.0)), &tail);
+                let at = pos2(body.center().x, body.max.y - px(40.0));
+                widgets::toast(&p, &msg, at, &tail);
+                if self.toast_undo {
+                    let ts = Style::new(16.0, 700, th.text);
+                    let w = text::width(ui.ctx(), &msg, ts) + text::width(ui.ctx(), &tail, ts) + px(44.0);
+                    let tr = Rect::from_center_size(at, vec2(w, px(46.0)));
+                    let resp = widgets::interact(ui, tr, "room-toast-undo", egui::Sense::click());
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if resp.clicked() {
+                        self.rack.undo_edit(st);
+                        self.toast = None;
+                        self.toast_undo = false;
+                    }
+                }
                 ui.ctx().request_repaint_after(Duration::from_millis(100));
             } else {
                 self.toast = None;
+                self.toast_undo = false;
             }
         }
         if let Some((text_, key, pos, anchor)) = self.rack.tip.take() {
@@ -760,18 +943,32 @@ impl RoomView {
         }
     }
 
+    /// Where the sound now comes from (the top line's chips).
+    fn source_now(&mut self, st: &AppState) -> Source {
+        if self.rack.board.rig.is_some() && self.rack.board.pick != Some(Pick::Mine) {
+            return Source::Song;
+        }
+        if self.rack.board_now(st).blocks.is_empty() {
+            Source::Blank
+        } else {
+            Source::Mine
+        }
+    }
+
+    /// The top line says what you hear and where it came from (P37.1, D102): the song's tone (which, of how many),
+    /// your sound or a blank rig; edited; A/B against the original; Save as; Save (the room's one bright key).
     fn top_bar(&mut self, ui: &Ui, st: &mut AppState, r: Rect) {
         let p = ui.painter().clone();
         let th = t();
         let ctx = ui.ctx().clone();
         let h = r.height();
-        let home = Rect::from_min_size(r.min, vec2(px(96.0), h));
+        let home = Rect::from_min_size(r.min, vec2(px(44.0), h));
         if draw::key(
             ui,
             home,
             "room-home",
-            KeyLook::Ivory,
-            "Home",
+            KeyLook::Dark,
+            "",
             "",
             Some(&|p: &egui::Painter, c: Pos2, s: f32, col: Color32| draw::icon_chev(p, c, s, col, -1.0)),
         )
@@ -779,7 +976,7 @@ impl RoomView {
         {
             self.closed = true;
         }
-        // the right group: undo, redo, A/B, Shuffle, Save as, Save
+        // the right group: undo, redo, Record, A/B, Save as, Save
         let mut x = r.max.x;
         let place = |x: &mut f32, w: f32| {
             let rr = Rect::from_min_size(pos2(*x - w, r.min.y), vec2(w, h));
@@ -788,36 +985,45 @@ impl RoomView {
         };
         let save_r = place(&mut x, draw::key_w(&ctx, "Save", "Ctrl S", true));
         let saveas_r = place(&mut x, draw::key_w(&ctx, "Save as\u{2026}", "", false));
-        x -= px(8.0);
-        let shuffle_r = place(&mut x, draw::key_w(&ctx, "Shuffle", "", true));
-        let ab_r = place(&mut x, draw::key_w(&ctx, "A/B saved", "`", false));
+        let src = self.source_now(st);
+        // (A/B: A is the sound as you're changing it, B the saved sound or the song's original)
+        let b_word = if src == Source::Song {
+            "Original"
+        } else {
+            "Last saved"
+        };
+        let ab_r = place(&mut x, draw::ab_w(&ctx, b_word));
+        x -= px(6.0);
+        let recording = st.rec.status();
+        let rec_r = place(&mut x, h);
+        self.rec_at = rec_r;
         let redo_r = place(&mut x, h);
         let undo_r = place(&mut x, h);
-        // Record (R): what you hear, to a file (P23.9); its badge is drawn under it once the page is (on top)
-        let recording = st.rec.status();
-        x -= px(8.0);
-        let rec_label = if recording.is_some() { "Stop" } else { "Record" };
-        let rec_r = place(&mut x, draw::key_w(&ctx, rec_label, "R", true));
-        self.rec_at = rec_r;
-        let dot =
-            |p: &egui::Painter, c: Pos2, s: f32, _: Color32| crate::recording::icon_dot(p, c, s, t().miss);
-        if draw::key(
+        x -= px(6.0);
+        // the catalogue's key says how much is in it, so it's noticed (P41.5, owner request)
+        let cat_label = format!("Catalogue · {} units", catalogue::unit_count());
+        let cat_r = place(&mut x, draw::key_w(&ctx, &cat_label, "C", true));
+        let cat_on = self.cat.is_some();
+        let grid = |p: &egui::Painter, c: Pos2, s: f32, col: Color32| draw::icon_grid(p, c, s, col);
+        let cat = draw::key(
             ui,
-            rec_r,
-            "room-rec",
-            if recording.is_some() {
-                KeyLook::Rec
-            } else {
-                KeyLook::Dark
-            },
-            rec_label,
-            "R",
-            Some(&dot),
-        )
-        .clicked()
-            && let Some((a, b)) = crate::recording::toggle(st, crate::recording::Page::Room, &self.title())
-        {
-            self.say(a, b);
+            cat_r,
+            "room-catalogue",
+            if cat_on { KeyLook::Lit } else { KeyLook::Dark },
+            &cat_label,
+            "C",
+            Some(&grid),
+        );
+        if cat.hovered() {
+            self.rack.tip = Some((
+                "Every amp, cab, pedal and capture you have, to find and add".into(),
+                "C".into(),
+                pos2(cat_r.center().x, cat_r.max.y + px(4.0)),
+                Align2::CENTER_TOP,
+            ));
+        }
+        if cat.clicked() {
+            self.toggle_catalogue(st);
         }
         if draw::key(
             ui,
@@ -836,7 +1042,7 @@ impl RoomView {
             ui,
             saveas_r,
             "room-saveas",
-            KeyLook::Ivory,
+            KeyLook::Dark,
             "Save as\u{2026}",
             "",
             None,
@@ -845,35 +1051,58 @@ impl RoomView {
         {
             self.open_save(st);
         }
-        if draw::key(
-            ui,
-            shuffle_r,
-            "room-shuffle",
-            KeyLook::Dark,
-            "Shuffle",
-            "",
-            Some(&draw::icon_shuffle),
-        )
-        .clicked()
-        {
-            self.shuffle(st);
+        let ab_on = self.ab || (src == Source::Song && self.rack.board.audition.is_some());
+        let ab = draw::ab_switch(ui, ab_r, "room-ab", b_word, ab_on);
+        if ab.hovered() {
+            self.rack.tip = Some((
+                if src == Source::Song {
+                    "Compare: now (this tone as you've changed it) \u{b7} original (the song's own tone)"
+                        .into()
+                } else {
+                    "Compare: now (your rig as it is) \u{b7} last saved (the sound as you saved it)".into()
+                },
+                format!("{AB_KEY} flips between them"),
+                pos2(ab_r.center().x, ab_r.max.y + px(4.0)),
+                Align2::CENTER_TOP,
+            ));
         }
-        if draw::key(
-            ui,
-            ab_r,
-            "room-ab",
-            if self.ab { KeyLook::Lit } else { KeyLook::Dark },
-            if self.ab { "B saved" } else { "A/B saved" },
-            "`",
-            None,
-        )
-        .clicked()
-        {
+        if ab.clicked() {
             self.toggle_ab(st);
         }
-        let can_redo = self.rack.can_redo();
-        let can_undo = self.rack.can_undo();
-        if draw::key(
+        let dot =
+            |p: &egui::Painter, c: Pos2, s: f32, _: Color32| crate::recording::icon_dot(p, c, s, t().miss);
+        let rec = draw::key(
+            ui,
+            rec_r,
+            "room-rec",
+            if recording.is_some() {
+                KeyLook::Rec
+            } else {
+                KeyLook::Dark
+            },
+            "",
+            "",
+            Some(&dot),
+        );
+        if rec.hovered() {
+            self.rack.tip = Some((
+                if recording.is_some() {
+                    "Stop recording".into()
+                } else {
+                    "Record what you hear".into()
+                },
+                "R".into(),
+                pos2(rec_r.center().x, rec_r.max.y + px(4.0)),
+                Align2::CENTER_TOP,
+            ));
+        }
+        if rec.clicked()
+            && let Some((a, b)) = crate::recording::toggle(st, crate::recording::Page::Room, &self.title())
+        {
+            self.say(a, b);
+        }
+        let (can_undo, can_redo) = (self.rack.can_undo(), self.rack.can_redo());
+        let redo = draw::key(
             ui,
             redo_r,
             "room-redo",
@@ -881,13 +1110,11 @@ impl RoomView {
             "",
             "",
             Some(&draw::icon_redo),
-        )
-        .clicked()
-            && can_redo
-        {
+        );
+        if redo.clicked() && can_redo {
             self.rack.redo_edit(st);
         }
-        if draw::key(
+        let undo = draw::key(
             ui,
             undo_r,
             "room-undo",
@@ -895,11 +1122,26 @@ impl RoomView {
             "",
             "",
             Some(&draw::icon_undo),
-        )
-        .clicked()
-            && can_undo
-        {
+        );
+        if undo.clicked() && can_undo {
             self.rack.undo_edit(st);
+        }
+        for (resp, rr, what, key, can) in [
+            (&undo, undo_r, "Undo", "Ctrl Z", can_undo),
+            (&redo, redo_r, "Redo", "Ctrl Y", can_redo),
+        ] {
+            if resp.hovered() {
+                self.rack.tip = Some((
+                    if can {
+                        format!("{what} the last change")
+                    } else {
+                        format!("Nothing to {}", what.to_lowercase())
+                    },
+                    key.into(),
+                    pos2(rr.center().x, rr.max.y + px(4.0)),
+                    Align2::CENTER_TOP,
+                ));
+            }
         }
         if !can_undo {
             paint::wash(&p, undo_r, th.base, 0.45);
@@ -907,125 +1149,196 @@ impl RoomView {
         if !can_redo {
             paint::wash(&p, redo_r, th.base, 0.45);
         }
-        // the tabs, centred between the title and the keys
-        // (no Jam tab until the jam engine has its page: P23.2)
-        let tabs = [(Tab::Rig, "Rig", "G"), (Tab::Sounds, "Sounds", "L")];
-        let widths: Vec<f32> = tabs
+        // the sources: SONG TONE (in a song) | MY SOUND | BLANK, and "edited"
+        let mut chips: Vec<(Source, &str)> = Vec::new();
+        if self.rack.board.rig.is_some() {
+            chips.push((Source::Song, "Song tone"));
+        }
+        chips.push((Source::Mine, "My sound"));
+        chips.push((Source::Blank, "Blank"));
+        let cw: f32 = chips
             .iter()
-            .map(|(_, l, k)| draw::key_w(&ctx, l, k, false))
-            .collect();
-        let tw: f32 = widths.iter().sum::<f32>() + px(8.0) + px(3.0) * 2.0;
-        let tx = (r.min.x + px(530.0)).min(rec_r.min.x - px(24.0) - tw);
-        let track = Rect::from_min_size(pos2(tx, r.min.y), vec2(tw, h));
-        paint::inset(&p, track, Some(px(13.0)), 2.0, Fill::Base);
-        let mut kx = track.min.x + px(4.0);
-        for (i, (tab, l, k)) in tabs.iter().enumerate() {
-            let kr = Rect::from_min_size(pos2(kx, track.min.y + px(4.0)), vec2(widths[i], h - px(8.0)));
-            kx = kr.max.x + px(3.0);
-            let on = self.tab == *tab;
-            let resp = widgets::interact(ui, kr, ("room-tab", i), egui::Sense::click());
-            if resp.hovered() {
-                ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+            .map(|c| draw::chip_w(&ctx, c.1, true, 11.5) + px(6.0))
+            .sum();
+        let edited = self.tab == Tab::Rig && self.edited(st) && self.rack.can_undo();
+        let ew = if edited { px(110.0) } else { 0.0 };
+        let cx0 = (cat_r.min.x - px(24.0) - ew - cw).max(r.min.x + px(420.0));
+        let mut cx = cx0;
+        if self.tab == Tab::Sounds {
+            if link_key(
+                ui,
+                pos2(cx, r.center().y),
+                "room-back-rig",
+                "\u{2039} The rig (G)",
+            )
+            .clicked()
+            {
+                self.go(st, Tab::Rig);
             }
-            if on {
-                qrs_ui::keys::key_face(&p, kr, Some(px(10.0)), false, false);
+        } else {
+            for (s, l) in &chips {
+                let w = draw::chip_w(&ctx, l, true, 11.5);
+                let cr = Rect::from_min_size(pos2(cx, r.center().y - px(14.0)), vec2(w, px(28.0)));
+                cx = cr.max.x + px(6.0);
+                if draw::chip(ui, cr, ("room-src", *l), l, None, src == *s, 11.5).clicked() && src != *s {
+                    self.set_source(st, *s);
+                }
             }
-            let ink = if on { IVORY_INK } else { th.text_2 };
-            let lw = text::width(&ctx, l, Style::new(13.0, 800, ink));
-            let cw = qrs_ui::keys::keycap_width(&ctx, k, 10.0);
-            let x0 = kr.center().x - (lw + px(7.0) + cw) / 2.0;
-            text::draw(
-                &p,
-                l,
-                pos2(x0, kr.center().y),
-                Align2::LEFT_CENTER,
-                Style::new(13.0, 800, ink),
-                None,
-            );
-            qrs_ui::keys::keycap(
-                &p,
-                k,
-                pos2(x0 + lw + px(7.0), kr.center().y),
-                Align2::LEFT_CENTER,
-                10.0,
-                if on {
-                    qrs_ui::keys::CapOn::Ivory
-                } else {
-                    qrs_ui::keys::CapOn::Material
-                },
-            );
-            if resp.clicked() {
-                self.go(st, *tab);
+            if edited {
+                text::draw(
+                    &p,
+                    "edited \u{b7} Ctrl Z",
+                    pos2(cx + px(8.0), r.center().y),
+                    Align2::LEFT_CENTER,
+                    Style::new(11.5, 700, th.accent_ink),
+                    None,
+                );
             }
         }
-        // the title: AMP ROOM · what it's based on; the rig's name and EDITED
+        // the title: what you hear, and where it came from
         let tx0 = home.max.x + px(16.0);
-        let room_w = track.min.x - tx0 - px(16.0);
-        let sub = match (self.tab, self.sounds.previewing()) {
-            (Tab::Sounds, true) => format!(
-                "AMP ROOM  \u{b7}  SOUNDS  \u{b7}  PREVIEWING {}",
-                self.sounds.preview_name().to_uppercase()
-            ),
-            _ => match (&self.state.rig, self.state.based_on.is_empty()) {
-                (Some(_), true) => "AMP ROOM  \u{b7}  YOUR SOUND".into(),
-                (_, false) => format!(
-                    "AMP ROOM  \u{b7}  BASED ON {}",
-                    self.state.based_on.to_uppercase()
-                ),
-                (None, true) => "AMP ROOM".into(),
-            },
-        };
+        let room_w = cx0 - tx0 - px(16.0);
+        let (sub, title) = self.what_you_hear(st, src);
         text::caps(
             &p,
             &sub,
-            pos2(tx0, r.min.y + px(4.0)),
+            pos2(tx0, r.min.y + px(6.0)),
             10.5,
             th.caption,
             Align2::LEFT_CENTER,
             Some(room_w),
         );
-        let title = self.title();
-        let edited = self.edited(st);
-        let badge = if self.state.rig.is_some() {
-            edited.then_some("EDITED")
-        } else {
-            Some("NOT SAVED")
-        };
-        let bw = badge
-            .map(|b| text::width(&ctx, b, Style::caps(10.0, th.accent)) + px(30.0))
-            .unwrap_or(0.0);
-        let tr = text::draw(
+        text::draw(
             &p,
             &title,
-            pos2(tx0, r.min.y + px(28.0)),
+            pos2(tx0, r.min.y + px(29.0)),
             Align2::LEFT_CENTER,
-            Style::new(24.0, 800, th.text),
-            Some((room_w - bw - px(12.0)).max(px(60.0))),
+            Style::new(20.0, 800, th.text),
+            Some(room_w.max(px(60.0))),
         );
-        if let Some(b) = badge {
-            let br = Rect::from_min_size(
-                pos2(tr.max.x + px(12.0), tr.center().y - px(11.0)),
-                vec2(bw, px(22.0)),
-            );
-            p.rect_filled(br, px(11.0), th.accent.gamma_multiply(0.12));
-            p.rect_stroke(
-                br,
-                px(11.0),
-                egui::Stroke::new(1.0, th.accent.gamma_multiply(0.45)),
-                egui::StrokeKind::Inside,
-            );
-            p.circle_filled(pos2(br.min.x + px(12.0), br.center().y), px(3.5), th.accent);
-            text::caps(
-                &p,
-                b,
-                pos2(br.min.x + px(21.0), br.center().y),
-                10.0,
-                th.accent_ink,
-                Align2::LEFT_CENTER,
-                None,
+    }
+
+    /// The top line's words: (the small caps over it, the line).
+    fn what_you_hear(&mut self, st: &AppState, src: Source) -> (String, String) {
+        if self.tab == Tab::Sounds && self.sounds.previewing() {
+            return (
+                "AMP ROOM  \u{b7}  SOUNDS  \u{b7}  PREVIEWING".into(),
+                self.sounds.preview_name(),
             );
         }
+        match src {
+            Source::Song => {
+                let rig = self.rack.board.rig.as_ref();
+                let n = rig.map(|r| r.tones.len()).unwrap_or(0);
+                let i = match self.rack.board.pick {
+                    Some(Pick::Tone(i)) => i,
+                    _ => self.rack.board.song_tone,
+                }
+                .min(n.saturating_sub(1));
+                let (label, yours) = rig
+                    .and_then(|r| r.tones.get(i))
+                    .map(|t| (t.label.to_uppercase(), t.edited))
+                    .unwrap_or_default();
+                let how = if self.rack.board.pick.is_none() && crate::pedalboard::follow(&st.config) {
+                    "FOLLOWING THE SONG"
+                } else {
+                    "HELD"
+                };
+                (
+                    format!("AMP ROOM  \u{b7}  SONG TONE  \u{b7}  {how}"),
+                    format!(
+                        "{} \u{b7} {} \u{b7} song tone {} of {n} ({label}){}",
+                        self.rack.song.display_title,
+                        self.rack.song.part_name,
+                        i + 1,
+                        if yours { " \u{b7} yours" } else { "" }
+                    ),
+                )
+            }
+            Source::Mine => {
+                let sub = match (&self.state.rig, self.state.based_on.is_empty()) {
+                    (Some(_), true) => "AMP ROOM  \u{b7}  MY SOUND".into(),
+                    (Some(_), false) => format!(
+                        "AMP ROOM  \u{b7}  MY SOUND  \u{b7}  BASED ON {}",
+                        self.state.based_on.to_uppercase()
+                    ),
+                    (None, false) => format!(
+                        "AMP ROOM  \u{b7}  NOT SAVED  \u{b7}  BASED ON {}",
+                        self.state.based_on.to_uppercase()
+                    ),
+                    (None, true) => "AMP ROOM  \u{b7}  NOT SAVED".into(),
+                };
+                let scene = rigs::scene_label(&self.state.names, self.state.scene);
+                (sub, format!("{} \u{b7} {scene}", self.title()))
+            }
+            // (P38.1: what to do with it, in the small caps over its name)
+            Source::Blank => (
+                "AMP ROOM  \u{b7}  BLANK  \u{b7}  + IN THE CHAIN ADDS A UNIT".into(),
+                "A blank rig".into(),
+            ),
+        }
     }
+
+    /// Change where the sound comes from (the top line's chips).
+    fn set_source(&mut self, st: &mut AppState, s: Source) {
+        self.rack.board_commit(st);
+        self.rack.board.audition = None;
+        self.ab = false;
+        match s {
+            Source::Song => {
+                self.rack.board.pick = None;
+                self.rack.board.sel = None;
+            }
+            Source::Mine => {
+                self.rack.board.pick = Some(Pick::Mine);
+                self.rack.board.sel = None;
+            }
+            Source::Blank => {
+                self.rack.board.pick = Some(Pick::Mine);
+                self.load(st, Board::default(), Default::default(), None, "Blank".into());
+            }
+        }
+    }
+}
+
+/// The room's three bands in `area` (P37.13): the top line, the body, the strip.
+pub fn room_rects(area: Rect) -> (Rect, Rect, Rect) {
+    let m = px(20.0);
+    let top = Rect::from_min_size(
+        pos2(area.min.x + m, area.min.y + px(18.0)),
+        vec2(area.width() - 2.0 * m, px(44.0)),
+    );
+    let strip = Rect::from_min_max(
+        pos2(area.min.x + m, area.max.y - px(12.0) - strip::HEIGHT),
+        pos2(area.max.x - m, area.max.y - px(12.0)),
+    );
+    let body = Rect::from_min_max(
+        pos2(area.min.x + m, top.max.y + px(22.0)),
+        pos2(area.max.x - m, strip.min.y - px(10.0)),
+    );
+    (top, body, strip)
+}
+
+/// Where the room's sound comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Source {
+    Song,
+    Mine,
+    Blank,
+}
+
+/// A quiet text key in the top line.
+fn link_key(ui: &Ui, pos: Pos2, id: &str, s: &str) -> egui::Response {
+    let th = t();
+    let st = Style::new(13.0, 800, th.accent_ink);
+    let w = text::width(ui.ctx(), s, st);
+    let r = Rect::from_min_size(pos2(pos.x, pos.y - px(12.0)), vec2(w, px(24.0)));
+    let resp = widgets::interact(ui, r, id, egui::Sense::click());
+    text::draw(ui.painter(), s, r.left_center(), Align2::LEFT_CENTER, st, None);
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
 }
 
 /// Screenshot mode: four saved sounds (in the favourite slots) and the room on one of them with an edit, as the
@@ -1112,6 +1425,7 @@ pub fn stage_data(st: &mut AppState) {
         based_on: warm.map(|r| r.based_on.clone()).unwrap_or_default(),
         scene: 2,
         scenes: warm.map(|r| r.scenes.clone()).unwrap_or_default(),
+        names: ["Verse".into(), "Chorus".into(), "Solo".into(), String::new()],
     }
     .save(&mut st.config);
     if crate::gearindex::version() == 0 {
@@ -1155,10 +1469,32 @@ impl RoomView {
     /// level playing A2.
     pub fn stage_shot(&mut self, st: &mut AppState, what: &str) {
         self.shot = true;
+        self.tab = Tab::Rig;
         self.listen.stage(-16.0, 45.04, false);
         self.save = None;
         self.typing = None;
         self.rack.board.editing = false;
+        // (each shot starts on the guitar's room, the drawer on your sounds)
+        self.rig_ui = rig::RigUi::default();
+        // (no shot's A/B or scenes leak into the next)
+        self.ab = false;
+        self.rack.board.audition = None;
+        self.state.names = Default::default();
+        self.state.scenes = Default::default();
+        self.state.scene = 0;
+        self.cat = None;
+        self.info = None;
+        if let Some((id, _)) = crate::calibrate::current_input(st) {
+            let mut cal = crate::calibrate::load(&st.config, &id);
+            // (the data's own instrument, P37.6a: a bass player's data shows a bass room; "bass" on a guitar's)
+            let own = crate::calibrate::default_instrument(&st.config);
+            cal.instrument = if what == "bass" && !own.is_bass() {
+                qrs_analysis::instrument::Instrument::Bass
+            } else {
+                own
+            };
+            crate::calibrate::save(&mut st.config, &id, &cal);
+        }
         let b = self.rack.board_now(st);
         self.rack.board.sel = b
             .blocks
@@ -1180,7 +1516,161 @@ impl RoomView {
                 self.go(st, Tab::Rig);
                 self.rack.board.editing = true;
             }
+            "silver" | "silver_empty" => {
+                self.go(st, Tab::Rig);
+                let newest = |k| {
+                    crate::captures::with(|l| {
+                        if l.items.is_empty() {
+                            *l = crate::captures::Library::open(&st.data.root);
+                        }
+                        l.of(k).max_by(|a, c| a.added.total_cmp(&c.added)).map(|i| i.id)
+                    })
+                    .unwrap_or(0)
+                };
+                let empty = what == "silver_empty";
+                let b = |id: &str| board::Block::of(id).expect("catalogue model");
+                let mut amp = b("amp_nam");
+                let mut cab = b("cab_ir");
+                if !empty {
+                    amp.set_asset(newest(crate::captures::Kind::Nam));
+                    cab.set_asset(newest(crate::captures::Kind::Ir));
+                }
+                let rig = Board::new(vec![
+                    b("gate"),
+                    b("green"),
+                    amp,
+                    cab,
+                    b("analog_delay"),
+                    b("spring"),
+                ])
+                .renewed();
+                let uid = rig.blocks[2].uid;
+                self.rack.board_edit(st, |x| *x = rig);
+                self.rack.board_commit(st);
+                self.rack.board.sel = Some(uid);
+            }
+            "gear" | "bass" => {
+                self.go(st, Tab::Rig);
+                if what == "bass"
+                    && let Some((_, b)) = board::presets()
+                        .into_iter()
+                        .find(|(n, _)| n.eq_ignore_ascii_case("bass"))
+                {
+                    let b = b.renewed();
+                    let sel = b.first(Kind::Amp).map(|i| b.blocks[i].uid);
+                    self.rack.board_edit(st, |x| *x = b);
+                    self.rack.board_commit(st);
+                    self.rack.board.sel = sel;
+                }
+                self.rig_ui.seg = rig::Seg::Gear;
+                self.shelf_kind = Kind::Amp;
+                self.shelf_page = 0;
+            }
+            "modeller" => {
+                self.go(st, Tab::Rig);
+                if let Some((id, _)) = crate::calibrate::current_input(st) {
+                    let mut cal = crate::calibrate::load(&st.config, &id);
+                    cal.kind = crate::calibrate::Kind::Modeller;
+                    crate::calibrate::save(&mut st.config, &id, &cal);
+                }
+            }
+            // P37.13: a rig of this model (a gate and it, it open); a capture with the newest file of its kind
+            w if w.starts_with("unit:") || w == "cab" || w == "gate" || w == "empty" => {
+                self.go(st, Tab::Rig);
+                let b = |id: &str| board::Block::of(id).expect("catalogue model");
+                let blocks = match w {
+                    "empty" => vec![],
+                    "cab" => vec![b("green"), b("amp_crunch"), b("cab_4x12")],
+                    "gate" => vec![b("gate"), b("green"), b("amp_crunch"), b("cab_2x12")],
+                    _ => {
+                        let id = &w[5..];
+                        let mut m = b(id);
+                        if m.def().file {
+                            let kind = if m.def().kind == Kind::Cab {
+                                crate::captures::Kind::Ir
+                            } else {
+                                crate::captures::Kind::Nam
+                            };
+                            let newest = crate::captures::with(|l| {
+                                if l.items.is_empty() {
+                                    *l = crate::captures::Library::open(&st.data.root);
+                                }
+                                l.of(kind)
+                                    .max_by(|a, c| a.added.total_cmp(&c.added))
+                                    .map(|i| i.id)
+                            });
+                            if let Some(n) = newest {
+                                m.set_asset(n);
+                            }
+                        }
+                        let mut v = vec![b("green"), m];
+                        if m.def().kind == Kind::Amp {
+                            v.push(b("cab_2x12"));
+                        }
+                        v
+                    }
+                };
+                let rig = Board::new(blocks).renewed();
+                let sel = match w {
+                    "empty" => None,
+                    "cab" => rig.blocks.get(2).map(|x| x.uid),
+                    "gate" => rig.blocks.get(2).map(|x| x.uid),
+                    _ => rig.blocks.get(1).map(|x| x.uid),
+                };
+                self.rack.board_edit(st, |x| *x = rig);
+                self.rack.board_commit(st);
+                self.rack.board.sel = sel;
+            }
+            "scenes" | "ab" => {
+                self.go(st, Tab::Rig);
+                self.state.names = [
+                    "Verse".into(),
+                    "Big chorus lead".into(),
+                    String::new(),
+                    String::new(),
+                ];
+                let now = self.rack.board_now(st);
+                self.state.scenes = [Some(now.clone()), Some(now.clone()), Some(now), None];
+                self.state.scene = 1;
+                if what == "ab" {
+                    self.ab = true;
+                }
+            }
+            // the Catalogue: everything, the amps, a search; the info card for a model and for a capture
+            w if w.starts_with("catalogue") || w.starts_with("info") => {
+                self.go(st, Tab::Rig);
+                if w.starts_with("catalogue") {
+                    let mut c = catalogue::Cat::new(false);
+                    match w {
+                        "catalogue_amps" => c.group = Some(0),
+                        "catalogue_search" => c.query = "fuzz".into(),
+                        "catalogue_captures" => c.mode = rig::ShelfMode::Captures,
+                        _ => {}
+                    }
+                    self.cat = Some(c);
+                } else if w == "info_capture" {
+                    let id = crate::captures::with(|l| {
+                        if l.items.is_empty() {
+                            *l = crate::captures::Library::open(&st.data.root);
+                        }
+                        l.items
+                            .iter()
+                            .find(|i| i.skin.is_some())
+                            .or(l.items.first())
+                            .map(|i| i.id)
+                    });
+                    self.info = id.map(stage::Entry::Capture);
+                } else {
+                    self.info = board::catalog::find("amp_crunch").map(stage::Entry::Model);
+                }
+            }
             _ => self.go(st, Tab::Rig),
+        }
+        // (QUICKRS_BOARD_CHAIN / QUICKRS_BOARD_SEL: a board of these models on the stage, one selected, as the player's)
+        if std::env::var("QUICKRS_BOARD_CHAIN").is_ok() {
+            let sel = std::env::var("QUICKRS_BOARD_SEL").ok();
+            self.rack.board_shot(st, None, sel.as_deref());
+            self.rack.board.editing = false;
         }
         // recording (P23.9): "rec", "rec_paused", "rec_saved"
         if let Some(w) = what.strip_prefix("rec") {

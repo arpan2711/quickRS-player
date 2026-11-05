@@ -22,6 +22,8 @@ const GEM_H: f32 = 0.8;
 const GEM_D: f32 = 0.4;
 /// A hit's post flash and the hot gem (04 §4): flat top to 0.27 s, off by 0.30.
 const FLASH: f32 = 0.30;
+/// A hit's burst at the note (our own, louder than the game's wire flash: testers asked for a clearer "you got it").
+const BURST: f32 = 0.45;
 /// MISS / LATE words: in 0.03 s, hold, out by 0.43 s.
 const WORD: f32 = 0.43;
 /// Chord box: 1.2 g above the top string, 0.7 g below the bottom one; repeats half as tall.
@@ -43,6 +45,8 @@ pub(super) struct Out {
     posts: Vec<(i32, i32, f32)>,
     /// (string, fret, word, age).
     words: Vec<(i32, i32, &'static str, f32)>,
+    /// Hit bursts: (where, string colour, age).
+    bursts: Vec<(V3, Color32, f32)>,
 }
 
 fn has(t: Techs, f: Techs) -> bool {
@@ -108,6 +112,24 @@ pub(super) fn draw(pen: &Pen, c: &Cache, marks: &[Option<(Judgement, f32)>]) -> 
         let u = (n.t - now) as f32;
         let m = mark(n, marks);
         let repeat = n.chord.is_some_and(|k| c.chords[k].repeat);
+        if let Some((j, age)) = m
+            && j != Judgement::Miss
+            && age < BURST
+        {
+            // an open string bursts in the middle of the hand's window
+            let x = if n.fret > 0 {
+                slot(n.fret)
+            } else {
+                window_at(c, n.t).map_or(slot(3), |(a, w)| {
+                    (wire(a as f32 - 1.0) + wire((a + w) as f32 - 1.0)) / 2.0
+                })
+            };
+            out.bursts.push((
+                v3(x, pen.v.sy(n.string), -0.05),
+                pen.pal.str_game[si(n.string)],
+                age,
+            ));
+        }
         if repeat {
             continue;
         }
@@ -164,7 +186,7 @@ fn gem(pen: &Pen, at: V3, roll: f32, s: usize, a: f32, lit: f32, size: f32) {
     ];
     let white = Color32::WHITE;
     let lit_c = |c: Color32, k: f32| mix(c, white, k * lit);
-    let top_c = lit_c(TOP_FACE[s], 0.6);
+    let top_c = lit_c(pen.pal.top_face[s], 0.6);
     // the sides that face the camera (top, bottom, left, right), behind the front face
     let eye = v.eye();
     let sides = [
@@ -183,11 +205,32 @@ fn gem(pen: &Pen, at: V3, roll: f32, s: usize, a: f32, lit: f32, size: f32) {
             pen.poly(&q, alpha(col, a));
         }
     }
+    // the front face: the material's own picture (Bakelite in its bezel, patina, worn paint), white-hot when lit
+    if let Some(tex) = pen.gems {
+        let k = (a * 255.0) as u8;
+        pen.tex_quad(
+            f,
+            tex,
+            super::skin::gem_uv(s),
+            Color32::from_rgba_premultiplied(k, k, k, k),
+        );
+        if lit > 0.0 {
+            pen.poly(&f, add(Color32::WHITE, 0.8 * lit * a));
+        }
+        if let Some(sf) = f.iter().map(|q| v.pt(*q)).collect::<Option<Vec<_>>>() {
+            pen.halo(
+                &sf,
+                (0.06 + 0.5 * lit) * v.scale(at),
+                add(pen.pal.str_game[s], (0.08 + 0.5 * lit) * a),
+            );
+        }
+        return;
+    }
     // the front face: a vertical gradient top → middle → bottom
     let (ct, cm, cb) = (
-        lit_c(FACE_TOP[s], 0.8),
-        lit_c(FACE_MID[s], 0.8),
-        lit_c(FACE_BOT[s], 0.75),
+        lit_c(pen.pal.face_top[s], 0.8),
+        lit_c(pen.pal.face_mid[s], 0.8),
+        lit_c(pen.pal.face_bot[s], 0.75),
     );
     let ml = (f[0] + f[3]) * 0.5;
     let mr = (f[1] + f[2]) * 0.5;
@@ -209,7 +252,7 @@ fn gem(pen: &Pen, at: V3, roll: f32, s: usize, a: f32, lit: f32, size: f32) {
             corner(hw - ins, -hh + ins, -hd - 0.01),
             corner(-hw + ins, -hh + ins, -hd - 0.01),
         ];
-        let rim = alpha(lit_c(RIM[s], 1.0), a);
+        let rim = alpha(lit_c(pen.pal.rim[s], 1.0), a);
         for k in 0..4 {
             pen.line(o[k], o[(k + 1) % 4], 0.08 * size, 0.01, rim, rim, 0.8);
         }
@@ -219,7 +262,7 @@ fn gem(pen: &Pen, at: V3, roll: f32, s: usize, a: f32, lit: f32, size: f32) {
         pen.halo(
             &sf,
             (0.1 + 0.5 * lit) * v.scale(at),
-            add(STR_GAME[s], (0.15 + 0.5 * lit) * a),
+            add(pen.pal.str_game[s], (0.15 + 0.5 * lit) * a),
         );
     }
 }
@@ -232,7 +275,8 @@ fn icons(pen: &Pen, at: V3, tech: Techs, s: usize, a: f32) {
     };
     let k = v.scale(at);
     let (w, h) = (GEM_W * k, GEM_H * k);
-    if h < 5.0 {
+    // (from 3.5 px: at 5 the marks only showed in the last moment before the strings at 1440 x 900, P37.6d)
+    if h < 3.5 {
         return;
     }
     let p = pen.p;
@@ -262,12 +306,14 @@ fn icons(pen: &Pen, at: V3, tech: Techs, s: usize, a: f32) {
         ));
     }
     if has(tech, Techs::PALM_MUTE) {
+        // a flat X across the face, dark-edged with a pale core (in the string's rim colour alone it vanished into
+        // the gem: the technique shots, P37.6d); the fret-hand mute's is taller and white
         let (dx, dy) = (w * 0.42, h * 0.42);
         for st in [
-            Stroke::new((h * 0.2).max(1.5), alpha(RIM[s], a)),
+            Stroke::new((h * 0.24).max(1.8), alpha(rgb(16, 12, 20), 0.75 * a)),
             Stroke::new(
-                (h * 0.1).max(1.0),
-                alpha(mix(STR_GAME[s], Color32::WHITE, 0.4), a),
+                (h * 0.11).max(1.0),
+                alpha(mix(pen.pal.str_game[s], Color32::WHITE, 0.75), a),
             ),
         ] {
             p.line_segment([c + vec2(-dx, -dy), c + vec2(dx, dy)], st);
@@ -277,7 +323,7 @@ fn icons(pen: &Pen, at: V3, tech: Techs, s: usize, a: f32) {
     if has(tech, Techs::FRET_HAND_MUTE) {
         let d = h * 0.6;
         for st in [
-            Stroke::new((h * 0.3).max(2.0), alpha(STR_GAME[s], a)),
+            Stroke::new((h * 0.3).max(2.0), alpha(pen.pal.str_game[s], a)),
             Stroke::new((h * 0.17).max(1.2), white),
         ] {
             p.line_segment([c + vec2(-d, -d), c + vec2(d, d)], st);
@@ -294,7 +340,11 @@ fn icons(pen: &Pen, at: V3, tech: Techs, s: usize, a: f32) {
             };
         p.circle_filled(c, r, alpha(rgb(20, 16, 24), 0.6 * a));
         p.circle_stroke(c, r, Stroke::new((h * 0.12).max(1.0), white));
-        p.circle_stroke(c, r * 0.6, Stroke::new((h * 0.08).max(1.0), alpha(RIM[s], a)));
+        p.circle_stroke(
+            c,
+            r * 0.6,
+            Stroke::new((h * 0.08).max(1.0), alpha(pen.pal.rim[s], a)),
+        );
         p.circle_filled(c, r * 0.25, alpha(rgb(10, 8, 12), a));
     }
     if has(tech, Techs::TAP) {
@@ -309,11 +359,15 @@ fn icons(pen: &Pen, at: V3, tech: Techs, s: usize, a: f32) {
         } else {
             -h * 0.75
         };
+        // a bar under the gem (slap: the thumb) or over it (pop), dark-edged so it reads on any string (it was a
+        // thin white sliver, P37.6d)
+        let bar = egui::Rect::from_center_size(c + vec2(0.0, y), vec2(w * 0.7, (h * 0.26).max(2.0)));
         p.rect_filled(
-            egui::Rect::from_center_size(c + vec2(0.0, y), vec2(w * 0.5, h * 0.2)),
-            1.0,
-            white,
+            bar.expand((h * 0.08).max(1.0)),
+            2.0,
+            alpha(rgb(16, 12, 20), 0.7 * a),
         );
+        p.rect_filled(bar, 1.5, white);
     }
 }
 
@@ -337,7 +391,7 @@ fn chevrons(pen: &Pen, at: V3, n: usize, s: usize, a: f32) {
         ];
         pen.p.add(egui::Shape::line(
             pts.clone(),
-            Stroke::new(ch * 0.7, alpha(FACE_BOT[s], a)),
+            Stroke::new(ch * 0.7, alpha(pen.pal.face_bot[s], a)),
         ));
         pen.p.add(egui::Shape::line(
             pts,
@@ -376,7 +430,7 @@ fn note(pen: &Pen, c: &Cache, n: &HwNote, marks: &[Option<(Judgement, f32)>]) {
     // the stem down to a teal plate on the floor, and the fret number there on the first note per fret per anchor
     let sf = a * smooth((u - 0.25) / 0.1);
     if sf > 0.0 {
-        let col = alpha(scale(FACE_MID[s], 1.15), sf);
+        let col = alpha(scale(pen.pal.face_mid[s], 1.15), sf);
         pen.line(
             v3(x, y - GEM_H / 2.0, z),
             v3(x, FLOOR, z),
@@ -446,9 +500,9 @@ fn bar(pen: &Pen, l: f32, r: f32, y: f32, z: f32, s: usize, a: f32) {
             v3(r - t, y - h, z),
             v3(l + t, y - h, z),
         ],
-        alpha(scale(FACE_MID[s], 0.95), a),
+        alpha(scale(pen.pal.face_mid[s], 0.95), a),
     );
-    let col = alpha(RIM[s], 0.8 * a);
+    let col = alpha(pen.pal.rim[s], 0.8 * a);
     pen.line(
         v3(l + t, y + 0.02, z - 0.01),
         v3(r - t, y + 0.02, z - 0.01),
@@ -469,7 +523,11 @@ fn bar(pen: &Pen, l: f32, r: f32, y: f32, z: f32, s: usize, a: f32) {
     .map(|q| pen.v.pt(*q))
     .collect::<Option<Vec<_>>>()
     {
-        pen.halo(&q, 0.12 * pen.v.scale(v3(l, y, z)), add(STR_GAME[s], 0.25 * a));
+        pen.halo(
+            &q,
+            0.12 * pen.v.scale(v3(l, y, z)),
+            add(pen.pal.str_game[s], 0.25 * a),
+        );
     }
 }
 
@@ -496,21 +554,21 @@ fn tail(pen: &Pen, c: &Cache, n: &HwNote, played: bool) {
             pen.grad(
                 [v3(l, y, w[0]), v3(r, y, w[0]), v3(r, y, w[1]), v3(l, y, w[1])],
                 [
-                    alpha(FACE_MID[s], 0.3 * fa),
-                    alpha(FACE_MID[s], 0.3 * fa),
-                    alpha(FACE_MID[s], 0.3 * fb),
-                    alpha(FACE_MID[s], 0.3 * fb),
+                    alpha(pen.pal.face_mid[s], 0.3 * fa),
+                    alpha(pen.pal.face_mid[s], 0.3 * fa),
+                    alpha(pen.pal.face_mid[s], 0.3 * fb),
+                    alpha(pen.pal.face_mid[s], 0.3 * fb),
                 ],
             );
             for x in [l, r] {
                 // a wide opaque rail lying flat along the window's edge (Panic's open A / e), a pale edge
-                let rc = mix(FACE_TOP[s], Color32::WHITE, 0.15 + 0.4 * k);
+                let rc = mix(pen.pal.face_top[s], Color32::WHITE, 0.15 + 0.4 * k);
                 let xi = if x < (l + r) / 2.0 { x + 0.4 } else { x - 0.4 };
                 pen.grad(
                     [v3(x, y, w[0]), v3(xi, y, w[0]), v3(xi, y, w[1]), v3(x, y, w[1])],
                     [alpha(rc, fa), alpha(rc, fa), alpha(rc, fb), alpha(rc, fb)],
                 );
-                let e = mix(RIM[s], Color32::WHITE, k);
+                let e = mix(pen.pal.rim[s], Color32::WHITE, k);
                 pen.line(
                     v3(x, y, w[0]),
                     v3(x, y, w[1]),
@@ -524,11 +582,20 @@ fn tail(pen: &Pen, c: &Cache, n: &HwNote, played: bool) {
         }
         return;
     }
-    let n_seg = (((z1 - z0) / 1.2).ceil() as usize).clamp(4, 120);
-    let from = slot(n.fret);
-    let to = if n.slide_to > 0 { slot(n.slide_to) } else { from };
     let vib = has(n.tech, Techs::VIBRATO);
     let trem = has(n.tech, Techs::TREMOLO);
+    // (a tremolo's zigzag repeats every 0.6 g and a vibrato's steps every 0.85 g: sampled every 1.2 g they aliased
+    // to a straight tail, P37.6d's technique shots; a quarter of the period draws them)
+    let step = if trem {
+        0.15
+    } else if vib {
+        0.21
+    } else {
+        1.2
+    };
+    let n_seg = (((z1 - z0) / step).ceil() as usize).clamp(4, 480);
+    let from = slot(n.fret);
+    let to = if n.slide_to > 0 { slot(n.slide_to) } else { from };
     let up = if n.string == 0 && !v.invert { -1.0 } else { 1.0 };
     let mut left = Vec::with_capacity(n_seg + 1);
     let mut right = Vec::with_capacity(n_seg + 1);
@@ -557,11 +624,15 @@ fn tail(pen: &Pen, c: &Cache, n: &HwNote, played: bool) {
         fades.push(v.fade(z));
     }
     let body = if sounding {
-        scale(FACE_TOP[s], 1.2)
+        scale(pen.pal.face_top[s], 1.2)
     } else {
-        FACE_TOP[s]
+        pen.pal.face_top[s]
     };
-    let rail = if sounding { rgb(255, 247, 238) } else { RIM[s] };
+    let rail = if sounding {
+        rgb(255, 247, 238)
+    } else {
+        pen.pal.rim[s]
+    };
     let rows: Vec<Vec<V3>> = (0..=n_seg).map(|i| vec![left[i], right[i]]).collect();
     let cols: Vec<Vec<Color32>> = fades
         .iter()
@@ -588,8 +659,8 @@ fn tail(pen: &Pen, c: &Cache, n: &HwNote, played: bool) {
                 m1,
                 0.85,
                 0.3,
-                add(STR_GAME[s], 0.25),
-                add(STR_GAME[s], 0.25),
+                add(pen.pal.str_game[s], 0.25),
+                add(pen.pal.str_game[s], 0.25),
                 1.0,
             );
         }
@@ -640,7 +711,7 @@ fn container(pen: &Pen, c: &Cache, n: &HwNote, u: f32, m: Option<(Judgement, f32
     let (x, y) = (slot(n.fret), v.sy(n.string));
     let sz = if n.chord.is_some() { 1.0 } else { size };
     let (hw, hh) = (GEM_W / 2.0 * sz, GEM_H / 2.0 * sz);
-    let frame = alpha(scale(FACE_MID[s], 1.2), a);
+    let frame = alpha(scale(pen.pal.face_mid[s], 1.2), a);
     pen.poly(
         &[
             v3(x - hw, y + hh, 0.0),
@@ -650,9 +721,9 @@ fn container(pen: &Pen, c: &Cache, n: &HwNote, u: f32, m: Option<(Judgement, f32
         ],
         // a chord's shape reads as dim solid gems on the strings (Panic, Otherside); a single note's window is dark
         if n.chord.is_some() {
-            alpha(scale(FACE_MID[s], 0.8), 0.7 * a)
+            alpha(scale(pen.pal.face_mid[s], 0.8), 0.7 * a)
         } else {
-            alpha(scale(FACE_MID[s], 0.42), 0.6 * a)
+            alpha(scale(pen.pal.face_mid[s], 0.42), 0.6 * a)
         },
     );
     let t = 0.1 * sz;
@@ -881,12 +952,19 @@ fn name(pen: &Pen, c: &Cache, k: usize, z: f32) {
         return;
     }
     let col = alpha(rgb(235, 230, 240), 0.72 * a);
-    // root (and its ♯) at full size, the rest smaller and raised
+    // root (and its ♯) at full size, the rest smaller and raised; as a number in the key, its numeral (bVII, vi) is
+    // the root
     let nm = sharp_name(ch.name.trim());
-    let split = nm
-        .char_indices()
-        .find(|&(i, ch)| i > 0 && ch != '♯' && ch != '#')
-        .map_or(nm.len(), |(i, _)| i);
+    let roman = |c: char| matches!(c, 'I' | 'V' | 'i' | 'v');
+    let split = if nm.trim_start_matches(['b', '♯']).starts_with(roman) {
+        nm.char_indices()
+            .find(|&(_, c)| !(roman(c) || c == 'b' || c == '♯'))
+            .map_or(nm.len(), |(i, _)| i)
+    } else {
+        nm.char_indices()
+            .find(|&(i, ch)| i > 0 && ch != '♯' && ch != '#')
+            .map_or(nm.len(), |(i, _)| i)
+    };
     let (root, rest) = nm.split_at(split);
     let st = Style::new(size, 500, col);
     let st2 = Style::new(size * 0.7, 500, col);
@@ -988,7 +1066,7 @@ fn held(pen: &Pen, c: &Cache, marks: &[Option<(Judgement, f32)>], out: &mut Out)
                             v3(x1, y - 0.1, 0.0),
                             v3(x0, y - 0.1, 0.0),
                         ],
-                        alpha(mix(STR_LIT[s], Color32::WHITE, 0.25), ta),
+                        alpha(mix(pen.pal.str_lit[s], Color32::WHITE, 0.25), ta),
                     );
                 }
             }
@@ -1130,6 +1208,37 @@ pub(super) fn flashes(pen: &Pen, out: &Out) {
         post(l, age, true);
         post(r, age, true);
     }
+    for &(at, col, age) in &out.bursts {
+        burst(pen, at, col, age);
+    }
+}
+
+/// A hit at the strings: a white-hot core in a glow of the string's colour, and a ring thrown outward, gone by
+/// `BURST`.
+fn burst(pen: &Pen, at: V3, col: Color32, age: f32) {
+    let Some(c) = pen.v.pt(at) else {
+        return;
+    };
+    let g = pen.v.scale(at);
+    let u = (age / BURST).clamp(0.0, 1.0);
+    let k = (1.0 - u).powf(1.5);
+    let glow = (1.1 + 0.5 * u) * g;
+    pen.glow(
+        c,
+        glow,
+        add(mix(col, Color32::WHITE, 0.35), 0.9 * k),
+        add(col, 0.0),
+    );
+    pen.glow(c, 0.45 * glow, add(Color32::WHITE, k), add(col, 0.5 * k));
+    let ring = (0.5 + 2.2 * smooth(u.powf(0.6))) * g;
+    pen.p.circle_stroke(
+        c,
+        ring,
+        Stroke::new(
+            (0.16 * g * (1.0 - u)).max(1.0),
+            add(mix(col, Color32::WHITE, 0.5), k),
+        ),
+    );
 }
 
 /// MISS / LATE / EARLY on the note's string, centred in its fret space (04 §5).
@@ -1143,7 +1252,7 @@ pub(super) fn overlays(pen: &Pen, _c: &Cache, out: &Out) {
         placed.push((s, f));
         let a = (age / 0.03).min(1.0) * ((WORD - age) / 0.05).clamp(0.0, 1.0);
         let x = if f > 0 { slot(f) } else { slot(3) };
-        let col = mix(STR_GAME[si(s)], Color32::WHITE, 0.5);
+        let col = mix(pen.pal.str_game[si(s)], Color32::WHITE, 0.5);
         let at = v3(x, v.sy(s) - 0.25, -0.05);
         pen.text(word, at, 0.95, Align2::CENTER_BOTTOM, 800, alpha(col, a));
     }

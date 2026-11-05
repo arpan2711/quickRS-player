@@ -421,12 +421,21 @@ pub fn board_size(s: &Spec) -> Vec2 {
 // -- body ---------------------------------------------------------------------------------------------------------------
 
 pub fn body(s: &Spec, r: Rect, ppp: f32) -> Image {
+    body_as(s, r, ppp, true)
+}
+
+/// The body without its knobs (their caps and printed scales): a miniature's, where each knob is a dot (P37.12).
+pub fn body_bare(s: &Spec, r: Rect, ppp: f32) -> Image {
+    body_as(s, r, ppp, false)
+}
+
+fn body_as(s: &Spec, r: Rect, ppp: f32, knobs: bool) -> Image {
     let f = s.fit(r);
     let Some(mut cv) = Cv::new(r, &f, ppp) else {
         return Image::new(1, 1);
     };
     (s.body)(&mut cv, s);
-    for k in &s.knobs {
+    for k in s.knobs.iter().filter(|_| knobs) {
         if k.ticks.0 > 1 {
             let n = k.ticks.0;
             for j in 0..n {
@@ -448,6 +457,7 @@ pub fn body(s: &Spec, r: Rect, ppp: f32) -> Image {
     }
     for c in &s.choices {
         match c.k {
+            ChK::Rotary(_) if !knobs => {}
             ChK::Rotary(ks) => {
                 let rr = c.w.min(c.h) * 0.36;
                 let (cx, cy) = (c.x + c.w / 2.0, c.y + c.h * 0.58);

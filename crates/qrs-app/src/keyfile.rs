@@ -1,4 +1,4 @@
-//! Rocksmith's keys for the app (P20.2): where they're looked for, what was found (for Settings > Library to say),
+//! RS's keys for the app (P20.2): where they're looked for, what was found (for Settings > Library to say),
 //! the keys typed or pasted there, written to keys.json, and a watch on the keys files so songs that needed keys
 //! are read again as soon as keys arrive (no F5).
 //!

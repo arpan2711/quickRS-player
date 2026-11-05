@@ -317,5 +317,5 @@ again.
 The note widget is a small window that stays on top of everything: the note
 you're playing, the key quickRS thinks you're in, and that key's scale on the
 whole neck. Click the scale to make it big. Right-click hides it. Turn it on in
-the first-time setup or in Settings > *Audio input / output* > *Note
+the first-time setup or in Settings > *Sound* > *Note
 widget*.

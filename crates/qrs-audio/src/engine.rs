@@ -317,6 +317,8 @@ struct Inner {
     /// Routes sent to the control thread, and routes it has finished opening (`settle` waits for them to meet).
     opens_sent: AtomicU64,
     opens_done: AtomicU64,
+    /// The captures registry's generation the running board's file blocks were last built at (B11).
+    files_gen: AtomicU64,
     events: Receiver<Event>,
     last_pos: Mutex<PosGuard>,
     /// What the UI last read of `ctl` (P27.4), given back when the control thread holds `ctl` longer than
@@ -336,6 +338,23 @@ struct Seen {
 /// How long a UI read waits for the control state before it takes the last value seen (P27.4): far longer than the
 /// lock is ever held in the ordinary way (microseconds), far shorter than a device opening.
 const READ_WAIT: Duration = Duration::from_millis(3);
+
+/// The lock within `wait`, or None. Not parking_lot's `try_lock_for`: on Windows its timed park overshoots by tens
+/// to hundreds of ms (measured 40-130 ms for 3 ms, and 585 ms with the control thread parked on the same lock, which
+/// then handed the lock over at the holder's end), so every UI read during a device opening stalled the frame (P37.4:
+/// `ui_reads_dont_wait_on_a_device_opening` failing). A try-lock and a yield until the deadline is exact.
+fn try_lock_within<T>(m: &Mutex<T>, wait: Duration) -> Option<parking_lot::MutexGuard<'_, T>> {
+    let t0 = Instant::now();
+    loop {
+        if let Some(g) = m.try_lock() {
+            return Some(g);
+        }
+        if t0.elapsed() >= wait {
+            return None;
+        }
+        std::thread::yield_now();
+    }
+}
 
 /// What `Engine::position` remembers between reads.
 #[derive(Clone, Copy)]
@@ -401,6 +420,7 @@ impl Engine {
             tx,
             opens_sent: AtomicU64::new(0),
             opens_done: AtomicU64::new(0),
+            files_gen: AtomicU64::new(0),
             events: ev_rx,
             last_pos: Mutex::new(PosGuard {
                 last: 0.0,
@@ -450,7 +470,7 @@ impl Engine {
     /// is holding the state (opening a device) for longer than `READ_WAIT`, the value remembered (the first read of
     /// all waits, as before). The UI reads several of these every frame.
     fn read<T: Clone>(&self, get: impl Fn(&Ctl) -> T, slot: impl Fn(&mut Seen) -> &mut Option<T>) -> T {
-        if let Some(c) = self.inner.ctl.try_lock_for(READ_WAIT) {
+        if let Some(c) = try_lock_within(&self.inner.ctl, READ_WAIT) {
             let v = get(&c);
             drop(c);
             *slot(&mut self.inner.seen.lock()) = Some(v.clone());
@@ -459,7 +479,10 @@ impl Engine {
         if let Some(v) = slot(&mut self.inner.seen.lock()).clone() {
             return v;
         }
-        get(&self.inner.ctl.lock())
+        // nothing seen yet: wait this once, and remember it (else every read during the opening waits too, P37.4)
+        let v = get(&self.inner.ctl.lock());
+        *slot(&mut self.inner.seen.lock()) = Some(v.clone());
+        v
     }
 
     pub fn status(&self) -> Status {
@@ -711,6 +734,10 @@ impl Engine {
 
     /// Switch tone. Moving a knob within the same kind of tone updates the running chain (tails keep ringing).
     pub fn set_tone(&self, tone: ToneSpec) {
+        // (its file blocks are built now, from the registry as it is)
+        self.inner
+            .files_gen
+            .store(crate::board::nam::generation(), Ordering::Release);
         let (rate, previous) = {
             let mut c = self.inner.ctl.lock();
             let prev = std::mem::replace(&mut c.persist.tone, tone.clone());
@@ -730,6 +757,33 @@ impl Engine {
         match (same_chain, tone.params()) {
             (true, Some(p)) => self.inp(InCmd::ToneParams(p)),
             _ => self.inp(InCmd::Tone(make_tone(&tone, rate))),
+        }
+    }
+
+    /// Rebuild the running board's capture and IR blocks if captures were registered (or their trims measured)
+    /// since they were built (AUDIT B11: a saved NAM rig set before the library opened played dry until its uid,
+    /// model or asset changed). Cheap when nothing changed (an atomic load): the app calls it every frame.
+    pub fn refresh_files(&self) {
+        let generation = crate::board::nam::generation();
+        if self.inner.files_gen.swap(generation, Ordering::AcqRel) == generation {
+            return;
+        }
+        let (tone, rate) = {
+            let c = self.inner.ctl.lock();
+            (
+                c.persist.tone.clone(),
+                c.status.input.as_ref().map(|i| i.rate).unwrap_or(c.rate),
+            )
+        };
+        let Some(board) = tone.board() else { return };
+        for b in board.blocks.iter().filter(|b| b.def().file && b.asset != 0) {
+            let asset = crate::board::effective_asset(b);
+            if crate::board::nam::is_registered(asset) {
+                self.inp(InCmd::Board(crate::board::BoardCmd::Replace {
+                    block: *b,
+                    pedal: crate::board::make_pedal(b, rate),
+                }));
+            }
         }
     }
 
@@ -804,7 +858,7 @@ impl Engine {
     pub fn take_onsets(&self) -> Vec<Onset> {
         let mut out = Vec::new();
         // (a device opening: they wait in their queue for the next frame, P27.4)
-        let Some(mut c) = self.inner.ctl.try_lock_for(READ_WAIT) else {
+        let Some(mut c) = try_lock_within(&self.inner.ctl, READ_WAIT) else {
             return out;
         };
         if let Some(rx) = c.onsets_rx.as_mut() {
@@ -1112,6 +1166,12 @@ impl Engine {
         let now = ring.written();
         let from = now.saturating_sub((seconds.max(0.0) * ring.rate as f64) as u64);
         ring.waveform(from, now, columns, src)
+    }
+
+    /// The jam's beat clock: `at(wall_ns)` is the beat heard at that wall time (negative in the count-in). An onset's
+    /// `wall_ns` is when it was played, so `at` of it is the beat it was played on (the timing tool, P36.2).
+    pub fn jam_clock(&self) -> crate::clock::SongClock {
+        self.inner.shared.jam.clock.load()
     }
 
     /// The jam as heard now: the beat (for the beat light), the looper, Rewind.
@@ -1671,7 +1731,7 @@ mod tests {
         let holder = std::thread::spawn(move || {
             let _c = inner.ctl.lock();
             held_tx.send(()).unwrap();
-            std::thread::sleep(Duration::from_millis(500));
+            std::thread::sleep(Duration::from_millis(1000));
         });
         held_rx.recv().unwrap();
         let t0 = Instant::now();
@@ -1679,11 +1739,46 @@ mod tests {
         let r = e.rate();
         let onsets = e.take_onsets();
         let waited = t0.elapsed();
-        assert!(waited < Duration::from_millis(100), "waited {waited:?}");
+        // (3 ms each when the machine is quiet; the bound leaves room for a loaded one but not for waiting the hold
+        // out, which is what parking_lot's `try_lock_for` did: 250-590 ms of the 500 held, P37.4)
+        assert!(waited < Duration::from_millis(300), "waited {waited:?}");
         assert_eq!((st.route, r), (first.route, rate));
         assert!(onsets.is_empty());
         holder.join().unwrap();
         // and live again once it's let go
         assert_eq!(e.rate(), rate);
+    }
+
+    /// P37.4: a first read that had to wait (the start-up opening held the state) is remembered too, so the next
+    /// opening doesn't make the UI wait again. (This is why the test above failed when `Engine::new`'s own opening
+    /// was slow: its `first` read waited and wasn't kept.)
+    #[test]
+    fn a_read_that_waited_is_remembered() {
+        let e = Engine::new();
+        let hold = |ms: u64| {
+            let inner = e.inner.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let h = std::thread::spawn(move || {
+                let _c = inner.ctl.lock();
+                tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(ms));
+            });
+            rx.recv().unwrap();
+            h
+        };
+        // forget whatever was seen, then read while the state is held: this one waits
+        *e.inner.seen.lock() = Seen::default();
+        let h = hold(150);
+        let _ = e.status();
+        let _ = e.rate();
+        h.join().unwrap();
+        // held again: answered at once from what the waiting read saw
+        let h = hold(1000);
+        let t0 = Instant::now();
+        let _ = e.status();
+        let _ = e.rate();
+        let waited = t0.elapsed();
+        h.join().unwrap();
+        assert!(waited < Duration::from_millis(300), "waited {waited:?}");
     }
 }

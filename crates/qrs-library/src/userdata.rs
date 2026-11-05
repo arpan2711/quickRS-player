@@ -696,21 +696,33 @@ impl UserData {
     /// The best accuracy (0 to 1) of any part's runs at full speed: what the 70% / 80% / 90% playlists go by (a slowed
     /// run doesn't count).
     pub fn best_full_speed_acc(&self, ids: &[String]) -> Option<f64> {
-        ids.iter()
-            .filter_map(|i| self.scores.get(i))
-            .flat_map(|recs| recs.values())
-            .filter_map(Value::as_object)
-            .flat_map(|r| {
+        self.best_full_speed(ids).map(|b| b.0)
+    }
+
+    /// `best_full_speed_acc` with the part it was played on (its scores key, lower case: "lead", "bass"...); of
+    /// equal bests, the first part in the scores' order.
+    pub fn best_full_speed(&self, ids: &[String]) -> Option<(f64, String)> {
+        let mut best: Option<(f64, String)> = None;
+        for recs in ids.iter().filter_map(|i| self.scores.get(i)) {
+            for (part, r) in recs {
+                let Some(r) = r.as_object() else { continue };
                 let rec = (r.get("speed").and_then(Value::as_f64).unwrap_or(1.0) >= 0.999)
                     .then(|| r.get("best_acc").and_then(Value::as_f64))
                     .flatten();
-                top_of(r)
+                let acc = top_of(r)
                     .into_iter()
                     .filter(|run| run.speed >= 0.999)
                     .filter_map(|run| run.acc)
                     .chain(rec)
-            })
-            .reduce(f64::max)
+                    .reduce(f64::max);
+                if let Some(a) = acc
+                    && best.as_ref().is_none_or(|b| a > b.0)
+                {
+                    best = Some((a, part.clone()));
+                }
+            }
+        }
+        best
     }
 
     /// The best record of one part (or, with None, the best across the song's parts by accuracy): (score, accuracy,
@@ -801,6 +813,28 @@ mod tests {
         let d = std::env::temp_dir().join(format!("qrs-ud-{}-{name}", std::process::id()));
         let _ = std::fs::create_dir_all(&d);
         d.join("userdata.json")
+    }
+
+    #[test]
+    fn the_best_at_full_speed_names_its_part() {
+        let p = tmp("fullspeed");
+        std::fs::write(
+            &p,
+            r#"{"scores": {
+                "a|": {"lead": {"best": 900, "best_acc": 0.95, "speed": 0.8,
+                                "top": [{"score": 900, "acc": 0.95, "speed": 0.8}, {"score": 800, "acc": 0.71, "speed": 1.0}]},
+                       "rhythm": {"best": 850, "best_acc": 0.893, "speed": 1.0}},
+                "b|": {"bass": {"best": 10, "best_acc": 0.2, "speed": 0.5}}}}"#,
+        )
+        .unwrap();
+        let u = UserData::load(&p);
+        let a = vec!["a|".to_string()];
+        // lead's 95% was slowed: rhythm's 89.3% at full speed is the best
+        assert_eq!(u.best_full_speed(&a), Some((0.893, "rhythm".to_string())));
+        assert_eq!(u.best_full_speed_acc(&a), Some(0.893));
+        // only slowed runs: nothing
+        assert_eq!(u.best_full_speed(&["b|".to_string()]), None);
+        assert_eq!(u.best_full_speed(&["nope|".to_string()]), None);
     }
 
     #[test]

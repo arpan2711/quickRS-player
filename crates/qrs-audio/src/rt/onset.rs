@@ -50,10 +50,18 @@ pub struct OnsetDetector {
     hf_hist: [f32; 4],
     hf_floor: f32,
     last_sample: f32,
-    /// Minimum energy for an onset; raised for microphones (room noise).
+    /// Minimum energy for an onset; raised for microphones (room noise). The calibration's pluck threshold.
     pub min_energy: f32,
+    /// The loudest hop lately (decays over ~10 s): the threshold used is never above `PLAYING_SHARE` of it, so a
+    /// calibration made at a louder input (the interface turned down since) can't hide every pluck.
+    loud: f32,
     flux: Flux,
 }
+
+/// The threshold in use is at most this share of the loudest recent playing (-12 dB under it)...
+const PLAYING_SHARE: f32 = 0.25;
+/// ...and never under this (RMS, -56.5 dBFS: the lowest the calibration sets).
+const LOUD_FLOOR: f32 = 0.0015;
 
 /// Frames of flux kept (about 170 ms at 48 kHz): the peak's neighbourhood, the local mean and the recent maximum.
 const FH: usize = 64;
@@ -318,6 +326,7 @@ impl OnsetDetector {
             hf_floor: 0.0005,
             last_sample: 0.0,
             min_energy: 0.004,
+            loud: 0.0,
             flux: Flux::new(rate),
         }
     }
@@ -335,7 +344,8 @@ impl OnsetDetector {
         let min_gap = (0.05 * self.rate as f64) as i64;
         for (k, &s) in x.iter().enumerate() {
             // the spectral flux's plucks (decided 16 ms on), unless one was just found
-            if let Some(i) = self.flux.push(s, start_idx + k as u64, self.min_energy)
+            let gate = self.min_energy.min((PLAYING_SHARE * self.loud).max(LOUD_FLOOR));
+            if let Some(i) = self.flux.push(s, start_idx + k as u64, gate)
                 && i as i64 - self.last_onset > min_gap
             {
                 self.last_onset = i as i64;
@@ -352,6 +362,9 @@ impl OnsetDetector {
             }
             let sum = self.hop.iter().map(|v| v * v).sum::<f32>();
             let e = (sum / HOP as f32).sqrt();
+            // (the loudest lately: down 60 dB over ~10 s of hops)
+            let decay = 10f32.powf(-3.0 * HOP as f32 / (10.0 * self.rate as f32));
+            self.loud = (self.loud * decay).max(e);
             // the rise is judged on this hop and the one before (D46: a hop is shorter than a low string's period,
             // so a ringing chord's hop RMS swings by 2-4x and a single hop used to make plucks of its own)
             let e2 = ((sum + self.last_sum) / (2 * HOP) as f32).sqrt();
@@ -412,6 +425,31 @@ mod tests {
         assert_eq!(found.len(), 2, "{found:?}");
         assert!((found[0] as i64 - 12000).abs() < 300);
         assert!((found[1] as i64 - 28800).abs() < 300);
+    }
+
+    /// The calibration made at a louder input (threshold 0.03 RMS) and the guitar now 30 dB quieter (the owner's
+    /// take of 2026-11-03: its loudest 10 ms 0.02 RMS): the plucks are still found, the noise still isn't.
+    #[test]
+    fn a_stale_calibration_does_not_hide_quiet_plucks() {
+        let rate = 48000;
+        let mut d = OnsetDetector::new(rate);
+        d.min_energy = 0.03;
+        let mut x = vec![0.0002f32; 2 * rate as usize];
+        for k in 0..x.len() {
+            x[k] *= if k % 2 == 0 { 1.0 } else { -1.0 };
+        }
+        let at = [12000usize, 36000, 60000, 84000];
+        for &a in &at {
+            for i in 0..9000 {
+                x[a + i] += 0.035 * (-(i as f32) / 2500.0).exp() * ((i as f32) * 0.03).sin();
+            }
+        }
+        let mut found = Vec::new();
+        d.feed(&x, 0, |idx, _| found.push(idx));
+        assert_eq!(found.len(), at.len(), "{found:?}");
+        for (f, a) in found.iter().zip(at) {
+            assert!((*f as i64 - a as i64).abs() < 400, "{f} vs {a}");
+        }
     }
 
     /// A strummed chord (six decaying strings, a bright pick attack), `n` strums `gap` seconds apart from 0.5 s,
@@ -534,5 +572,80 @@ mod tests {
         }
         assert_eq!(a, b);
         assert_eq!(a.len(), 1);
+    }
+}
+
+/// P32 (bass mode, D89): a bass played with the fingers, synthetic (no bass here to record): Karplus-Strong strings
+/// and soft additive notes whose attack takes 15 ms, down to a 5-string's low B (31 Hz), at -46 to -10 dBFS peaks.
+/// The detector as it is finds them (a bass test of its own was tried and only added false plucks: D89).
+#[cfg(test)]
+mod bass_tests {
+    use super::*;
+    use qrs_analysis::testsig;
+
+    /// `n` notes `gap` apart on one string (root, root, minor third, fourth), each stopped by the next (a 5 ms
+    /// crossfade, as a re-plucked string), the last ringing on; in hiss at -70 dBFS. (found within 30 ms, plucks)
+    fn line(midi: f64, amp: f32, soft: Option<f32>, gap: f64) -> (usize, usize, usize) {
+        let rate = 48000u32;
+        let n = 12;
+        let len = ((1.0 + n as f64 * gap + 2.5) * rate as f64) as usize;
+        let mut x = testsig::hiss(len, 0.0003, 9);
+        let mut at = vec![];
+        for k in 0..=n {
+            let a = ((1.0 + k as f64 * gap) * rate as f64) as usize;
+            at.push(a);
+            let m = midi + [0.0, 0.0, 3.0, 5.0][k % 4];
+            let secs = if k == n { 2.0 } else { gap + 0.005 };
+            let mut note = match soft {
+                Some(s) => testsig::ks_pluck(m, rate, secs, amp, s, k as u32),
+                None => testsig::additive_pluck(m, rate, secs, amp, &[1.0, 0.5, 0.2, 0.05], 0.015, 1.0),
+            };
+            if k < n {
+                let (l, fade) = (note.len(), rate as usize / 200);
+                for i in 0..fade {
+                    note[l - 1 - i] *= i as f32 / fade as f32;
+                }
+            }
+            testsig::mix_at(&mut x, a, &note);
+        }
+        let mut found = Vec::new();
+        let mut d = OnsetDetector::new(rate);
+        d.min_energy = 0.002;
+        for (k, c) in x.chunks(128).enumerate() {
+            d.feed(c, (k * 128) as u64, |i, _| found.push(i as usize));
+        }
+        let hit = at
+            .iter()
+            .filter(|&&a| found.iter().any(|&f| f + 1440 >= a && f <= a + 1440))
+            .count();
+        (hit, at.len(), found.len())
+    }
+
+    #[test]
+    fn finger_plucked_bass_lines_are_found() {
+        let mut total = 0;
+        for (midi, amp, soft, gap) in [
+            (28.0, 0.05, Some(0.7), 0.5),  // E1
+            (23.0, 0.05, Some(0.7), 0.5),  // B0
+            (23.0, 0.01, Some(0.8), 0.5),  // B0, quiet
+            (28.0, 0.3, Some(0.6), 0.25),  // E1, loud eighths at 120
+            (33.0, 0.02, Some(0.85), 0.3), // A1
+            (40.0, 0.02, Some(0.85), 0.3), // E2
+            (28.0, 0.02, None, 0.3),       // E1, a slow attack
+            (23.0, 0.02, None, 0.3),       // B0, a slow attack
+            (23.0, 0.005, None, 0.3),      // B0, a slow attack at -46 dBFS
+        ] {
+            let (hit, of, plucks) = line(midi, amp, soft, gap);
+            // 2026-11-04: all found but 2 of the softest A1's 13 (the same note plucked again, its level hardly
+            // rising): 115 of 117 in all
+            assert!(hit + 2 >= of, "{midi} {amp} {soft:?}: {hit} of {of}");
+            total += hit;
+            // (a slow B0 makes up to four extra: a pluck no chart note wants costs nothing)
+            assert!(
+                plucks <= of + 4,
+                "{midi} {amp} {soft:?}: {plucks} plucks for {of}"
+            );
+        }
+        assert!(total >= 115, "{total} of 117");
     }
 }

@@ -1,4 +1,4 @@
-//! The selected song's preview clip (the short "_preview" bank Rocksmith plays in its song list; a feedpak's
+//! The selected song's preview clip (the short "_preview" bank RS plays in its song list; a feedpak's
 //! preview stem), decoded in the background and played over the engine with a fade-in; the newest request wins.
 //! Port of rsplay/preview.py `Previewer`.
 

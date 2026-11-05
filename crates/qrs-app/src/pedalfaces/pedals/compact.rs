@@ -373,7 +373,7 @@ pub fn of(id: &str) -> Option<Spec> {
                 w: 40.0,
                 h: 40.0,
                 k: super::face::ChK::Rotary(Ks::Boss),
-                lab: Lab::new(LabPos::At(0.5 * W, 0.09 * H), 6.4, 0x0b1f1d).text("WAVE"),
+                lab: Lab::new(LabPos::At(0.5 * W, 0.185 * H + 21.0), 6.4, 0x0b1f1d).text("WAVE"),
                 opts: &["SIN", "TRI", "SQR"],
                 ink: 0x0b1f1d,
             });

@@ -1,13 +1,13 @@
 //! Plug and play: which devices to use, and keeping it right as devices come and go.
 //!
 //! `plan` turns the user's preferences (Auto / a device / Off, for input and output), the device ranking (`rank`)
-//! and the imported Rocksmith setup (`rocksmith`) into an engine route. `Audio` runs it: it opens the engine on
+//! and the imported RS setup (`rs_setup`) into an engine route. `Audio` runs it: it opens the engine on
 //! that route, watches for devices being plugged in or out and for default-device changes (re-planning and
 //! switching when the result changes), finds the guitar channel by itself the first time a string rings clearly
 //! on one channel, and reports what happened.
 
 pub mod rank;
-pub mod rocksmith;
+pub mod rs_setup;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::{self, Backend, BufferSize, DeviceEvent, DeviceInfo};
 use crate::engine::{Engine, Event, InputRoute, Route};
 use rank::{InputKind, RankedInput, rank_inputs, suggest_channel};
-use rocksmith::RocksmithSetup;
+use rs_setup::RsSetup;
 
 /// A device the user picked (matched by id, then by name, so it's found again after a driver update).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -63,8 +63,9 @@ pub struct AudioPrefs {
     pub exclusive: bool,
     /// Buffer in frames (ASIO / exclusive WASAPI); None = the driver's or device's default.
     pub buffer: Option<u32>,
-    /// Use the Rocksmith 2014 setup (RS_ASIO.ini, Rocksmith.ini) where nothing else is chosen.
-    pub use_rocksmith: bool,
+    /// Use the RS2014 setup (RS_ASIO.ini, Rocksmith.ini) where nothing else is chosen.
+    #[serde(rename = "use_rocksmith")]
+    pub use_rs_setup: bool,
 }
 
 impl Default for AudioPrefs {
@@ -75,7 +76,7 @@ impl Default for AudioPrefs {
             output: Choice::Auto,
             exclusive: false,
             buffer: None,
-            use_rocksmith: true,
+            use_rs_setup: true,
         }
     }
 }
@@ -88,7 +89,7 @@ pub struct Plan {
     pub output: Option<DeviceInfo>,
     /// Plain-language notes ("Line (NUX Audio) isn't connected, using …").
     pub notes: Vec<String>,
-    /// The channel came from the user or the Rocksmith setup (not auto-detected).
+    /// The channel came from the user or the RS setup (not auto-detected).
     pub channel_fixed: bool,
 }
 
@@ -114,8 +115,8 @@ fn find<'a>(devices: &'a [DeviceInfo], p: &DevicePref, input: bool) -> Option<&'
 }
 
 /// The route for these preferences and devices.
-pub fn plan(prefs: &AudioPrefs, devices: &[DeviceInfo], rs: Option<&RocksmithSetup>) -> Plan {
-    let rs = if prefs.use_rocksmith { rs } else { None };
+pub fn plan(prefs: &AudioPrefs, devices: &[DeviceInfo], rs: Option<&RsSetup>) -> Plan {
+    let rs = if prefs.use_rs_setup { rs } else { None };
     let ranked = rank_inputs(devices, rs);
     let mut notes = Vec::new();
     let best_auto = || {
@@ -273,7 +274,7 @@ struct State {
     prefs: AudioPrefs,
     library_dirs: Vec<PathBuf>,
     devices: Vec<DeviceInfo>,
-    rocksmith: Option<RocksmithSetup>,
+    rs_setup: Option<RsSetup>,
     plan: Plan,
     channel_locked: bool,
     /// Automatic lost the guitar interface it was using: wait for it rather than fall to a microphone.
@@ -339,14 +340,14 @@ impl Audio {
     pub fn start(prefs: AudioPrefs, library_dirs: Vec<PathBuf>) -> Audio {
         let engine = Arc::new(Engine::new());
         let devices = scan(&[], false);
-        let rocksmith = rocksmith::find_setup(&library_dirs);
-        let plan = plan(&prefs, &devices, rocksmith.as_ref());
+        let rs_setup = rs_setup::find_setup(&library_dirs);
+        let plan = plan(&prefs, &devices, rs_setup.as_ref());
         engine.open(plan.route.clone());
         let state = Arc::new(Mutex::new(State {
             prefs,
             library_dirs,
             devices,
-            rocksmith,
+            rs_setup,
             plan,
             channel_locked: false,
             waiting_for: None,
@@ -386,7 +387,7 @@ impl Audio {
 
     pub fn ranked_inputs(&self) -> Vec<RankedInput> {
         let s = self.state.lock();
-        rank_inputs(&s.devices, s.rocksmith.as_ref())
+        rank_inputs(&s.devices, s.rs_setup.as_ref())
     }
 
     pub fn outputs(&self) -> Vec<DeviceInfo> {
@@ -403,8 +404,8 @@ impl Audio {
         self.state.lock().plan.clone()
     }
 
-    pub fn rocksmith(&self) -> Option<RocksmithSetup> {
-        self.state.lock().rocksmith.clone()
+    pub fn rs_setup(&self) -> Option<RsSetup> {
+        self.state.lock().rs_setup.clone()
     }
 
     pub fn events(&self) -> Vec<AudioEvent> {
@@ -422,7 +423,7 @@ impl Drop for Audio {
 }
 
 fn apply(engine: &Engine, s: &mut State, events: &Sender<AudioEvent>, announce: bool) {
-    let mut p = plan(&s.prefs, &s.devices, s.rocksmith.as_ref());
+    let mut p = plan(&s.prefs, &s.devices, s.rs_setup.as_ref());
     let prev = s.plan.input.clone();
     hold_for_guitar(
         prev.as_ref(),
@@ -485,7 +486,7 @@ fn manager(engine: Arc<Engine>, state: Arc<Mutex<State>>, rx: Receiver<Msg>, eve
                 let mut s = state.lock();
                 let busy = route_uses_asio(&s.plan.route);
                 s.devices = scan(&s.devices, busy);
-                s.rocksmith = rocksmith::find_setup(&s.library_dirs);
+                s.rs_setup = rs_setup::find_setup(&s.library_dirs);
                 apply(&engine, &mut s, &events, false);
                 let _ = events.send(AudioEvent::DevicesChanged);
             }
@@ -620,10 +621,10 @@ mod tests {
         ]
     }
 
-    fn rs_asio() -> RocksmithSetup {
-        RocksmithSetup {
+    fn rs_asio() -> RsSetup {
+        RsSetup {
             exclusive_mode: true,
-            rs_asio: Some(rocksmith::RsAsio {
+            rs_asio: Some(rs_setup::RsAsio {
                 enable_asio: true,
                 enable_wasapi_outputs: true,
                 buffer_mode: "custom".into(),
@@ -636,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_setup_plans_like_rocksmith() {
+    fn owner_setup_plans_like_rs() {
         let p = plan(&AudioPrefs::default(), &owner(), Some(&rs_asio()));
         let i = p.route.input.unwrap();
         assert_eq!(i.device.backend, Backend::Asio);
@@ -645,8 +646,22 @@ mod tests {
         assert_eq!(p.route.buffer, BufferSize::Frames(64));
     }
 
+    /// P37.16 (D149): the field is `use_rs_setup`, the owner's config.json key stays `use_rocksmith`.
     #[test]
-    fn without_rocksmith_the_channel_is_found_later() {
+    fn the_rs_setup_switch_keeps_its_config_key() {
+        let key = ["use_rock", "smith"].concat();
+        let off = AudioPrefs {
+            use_rs_setup: false,
+            ..AudioPrefs::default()
+        };
+        let v = serde_json::to_value(&off).unwrap();
+        assert_eq!(v[&key], serde_json::json!(false));
+        let back: AudioPrefs = serde_json::from_str(&format!("{{\"{key}\": false}}")).unwrap();
+        assert!(!back.use_rs_setup);
+    }
+
+    #[test]
+    fn without_rs_setup_the_channel_is_found_later() {
         let p = plan(&AudioPrefs::default(), &owner(), None);
         assert_eq!(p.route.input.unwrap().channel, -1);
         assert!(!p.channel_fixed);

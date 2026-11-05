@@ -722,10 +722,10 @@ pub fn bug_report_url() -> String {
          **What you expected**
 
 
-**Your audio setup** (interface or cable, Settings > Audio input / output)
+**Your audio setup** (interface or cable, Settings > Sound: input / output)
 
 
-         If quickRS crashed or showed an error, please attach quickrs.log (Settings > Updates > Show the log file).",
+         If quickRS crashed or showed an error, please attach quickrs.log (Settings > About > Show the log file).",
         Version::current(),
         std::env::consts::OS,
         std::env::consts::ARCH

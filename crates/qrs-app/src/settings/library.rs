@@ -1,9 +1,9 @@
 //! The Library page (port of settingsview.py `draw_library`, made easier to set up from the 0.1.0 feedback, P20.2):
 //!
 //!     SONG FOLDERS     every folder searched, where it came from, Remove; Add folder... (the system's picker) and
-//!                      Rescan; "Search Rocksmith's dlc folder" (off: feedpaks only)
+//!                      Rescan; "Search RS's dlc folder" (off: feedpaks only)
 //!     SONG LIST        expand & preview; which copy plays when a song is there as both a psarc and a feedpak
-//!     ROCKSMITH KEYS   whether keys were found and where it looked; the two keys typed or pasted, or a keys file
+//!     RS KEYS   whether keys were found and where it looked; the two keys typed or pasted, or a keys file
 //!                      loaded, saved as keys.json (songs needing them are read again straight away)
 //!     RECORDINGS       where R's recordings of what you hear and Ctrl R's song takes go: each folder with Change,
 //!                      Open and Default (config.json `recordings_dir`, `takes_dir`; P23.9)
@@ -38,9 +38,9 @@ fn origin(st: &AppState, dlc: &[PathBuf], d: &Path) -> &'static str {
     if st.config.added_dirs().iter().any(|a| same_dir(a, d)) {
         "added by you"
     } else if dlc.iter().any(|a| same_dir(a, d)) {
-        "Rocksmith's dlc folder, found by itself"
+        "RS's dlc folder, found by itself"
     } else {
-        "feedpaks next to Rocksmith's dlc folder, found by itself"
+        "feedpaks next to RS's dlc folder, found by itself"
     }
 }
 
@@ -75,7 +75,37 @@ impl SettingsView {
             pos2(body.min.x, bottom + px(24.0)),
             vec2(body.width(), body.height()),
         );
-        let bottom = self.draw_keys(ui, st, keys);
+        // the keys, folded to one line once they're found (P35.5): open, the whole card
+        let found = matches!(st.key_state, KeyState::Found { .. });
+        let bottom = if found && !qrs_ui::theme::classic() {
+            let from = match &st.key_state {
+                KeyState::Found { path: Some(p), .. } => format!(
+                    "read from {}",
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                ),
+                _ => "from the environment".into(),
+            };
+            let w = snap(keys.width().min(760.0));
+            let (h, open) = self.fold(
+                ui,
+                keys.min.x,
+                keys.min.y,
+                w,
+                "keys",
+                "RS keys: found",
+                &format!("psarc songs play  \u{b7}  {from}  \u{b7}  open to change them"),
+            );
+            if open {
+                let card = Rect::from_min_size(pos2(keys.min.x, keys.min.y + h + px(12.0)), keys.size());
+                self.draw_keys(ui, st, card)
+            } else {
+                keys.min.y + h
+            }
+        } else {
+            self.draw_keys(ui, st, keys)
+        };
         let rec = Rect::from_min_size(
             pos2(body.min.x, bottom + px(24.0)),
             vec2(body.width(), body.height()),
@@ -116,7 +146,7 @@ impl SettingsView {
                 RECORDINGS_DIR,
                 "What you hear",
                 "R",
-                "in a song or the amp room: the song, your guitar through the rig, as a WAV",
+                "in a song or the amp room: the song, you through the rig, as a WAV",
                 st.config.recordings_dir(&root),
                 st.config.folder(RECORDINGS_DIR).is_none(),
             ),
@@ -274,7 +304,7 @@ impl SettingsView {
         let hh = Self::h_heading(&ctx);
         let dlc = self
             .dlc_found
-            .get_or_insert_with(qrs_library::config::rocksmith_dlc_dirs)
+            .get_or_insert_with(qrs_library::config::rs_dlc_dirs)
             .clone();
         let row_h = px(46.0);
         let rows = st.dirs.len().max(1) as f32;
@@ -401,8 +431,11 @@ impl SettingsView {
             "A folder dropped on the window is added too.".into()
         };
         y = caption_lines(&p, &note, x, y, wd, 13.0, 1) + px(16.0);
+        // (the hint says what the switch does now: it said "off: ..." while on, P37.4)
         let hint = if dlc.is_empty() {
-            "Rocksmith 2014 isn't found on this computer"
+            "RS2014 isn't found on this computer"
+        } else if st.config.search_dlc() {
+            "on: RS's own songs folder too (its psarcs need keys)"
         } else {
             "off: only the folders you added (feedpaks play without keys)"
         };
@@ -411,7 +444,7 @@ impl SettingsView {
             x,
             y,
             wd,
-            "Search Rocksmith's dlc folder",
+            "Search RS's dlc folder",
             hint,
             st.config.search_dlc(),
             "searchdlc",
@@ -469,7 +502,7 @@ impl SettingsView {
         card.max.y
     }
 
-    /// ROCKSMITH KEYS: what was found, the two boxes, Save and Load.
+    /// RS KEYS: what was found, the two boxes, Save and Load.
     fn draw_keys(&mut self, ui: &mut Ui, st: &mut AppState, body: Rect) -> f32 {
         let th = t();
         let p = ui.painter().clone();
@@ -502,7 +535,7 @@ impl SettingsView {
         let (x, wd) = (card.min.x + pad, card.width() - 2.0 * pad);
         let mut y = self.heading(
             &p,
-            "ROCKSMITH KEYS",
+            "RS KEYS",
             x,
             card.min.y + pad,
             Some(card.max.x - pad),

@@ -3,11 +3,13 @@
 
 use std::path::{Path, PathBuf};
 
+use qrs_formats::game_names::{GAME_EXE, GAME_FOLDER, GAME_INI};
 use serde_json::{Map, Value};
 
 use crate::paths::write_atomic;
 
-/// Where the Python app looked for songs when none were configured.
+/// Where the Python app looked for songs when none were configured (the real folder names on disk, D149: kept in
+/// full, as in `qrs_formats::game_names`).
 pub const DEFAULT_LIBRARY_DIRS: &[&str] = &[
     r"Y:\Rocksmith 2014 Edition - Remastered\dlc",
     r"C:\Program Files (x86)\Steam\steamapps\common\Rocksmith2014\dlc",
@@ -69,7 +71,7 @@ impl Config {
             .to_string()
     }
 
-    /// The configured song folders, else the defaults that exist (the Python app's, then Steam's Rocksmith).
+    /// The configured song folders, else the defaults that exist (the Python app's, then Steam's RS).
     /// A folder starting with `./` or `../` is read from config.json's folder, so a portable install can carry its songs along
     /// (`"../Songs"`).
     pub fn library_dirs(&self) -> Vec<PathBuf> {
@@ -80,7 +82,7 @@ impl Config {
                 .map(PathBuf::from)
                 .filter(|p| p.is_dir())
                 .collect();
-            for d in steam_rocksmith_dlc() {
+            for d in steam_rs_dlc() {
                 if !dirs.contains(&d) {
                     dirs.push(d);
                 }
@@ -177,23 +179,22 @@ impl Config {
         self.paths("library_dirs_removed")
     }
 
-    /// Whether Rocksmith 2014's own dlc folders are searched for songs (`search_rocksmith_dlc`, on unless turned
+    /// Whether RS2014's own dlc folders are searched for songs (`SEARCH_RS_DLC`, on unless turned
     /// off; off: only the folders added, feedpaks without keys).
     pub fn search_dlc(&self) -> bool {
-        self.bool("search_rocksmith_dlc", true)
+        self.bool(SEARCH_RS_DLC, true)
     }
 
-    /// The folders to scan (P20.2), with Rocksmith's dlc folders as found on this machine:
-    /// - the folders added (library_dirs), less any Rocksmith dlc folder when searching those is off;
-    /// - Rocksmith's dlc folders when it's on;
+    /// The folders to scan (P20.2), with RS's dlc folders as found on this machine:
+    /// - the folders added (library_dirs), less any RS dlc folder when searching those is off;
+    /// - RS's dlc folders when it's on;
     /// - a feedpak folder next to any of those dlc folders (rs-open-format's output), searched or not;
     /// - less the folders removed.
-    pub fn scan_dirs_with(&self, rocksmith_dlc: &[PathBuf]) -> Vec<PathBuf> {
+    pub fn scan_dirs_with(&self, rs_dlc: &[PathBuf]) -> Vec<PathBuf> {
         let added = self.added_dirs();
         let removed = self.removed_dirs();
         let search = self.search_dlc();
-        let is_dlc =
-            |d: &PathBuf| rocksmith_dlc.iter().any(|r| same_dir(r, d)) || looks_like_rocksmith_dlc(d);
+        let is_dlc = |d: &PathBuf| rs_dlc.iter().any(|r| same_dir(r, d)) || looks_like_rs_dlc(d);
         let mut out: Vec<PathBuf> = Vec::new();
         let push = |d: PathBuf, out: &mut Vec<PathBuf>| {
             if !out.iter().any(|o| same_dir(o, &d)) && !removed.iter().any(|r| same_dir(r, &d)) {
@@ -206,11 +207,11 @@ impl Config {
             }
         }
         if search {
-            for d in rocksmith_dlc {
+            for d in rs_dlc {
                 push(d.clone(), &mut out);
             }
         }
-        for d in added.iter().chain(rocksmith_dlc) {
+        for d in added.iter().chain(rs_dlc) {
             if let Some(f) = sibling_feedpak_dir(d) {
                 push(f, &mut out);
             }
@@ -218,9 +219,9 @@ impl Config {
         out
     }
 
-    /// The folders to scan on this machine (`scan_dirs_with` Rocksmith's dlc folders found here).
+    /// The folders to scan on this machine (`scan_dirs_with` RS's dlc folders found here).
     pub fn scan_dirs(&self) -> Vec<PathBuf> {
-        self.scan_dirs_with(&rocksmith_dlc_dirs())
+        self.scan_dirs_with(&rs_dlc_dirs())
     }
 
     /// A folder added for good: in library_dirs (and no longer among the removed).
@@ -259,28 +260,31 @@ pub fn same_dir(a: &Path, b: &Path) -> bool {
     norm(a) == norm(b)
 }
 
-/// A folder called dlc with Rocksmith 2014 next to it.
-fn looks_like_rocksmith_dlc(d: &Path) -> bool {
+/// A folder called dlc with RS2014 next to it.
+fn looks_like_rs_dlc(d: &Path) -> bool {
     d.file_name()
         .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("dlc"))
         && d.parent()
-            .is_some_and(|p| p.join("Rocksmith2014.exe").is_file() || p.join("Rocksmith.ini").is_file())
+            .is_some_and(|p| p.join(GAME_EXE).is_file() || p.join(GAME_INI).is_file())
 }
 
-/// Rocksmith 2014's dlc folders on this machine: the Python app's defaults that exist, then Steam's.
-pub fn rocksmith_dlc_dirs() -> Vec<PathBuf> {
+/// RS2014's dlc folders on this machine: the Python app's defaults that exist, then Steam's.
+pub fn rs_dlc_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = DEFAULT_LIBRARY_DIRS
         .iter()
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
         .collect();
-    for d in steam_rocksmith_dlc() {
+    for d in steam_rs_dlc() {
         if !dirs.iter().any(|x| same_dir(x, &d)) {
             dirs.push(d);
         }
     }
     dirs
 }
+
+/// config.json key: search the game's own dlc folders (the on-disk key keeps the full name, D149).
+pub const SEARCH_RS_DLC: &str = "search_rocksmith_dlc";
 
 /// config.json keys of the two recording folders (P23.9).
 pub const RECORDINGS_DIR: &str = "recordings_dir";
@@ -348,8 +352,8 @@ pub fn steam_roots() -> Vec<PathBuf> {
     vec![PathBuf::from(r"C:\Program Files (x86)\Steam")]
 }
 
-/// Rocksmith 2014's dlc folders in every Steam library (from steamapps/libraryfolders.vdf).
-pub fn steam_rocksmith_dlc() -> Vec<PathBuf> {
+/// RS2014's dlc folders in every Steam library (from steamapps/libraryfolders.vdf).
+pub fn steam_rs_dlc() -> Vec<PathBuf> {
     let mut roots = steam_roots();
     for root in roots.clone() {
         let vdf = root.join("steamapps").join("libraryfolders.vdf");
@@ -366,11 +370,7 @@ pub fn steam_rocksmith_dlc() -> Vec<PathBuf> {
     }
     let mut out = Vec::new();
     for r in roots {
-        let d = r
-            .join("steamapps")
-            .join("common")
-            .join("Rocksmith2014")
-            .join("dlc");
+        let d = r.join("steamapps").join("common").join(GAME_FOLDER).join("dlc");
         // (on Linux one install is often a link to another: the same folder once)
         #[cfg(unix)]
         let d = d.canonicalize().unwrap_or(d);
@@ -381,7 +381,7 @@ pub fn steam_rocksmith_dlc() -> Vec<PathBuf> {
     out
 }
 
-/// A folder of converted feedpaks next to a Rocksmith `dlc` folder (rs-open-format's default output), if there is.
+/// A folder of converted feedpaks next to an RS `dlc` folder (rs-open-format's default output), if there is.
 pub fn sibling_feedpak_dir(dlc: &Path) -> Option<PathBuf> {
     if !dlc.file_name()?.to_string_lossy().eq_ignore_ascii_case("dlc") {
         return None;
@@ -531,7 +531,7 @@ mod tests {
         assert_eq!(back.removed_dirs(), vec![PathBuf::from(r"X:\songs")]);
         assert_eq!(back.str("theme", ""), "graphite");
         // a folder found by itself, removed: stays out; added again: back in
-        let dlc = dir.join("Rocksmith2014").join("dlc");
+        let dlc = dir.join(GAME_FOLDER).join("dlc");
         let mut c = back;
         assert!(c.scan_dirs_with(std::slice::from_ref(&dlc)).contains(&dlc));
         c.remove_dir(&dlc);
@@ -542,16 +542,16 @@ mod tests {
     }
 
     #[test]
-    fn feedpak_only_leaves_rocksmiths_dlc_out_but_keeps_its_feedpaks() {
+    fn feedpak_only_leaves_rs_dlc_out_but_keeps_its_feedpaks() {
         let dir = scratch("feedpak-only");
-        let game = dir.join("Rocksmith2014");
+        let game = dir.join(GAME_FOLDER);
         let dlc = game.join("dlc");
         let feedpak = game.join("feedpak");
         let mine = dir.join("mine");
         for d in [&dlc, &feedpak, &mine] {
             std::fs::create_dir_all(d).unwrap();
         }
-        std::fs::write(game.join("Rocksmith2014.exe"), b"").unwrap();
+        std::fs::write(game.join(GAME_EXE), b"").unwrap();
         let path = dir.join("config.json");
         let mut c = Config::load(&path);
         c.add_dir(&mine);
@@ -561,7 +561,7 @@ mod tests {
             c.scan_dirs_with(found),
             vec![mine.clone(), dlc.clone(), feedpak.clone()]
         );
-        c.set("search_rocksmith_dlc", false);
+        c.set(SEARCH_RS_DLC, false);
         assert_eq!(c.scan_dirs_with(found), vec![mine.clone(), feedpak.clone()]);
         // a dlc folder with the game next to it is left out even when it's not one found by itself
         assert_eq!(c.scan_dirs_with(&[]), vec![mine.clone(), feedpak.clone()]);
@@ -571,9 +571,33 @@ mod tests {
         std::fs::write(feedpak.join("song.feedpak"), b"x").unwrap();
         let files = crate::scan::find_song_files(&c.scan_dirs_with(found));
         assert_eq!(files, vec![feedpak.join("song.feedpak")]);
-        c.set("search_rocksmith_dlc", true);
+        c.set(SEARCH_RS_DLC, true);
         let files = crate::scan::find_song_files(&c.scan_dirs_with(found));
         assert_eq!(files.len(), 3);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// P37.16 (D149): the game is called RS in the app, but the folders searched for its songs keep their real
+    /// names, so the owner's library is still found.
+    #[test]
+    fn the_dlc_search_keeps_the_games_real_folder_names() {
+        use qrs_formats::game_names::REMASTERED_FOLDER;
+        // (the config key too: the owner's config.json says it in full)
+        assert_eq!(SEARCH_RS_DLC, ["search_rock", "smith_dlc"].concat());
+        assert_eq!(DEFAULT_LIBRARY_DIRS[0], format!(r"Y:\{REMASTERED_FOLDER}\dlc"));
+        assert_eq!(
+            DEFAULT_LIBRARY_DIRS[1],
+            format!(r"C:\Program Files (x86)\Steam\steamapps\common\{GAME_FOLDER}\dlc")
+        );
+        // a dlc folder with the game's program or settings file beside it is the game's own
+        for marker in [GAME_EXE, GAME_INI] {
+            let dir = scratch(&format!("real-names-{marker}"));
+            let dlc = dir.join(GAME_FOLDER).join("dlc");
+            std::fs::create_dir_all(&dlc).unwrap();
+            assert!(!looks_like_rs_dlc(&dlc));
+            std::fs::write(dir.join(GAME_FOLDER).join(marker), b"").unwrap();
+            assert!(looks_like_rs_dlc(&dlc), "{marker}");
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }

@@ -1,6 +1,8 @@
 //! The cabs' faces (PLAN.md P21.2): each drawn as the real cabinet, from the owner-approved mockups: a blackface 1x10,
 //! a tweed 1x12, an open 2x12 (blackface, or the AC30's brown diamond behind a Dartford 30), a Marshall-style slant
-//! 4x12, the Ampeg fridge, a blue flip-top 1x15. The speakers show faintly through the cloth; the mic stands in front
+//! 4x12, the Ampeg fridge, a blue flip-top 1x15, and (P37.6c) the bass cabs at their real speaker counts: a 4x10 and a
+//! ported 2x10 behind perforated metal with a horn, a tall vintage 4x15 in black cloth; (P41.2) a tweed 4x10 combo. The
+//! speakers show faintly through the cloth; the mic stands in front
 //! of one, slid from the cone's edge to its cap by Mic, pulled back by Distance, its silhouette set by Mic type.
 //!
 //! The cabinet is cached as its own texture (keyed by its look, which for the 2x12 follows the amp before it on the
@@ -43,18 +45,34 @@ fn size(id: &str) -> Vec2 {
         "cab_2x12" => vec2(236.0, 186.0),
         "cab_4x12" => vec2(212.0, 210.0),
         "cab_8x10" => vec2(112.0, 212.0),
+        "cab_4x10" => vec2(196.0, 204.0),
+        "cab_2x10" => vec2(196.0, 140.0),
+        "cab_4x15" => vec2(176.0, 236.0),
+        "cab_4x10_open" => vec2(200.0, 206.0),
         _ => vec2(150.0, 178.0),
     }
 }
 
-/// Where the cabinet art goes in the face (the whole face on the board; at the left, at its proportions, in Full).
+/// The engineer's strip beside the cab in Full (P37.13): its width at a face 200 points high (it scales with the face).
+const STRIP_W: f32 = 236.0;
+const UNIT_H: f32 = 200.0;
+
+/// The open unit's size: the cabinet at its proportions, 200 points high, and the strip beside it.
+pub(super) fn unit_size(b: &Block) -> Vec2 {
+    let s = size(b.def().id);
+    vec2(UNIT_H * s.x / s.y + 6.0 + STRIP_W, UNIT_H)
+}
+
+/// Where the cabinet art goes in the face (the whole face on the board; at the left, at its proportions, in Full,
+/// leaving the strip its width).
 fn art_rect(id: &str, r: Rect, detail: Detail) -> Rect {
     if detail == Detail::Board {
         return r;
     }
     let s = size(id);
+    let k = r.height() / UNIT_H;
     let h = r.height();
-    let w = (h * s.x / s.y).min(r.width() * 0.55);
+    let w = (h * s.x / s.y).min(r.width() - STRIP_W * k - 6.0).max(20.0);
     let h = w * s.y / s.x;
     Rect::from_min_size(pos2(r.min.x + 6.0, r.center().y - h * 0.5), vec2(w - 6.0, h))
 }
@@ -64,7 +82,7 @@ fn cab_rect(id: &str, a: Rect) -> Rect {
     let h = a.height();
     let top = if id == "cab_8x10" { 0.02 } else { 0.05 } * h;
     let bot = match id {
-        "cab_4x12" | "cab_8x10" => 0.05,
+        "cab_4x12" | "cab_8x10" | "cab_4x10" | "cab_4x15" => 0.05,
         _ => 0.03,
     } * h;
     Rect::from_min_max(
@@ -127,6 +145,41 @@ fn parts(id: &str, look: Look, c: Rect) -> (Vec<Rect>, Vec<(Pos2, f32)>, usize) 
             }
             (vec![g1, g2], s, 4)
         }
+        "cab_4x10" | "cab_4x15" => {
+            let g = if id == "cab_4x10" {
+                at(0.07, 0.07, 0.86, 0.86)
+            } else {
+                at(0.08, 0.13, 0.84, 0.81)
+            };
+            let r = w * if id == "cab_4x10" { 0.175 } else { 0.195 };
+            let s = [(0.27, 0.25), (0.73, 0.25), (0.27, 0.75), (0.73, 0.75)]
+                .iter()
+                .map(|&(a, b)| (pos2(g.min.x + g.width() * a, g.min.y + g.height() * b), r))
+                .collect();
+            (vec![g], s, 3)
+        }
+        // (P41.2: the tweed 4x10 combo, four tens under its name plate)
+        "cab_4x10_open" => {
+            let g = at(0.07, 0.18, 0.86, 0.76);
+            let r = w * 0.17;
+            let s = [(0.27, 0.25), (0.73, 0.25), (0.27, 0.75), (0.73, 0.75)]
+                .iter()
+                .map(|&(a, b)| (pos2(g.min.x + g.width() * a, g.min.y + g.height() * b), r))
+                .collect();
+            (vec![g], s, 3)
+        }
+        "cab_2x10" => {
+            let g = at(0.07, 0.08, 0.86, 0.68);
+            let r = w * 0.165;
+            (
+                vec![g],
+                vec![
+                    (pos2(g.min.x + g.width() * 0.25, g.center().y), r),
+                    (pos2(g.min.x + g.width() * 0.75, g.center().y), r),
+                ],
+                0,
+            )
+        }
         _ => {
             let g = at(0.13, 0.31, 0.74, 0.6);
             (vec![g], vec![(g.center(), w * 0.31)], 0)
@@ -145,27 +198,27 @@ fn art(id: &str, look: Look, a: Rect, ppp: f32) -> Image {
     let k = (w / 220.0).clamp(0.6, 1.3);
     let top_room = c.min.y - a.min.y;
     let rad = match id {
-        "cab_1x12" => w * 0.075,
+        "cab_1x12" | "cab_4x10_open" => w * 0.075,
         "cab_1x15" => w * 0.045,
         _ => w * 0.035,
     };
     // the handle and the feet
     match id {
-        "cab_1x12" => cv.strap(c.center().x, a.min.y, w * 0.3, top_room * 0.95, true),
+        "cab_1x12" | "cab_4x10_open" => cv.strap(c.center().x, a.min.y, w * 0.3, top_room * 0.95, true),
         "cab_8x10" => cv.rr(
             Rect::from_center_size(pos2(c.center().x, c.min.y), vec2(w * 0.3, top_room * 1.6)),
             2.0,
             0x0d0d0e,
             1.0,
         ),
-        "cab_4x12" | "cab_1x15" => {}
+        "cab_4x12" | "cab_1x15" | "cab_4x10" | "cab_4x15" => {}
         "cab_2x12" if look == Look::Dartford => {
             cv.strap(c.center().x, a.min.y, w * 0.5, top_room * 0.95, false)
         }
         _ => cv.strap(c.center().x, a.min.y, w * 0.28, top_room * 0.95, false),
     }
     match id {
-        "cab_4x12" | "cab_8x10" => {
+        "cab_4x12" | "cab_8x10" | "cab_4x10" | "cab_4x15" => {
             for x in [c.min.x + w * 0.16, c.max.x - w * 0.16] {
                 let cy = (c.max.y + a.max.y) * 0.5;
                 let cr = (a.max.y - c.max.y) * 0.5;
@@ -194,7 +247,7 @@ fn art(id: &str, look: Look, a: Rect, ppp: f32) -> Image {
     }
     // the covering
     match (id, look) {
-        ("cab_1x12", _) => cv.pattern(c, rad, |x, y| {
+        ("cab_1x12", _) | ("cab_4x10_open", _) => cv.pattern(c, rad, |x, y| {
             let d = cloth(Cloth::Tweed, x, y, 1.0);
             let e = (x.min(w - x).min(y).min(h - y) / (w.min(h) * 0.12)).clamp(0.0, 1.0);
             let burn = (1.0 - e).powf(1.5) * 0.55;
@@ -212,7 +265,8 @@ fn art(id: &str, look: Look, a: Rect, ppp: f32) -> Image {
             let s = 0.05 * (1.0 - y / h * 4.0).max(0.0) - 0.12 * ((y / h - 0.7) * 3.0).max(0.0);
             [d[0] + s, d[1] + s, d[2] + s, 1.0]
         }),
-        ("cab_4x12", _) => cv.pattern(c, rad, tolex(0x121212, 1.4, h)),
+        ("cab_4x12", _) | ("cab_4x15", _) => cv.pattern(c, rad, tolex(0x121212, 1.4, h)),
+        ("cab_4x10", _) => cv.pattern(c, rad, tolex(0x202022, 0.6, h)),
         _ => cv.pattern(c, rad, tolex(0x141414, 0.9, h)),
     }
     // the cloth and the speakers behind it
@@ -227,6 +281,16 @@ fn art(id: &str, look: Look, a: Rect, ppp: f32) -> Image {
         ("cab_1x12", _) => {
             grille(&mut cv, g, w * 0.025, Cloth::TweedGrille, k);
             ghost(&mut cv, sps[0].0, sps[0].1, false, false);
+            let q = linen_plate(c);
+            cv.shadow(q.translate(vec2(0.0, 1.5)), q.height() * 0.5, 1.5, 0.5);
+            cv.rr(q, q.height() * 0.5, 0x5a1a1e, 1.0);
+            cv.rr_stroke(q, q.height() * 0.5, 0.8, 0xc9a45c, 1.0);
+        }
+        ("cab_4x10_open", _) => {
+            grille(&mut cv, g, w * 0.025, Cloth::TweedGrille, k);
+            for &(sc, sr) in &sps {
+                ghost(&mut cv, sc, sr, false, false);
+            }
             let q = linen_plate(c);
             cv.shadow(q.translate(vec2(0.0, 1.5)), q.height() * 0.5, 1.5, 0.5);
             cv.rr(q, q.height() * 0.5, 0x5a1a1e, 1.0);
@@ -295,6 +359,44 @@ fn art(id: &str, look: Look, a: Rect, ppp: f32) -> Image {
                 cv.rr(q, 2.0, 0x0b0b0c, 1.0);
             }
             amps::corners_metal(&mut cv, c, (w * 0.12).clamp(6.0, 18.0), true);
+        }
+        ("cab_4x10", _) | ("cab_2x10", _) => {
+            perforated(&mut cv, g, 2.0);
+            for &(sc, sr) in &sps {
+                ghost(&mut cv, sc, sr, true, false);
+                cv.ring(sc, sr * 1.02, 1.0, 0x000000, 0.35);
+            }
+            if let Some(q) = horn(id, c) {
+                cv.rr(q.expand(1.5), 2.0, 0x000000, 0.6);
+                cv.rr(q, 2.0, 0x141517, 1.0);
+                cv.rr(
+                    q.shrink2(vec2(q.width() * 0.3, q.height() * 0.32)),
+                    1.0,
+                    0x020202,
+                    1.0,
+                );
+                cv.rr_stroke(q, 2.0, 0.8, 0x6a6e73, 0.6);
+            }
+            if id == "cab_2x10" {
+                for q in ports(c) {
+                    cv.rr(q, q.height() * 0.5, 0x020202, 1.0);
+                    cv.rr_stroke(q, q.height() * 0.5, 1.0, 0x3a3c40, 0.8);
+                }
+            } else {
+                amps::corners_metal(&mut cv, c, (w * 0.1).clamp(6.0, 18.0), false);
+            }
+        }
+        ("cab_4x15", _) => {
+            cv.rr_stroke(g.expand(2.5), 3.0, 1.6, 0xc3c8cc, 1.0);
+            grille(&mut cv, g, 2.0, Cloth::BlackWeave, k);
+            for &(sc, sr) in &sps {
+                ghost(&mut cv, sc, sr, true, false);
+            }
+            let q = big_plate(c);
+            cv.shadow(q.translate(vec2(0.0, 1.0)), 2.0, 1.5, 0.5);
+            cv.rr(q.expand(1.0), 2.5, 0xc3c8cc, 1.0);
+            cv.rr(q, 2.0, 0x0b0b0c, 1.0);
+            amps::corners_metal(&mut cv, c, (w * 0.11).clamp(6.0, 18.0), true);
         }
         _ => {
             // the flip-top: the seam and latches, a chrome ring round the grille
@@ -376,11 +478,64 @@ fn fridge_tag(c: Rect) -> Rect {
     )
 }
 
+fn big_plate(c: Rect) -> Rect {
+    Rect::from_center_size(
+        pos2(c.center().x, c.min.y + c.height() * 0.065),
+        vec2(c.width() * 0.4, c.height() * 0.055),
+    )
+}
+
 fn flip_plate(c: Rect) -> Rect {
     Rect::from_center_size(
         pos2(c.center().x, c.min.y + c.height() * 0.1),
         vec2(c.width() * 0.44, c.height() * 0.09),
     )
+}
+
+/// A bass cab's horn (tweeter) on its front: between the speakers (P37.6c; the 4x10 and 2x10 have one, as the real
+/// cabs do).
+fn horn(id: &str, c: Rect) -> Option<Rect> {
+    let (gs, _, _) = parts(id, Look::Blackface, c);
+    let g = gs[0];
+    let w = c.width();
+    match id {
+        "cab_4x10" => Some(Rect::from_center_size(g.center(), vec2(w * 0.13, w * 0.075))),
+        "cab_2x10" => Some(Rect::from_center_size(
+            pos2(g.center().x, g.min.y + g.height() * 0.22),
+            vec2(w * 0.1, w * 0.06),
+        )),
+        _ => None,
+    }
+}
+
+/// The 2x10's ports: two slots under the grille.
+fn ports(c: Rect) -> [Rect; 2] {
+    let (w, h) = (c.width(), c.height());
+    let y = c.min.y + h * 0.83;
+    [0.12, 0.56].map(|fx| Rect::from_min_size(pos2(c.min.x + w * fx, y), vec2(w * 0.32, h * 0.075)))
+}
+
+/// Perforated black steel (the modern bass cabs' grille): staggered round holes, the light catching the top.
+fn perforated(cv: &mut Cv, q: Rect, rad: f32) {
+    let h = q.height();
+    cv.pattern(q, rad, |x, y| {
+        let s = 3.4;
+        let row = (y / s).floor();
+        let ox = if (row as i32) % 2 == 0 { 0.0 } else { s * 0.5 };
+        let tx = (x + ox).rem_euclid(s) - s * 0.5;
+        let ty = y.rem_euclid(s) - s * 0.5;
+        let d = (tx * tx + ty * ty).sqrt();
+        let lit = 0.07 * (1.0 - y / h * 2.5).max(0.0);
+        let c = if d < 1.05 {
+            amps::rgbf(0x060607)
+        } else if d < 1.35 && ty > 0.0 {
+            amps::rgbf(0x55595e)
+        } else {
+            amps::rgbf(0x2c2e31)
+        };
+        [c[0] + lit, c[1] + lit, c[2] + lit, 1.0]
+    });
+    cv.rr_stroke(q, rad, 1.4, 0x000000, 0.7);
 }
 
 pub(super) fn layout(b: &Block, r: Rect, detail: Detail) -> Layout {
@@ -402,26 +557,28 @@ pub(super) fn layout(b: &Block, r: Rect, detail: Detail) -> Layout {
         ..Default::default()
     };
     if detail == Detail::Full {
-        // the engineer's strip beside the cab: mic place and distance as faders across, mic type, the cuts
-        let x0 = a.max.x + 16.0;
-        let x1 = r.max.x - 12.0;
+        // the engineer's strip beside the cab (P37.13: its own width, scaled with the face): mic place and distance
+        // as faders across, the mic type, then the cuts (and a bass cab's Horn and DI) each in its own column
+        let k = r.height() / UNIT_H;
+        let x1 = r.max.x - 14.0 * k;
+        let x0 = (x1 - (STRIP_W - 30.0) * k).max(a.max.x + 10.0);
         let cw = (x1 - x0).max(40.0);
-        let h = r.height();
-        let step = (h / 5.4).clamp(36.0, 42.0);
-        let mut y = r.min.y + 22.0;
+        let mut y = r.min.y + 26.0 * k;
         for i in [0usize, 1] {
             l.faders
-                .push((i, Rect::from_min_size(pos2(x0, y), vec2(cw, 8.0))));
-            y += step;
+                .push((i, Rect::from_min_size(pos2(x0, y), vec2(cw, 8.0 * k))));
+            y += 44.0 * k;
         }
         l.choices
-            .push((2, Rect::from_min_size(pos2(x0, y - 5.0), vec2(cw, 18.0))));
-        y += 24.0;
-        let d = ((r.max.y - y - 18.0) * 0.8).clamp(16.0, 30.0);
-        let n = 2.0;
-        for (j, kk) in [3usize, 4].iter().enumerate() {
-            let cx = x0 + cw * (j as f32 + 0.5) / n;
-            l.knobs.push((*kk, pos2(cx, y + d * 0.5 + 4.0), d));
+            .push((2, Rect::from_min_size(pos2(x0, y - 6.0 * k), vec2(cw, 20.0 * k))));
+        y += 26.0 * k;
+        let row: Vec<usize> = (3..def.front_len()).collect();
+        let n = row.len().max(1) as f32;
+        let col = cw / n;
+        let d = (r.max.y - y - 22.0 * k).min(30.0 * k).min(col * 0.6).max(12.0);
+        for (j, kk) in row.iter().enumerate() {
+            let cx = x0 + col * (j as f32 + 0.5);
+            l.knobs.push((*kk, pos2(cx, y + d * 0.5 + 2.0 * k), d));
         }
     }
     l
@@ -613,11 +770,12 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
         Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
         Color32::WHITE,
     );
-    // the names
+    // the names (not on a miniature, P37.12)
     let (gs, sps, mic_i) = parts(def.id, look, c);
     let (w, h) = (c.width(), c.height());
     let g = gs[0];
     match (def.id, look) {
+        _ if super::mini_now() => {}
         ("cab_1x10", _) | ("cab_2x12", Look::Blackface) => {
             let word = if def.id == "cab_1x10" { "Bedroom" } else { "Gemini" };
             logo(
@@ -632,7 +790,7 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
                 false,
             );
         }
-        ("cab_1x12", _) => {
+        ("cab_1x12", _) | ("cab_4x10_open", _) => {
             let q = linen_plate(c);
             super::lettering(
                 p,
@@ -689,6 +847,45 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
             super::lettering(
                 p,
                 "8x10",
+                q.center(),
+                Align2::CENTER_CENTER,
+                q.height() * 0.8,
+                c32(0xe8ebee),
+                q.width() * 0.9,
+                Lettering::Rounded,
+                false,
+            );
+        }
+        ("cab_4x10", _) | ("cab_2x10", _) => {
+            let word = if def.id == "cab_4x10" {
+                "PUNCH 410"
+            } else {
+                "COMPACT 210"
+            };
+            // (the 4x10's badge at the grille's top right: at its foot the mic stand, on the lower right speaker, hid
+            // half of it, P38.1)
+            let (y, al) = if def.id == "cab_4x10" {
+                (g.min.y + g.height() * 0.035, Align2::RIGHT_TOP)
+            } else {
+                (c.max.y - h * 0.035, Align2::RIGHT_BOTTOM)
+            };
+            logo(
+                p,
+                word,
+                pos2(g.max.x - g.width() * 0.04, y),
+                al,
+                (h * 0.06).clamp(6.0, 18.0),
+                c32(0xd8dbe0),
+                g.width() * 0.45,
+                Lettering::Heavy,
+                false,
+            );
+        }
+        ("cab_4x15", _) => {
+            let q = big_plate(c);
+            super::lettering(
+                p,
+                "big box 4x15",
                 q.center(),
                 Align2::CENTER_CENTER,
                 q.height() * 0.8,
@@ -765,7 +962,7 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
         }
         for &(i, kc, d) in &l.knobs {
             let kd = &def.knobs[i];
-            knobs::knob(
+            knobs::knob_in(
                 p,
                 kc,
                 d,
@@ -775,9 +972,12 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
                     ..Default::default()
                 },
                 Some(KnobStyle::Chrome),
+                qrs_ui::glass::State::of(hot.hover == Some(i), hot.active == Some(i)),
             );
             let shown = hot.active == Some(i) || hot.hover == Some(i);
-            let pos = pos2(kc.x, kc.y + d * 0.5 + 12.0);
+            let pos = pos2(kc.x, kc.y + d * 0.5 + 10.0);
+            let n = l.knobs.len().max(1) as f32;
+            let col = l.faders.first().map_or(d + 26.0, |f| f.1.width() / n).max(d);
             if shown {
                 qrs_ui::text::draw(
                     p,
@@ -785,10 +985,10 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
                     pos,
                     Align2::CENTER_CENTER,
                     qrs_ui::text::Style::new(10.0, 800, th.accent_ink),
-                    None,
+                    Some(col),
                 );
             } else {
-                super::label(p, kd.label, pos, 8.0, ink, d + 26.0);
+                super::label(p, kd.label, pos, 8.0, ink, col - 4.0);
             }
         }
     }

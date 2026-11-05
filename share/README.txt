@@ -17,7 +17,7 @@ The Mac version (beta) is on the same page (0.3.0 for now; its 0.4.0 follows): s
 Coming from 0.1.0: 0.1.0 can't update itself, so this zip is the one you download by hand. Close quickRS, then
 copy these files over your old quickRS folder, or use this folder and copy keys.json across from the old one (or
 paste the keys in Settings > Directories). Your settings, song folders and scores carry over. From now on quickRS
-updates itself (see Updates below). Settings > Audio is now "Audio input / output", Library is "Directories".
+updates itself (see Updates below). Settings > Sound is now "Audio input / output", Library is "Directories".
 
 
 1. Start quickRS

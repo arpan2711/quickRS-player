@@ -30,7 +30,7 @@ use qrs_ui::theme::t;
 use qrs_ui::units::px;
 use qrs_ui::widgets::{ButtonStyle, button, button_width, interact};
 
-use super::{COUNTDOWN, Chart, LOOP_LEAD_IN, PlayerReq, PlayerView};
+use super::{Chart, LOOP_LEAD_IN, PlayerReq, PlayerView};
 use crate::library::{caps, txt};
 use crate::state::AppState;
 
@@ -656,7 +656,7 @@ impl PlayerView {
             return;
         };
         self.seek((a - LOOP_LEAD_IN).max(0.0));
-        self.countdown_until = Some(Instant::now() + Duration::from_secs_f32(COUNTDOWN));
+        self.count_in();
         self.run_scored = false;
     }
 
@@ -1303,10 +1303,14 @@ impl PlayerView {
     pub(super) fn coach_tick(&mut self, st: &mut AppState) {
         let tuner = self.tuner_midi;
         let passes = self.loop_passes;
-        let opens = self.sounding_opens();
+        // (the Tuner tile's strings: a bass's 4 or 5, P37.6a)
+        let opens = self.tuner_targets().1;
         let mut hear = false;
         let Some(c) = self.coach.as_mut() else { return };
         if c.tuner {
+            if c.tuned.len() != opens.len() {
+                c.tuned = vec![false; opens.len()];
+            }
             // the open string nearest what's heard, held in tune for a moment
             match near_open(tuner, &opens) {
                 Some((s, cents)) if cents.abs() <= IN_TUNE => match c.tune_hold {
@@ -2301,12 +2305,21 @@ impl PlayerView {
     }
 
     /// The tuner: a box for each open string (lit once heard in tune), and a needle for the one you're playing.
+    /// The strings are the Tuner tile's (`tuner_targets`, P37.6a): a bass's four or five, a guitar's part's.
     fn draw_tune(&self, p: &egui::Painter, c: &Coach, x: f32, y: f32, w: f32) {
         let th = t();
-        let n = self.chart.opens.len().max(1);
+        let opens = self.tuner_targets().1;
+        let n = opens.len().max(1);
         let gap = px(6.0);
         let bw = (w - (n - 1) as f32 * gap) / n as f32;
-        let names: Vec<String> = (0..n).map(|s| self.string_name(s as i32)).collect();
+        let names: Vec<String> = if opens == self.chart.opens {
+            (0..n).map(|s| self.string_name(s as i32)).collect()
+        } else {
+            opens
+                .iter()
+                .map(|&m| qrs_analysis::pitch::note_label(m as f64))
+                .collect()
+        };
         for s in 0..n {
             let r = Rect::from_min_size(pos2(x + s as f32 * (bw + gap), y), vec2(bw, px(46.0)));
             let ok = c.tuned.get(s).copied().unwrap_or(false);
@@ -2344,7 +2357,7 @@ impl PlayerView {
             0.0,
             th.tick,
         );
-        let label = match near_open(self.tuner_midi, &self.chart.opens) {
+        let label = match near_open(self.tuner_midi, &opens) {
             Some((s, cents)) => {
                 let k = (cents / 50.0).clamp(-1.0, 1.0) as f32;
                 let col = if cents.abs() <= IN_TUNE { th.hit } else { th.late };
@@ -2367,7 +2380,7 @@ impl PlayerView {
                     }
                 )
             }
-            None if !self.has_input() => "No guitar input: Settings (F2) > Audio input / output".into(),
+            None if !self.has_input() => "No input: Settings (F2) > Audio input / output".into(),
             None => "Play an open string".into(),
         };
         txt(
@@ -2475,7 +2488,7 @@ impl PlayerView {
                 th.text_2,
             ),
             Some(None) if !self.has_input() => (
-                "No guitar input to judge: Settings (F2) > Audio input / output, or skip".into(),
+                "No input to judge: Settings (F2) > Audio input / output, or skip".into(),
                 th.miss,
             ),
             Some(None) => ("Play every note of it on a pass".into(), th.text_2),
@@ -2546,7 +2559,7 @@ impl PlayerView {
             }
             None if self.countdown_until.is_some() => ("Get ready…".into(), String::new(), th.text_2),
             None if !self.has_input() => (
-                "No guitar input".into(),
+                "No input".into(),
                 "Settings (F2) > Audio input / output: the song can't wait for you".into(),
                 th.miss,
             ),
@@ -2817,7 +2830,7 @@ impl PlayerView {
         item(&mut xx, "scale", &|at| {
             // (an edge: ivory on a light card)
             p.circle_filled(at, px(5.0), th.key_white);
-            p.circle_stroke(at, px(5.0), Stroke::new(px(1.0), th.caption));
+            p.circle_stroke(at, px(5.0), Stroke::new(qrs_ui::units::px_line(1.0), th.caption));
         });
         item(&mut xx, "the stretch's notes", &|at| {
             p.circle_stroke(at, px(5.0), Stroke::new(px(2.0), th.hit));
@@ -2894,7 +2907,7 @@ impl PlayerView {
             _ if unclear => ("Didn't catch that one: pick it clearly".into(), th.caption),
             (_, Some(d)) if !self.has_input() => (
                 format!(
-                    "Next is {}  ·  no guitar input: Settings (F2) > Audio input / output",
+                    "Next is {}  ·  no input: Settings (F2) > Audio input / output",
                     qrs_analysis::pitch::note_label(d as f64)
                 ),
                 th.miss,
@@ -2959,7 +2972,7 @@ impl PlayerView {
                 if self.has_input() {
                     "of your notes in the scale: play!".to_string()
                 } else {
-                    "no guitar input: Settings (F2) > Audio input / output".to_string()
+                    "no input: Settings (F2) > Audio input / output".to_string()
                 }
             } else {
                 format!("of your {} notes in the scale", c.jam_all)
@@ -3191,9 +3204,7 @@ impl PlayerView {
         let you = match (fresh, self.tuner_text.is_empty()) {
             (Some((m, _, _)), _) => format!("you played {}", qrs_analysis::pitch::note_label(m)),
             (None, false) => format!("you: {}", self.tuner_text),
-            (None, true) if !self.has_input() => {
-                "no guitar input: Settings (F2) > Audio input / output".into()
-            }
+            (None, true) if !self.has_input() => "no input: Settings (F2) > Audio input / output".into(),
             (None, true) => String::new(),
         };
         if !you.is_empty() {

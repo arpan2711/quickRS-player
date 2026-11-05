@@ -1,6 +1,6 @@
 //! The first-time setup's panel (P23.14, owner request; new code, no Python source): a modal panel over the app,
-//! the size of Settings', with the steps along its top (Look, Your guitar, Low latency, Note widget, Folders,
-//! Done), the page's words and controls on the left, a picture of what it's about on the right, and Close / Back /
+//! the size of Settings', with the steps along its top (Look, Low latency, Your instrument (Your bass once Bass is
+//! picked), Use NAM?, Note widget, Folders, Done), the page's words and controls on the left, a picture of what it's about on the right, and Close / Back /
 //! Skip / Next at the bottom (Esc, Backspace, S, Enter). `setup.rs` has the pages and their logic.
 //!
 //! It runs on Settings' own pieces, held in a `SettingsView` of its own: the guitar page runs the guided guitar
@@ -40,6 +40,12 @@ pub struct FirstSetup {
     /// Screenshots: a page made up as it would look (nothing is saved).
     staged: bool,
     acts: Vec<String>,
+    /// Use NAM? (P36.7): the answer while staged (screenshots save nothing), the TONE3000 pick under way (the
+    /// suggestion's row) and what it last said.
+    nam_staged: Option<bool>,
+    /// The download this page started last (`crate::downloads`).
+    nam_pick: Option<u64>,
+    nam_note: Option<String>,
 }
 
 /// The themes' words on the look page.
@@ -51,45 +57,69 @@ fn theme_words(t: ThemeName) -> &'static str {
     }
 }
 
-/// A page's words under its heading, a paragraph each.
-fn intro(page: Page) -> &'static [&'static str] {
+/// A page's words under its heading, a paragraph each, for what you play (`inst`) and on an output that's ASIO
+/// already (`asio`: the low-latency page has nothing to set then, P37.6a).
+fn intro(page: Page, inst: qrs_analysis::instrument::Instrument, asio: bool) -> Vec<String> {
+    let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+    let n = inst.noun();
     match page {
-        Page::Look => &["Three looks, the same app. Pick one and the whole app changes as you pick."],
-        Page::Guitar => &[
-            "quickRS listens to your guitar: it scores your playing and plays it through its amps and pedals. A \
-             few short steps set it up: the input and its channel, where you hear it, a level check, what's \
-             plugged in, calibration and the open strings.",
-            "About two minutes. Have your guitar plugged in and tuned.",
+        Page::Look => v(&["Three looks, the same app. Pick one and the whole app changes as you pick."]),
+        Page::Guitar => vec![
+            format!(
+                "quickRS listens to your {n}: it scores your playing and plays it through its amps and pedals. A \
+                 few short steps set it up: the input and its channel, where you hear it, a level check, what's \
+                 plugged in, the level it sets for you, the open strings and your timing."
+            ),
+            format!("About two minutes. Have your {n} plugged in and tuned."),
         ],
-        Page::Latency => &[
-            "Low-latency output sends the sound straight to your sound device (Windows' exclusive mode) instead \
-             of through the system's sound mixer, so what you play comes back sooner.",
+        Page::Latency if asio => v(&[
+            "Your sound goes out through ASIO, which already talks to your sound device directly: there's nothing \
+             to turn on here.",
+            "Press Next: quickRS stays on ASIO.",
+        ]),
+        Page::Latency => v(&[
+            "Low-latency output sends the sound straight to your sound device instead of through Windows' sound \
+             mixer, so what you play comes back sooner.",
             "While it's on and quickRS is playing, other programs can't use that device: they go quiet. You can \
              turn it off any time.",
             "Without it quickRS is still good. Turn it on for focused practice or for recording.",
-        ],
-        Page::Widget => &[
+        ]),
+        Page::Widget => v(&[
             "A small window that stays on top of everything: the note you're playing, the key you seem to be in, \
              and that key's scale over the whole neck.",
             "Great with two screens, or if you don't mind it floating over your one screen. Drag it where you \
              like; right-click it for its menu.",
-        ],
-        Page::Folders => &[
-            "Where your songs are, Rocksmith's keys if you have psarc files, and where recordings go. Songs are \
+        ]),
+        Page::Folders => v(&[
+            "Where your songs are, RS's keys if you have psarc files, and where recordings go. Songs are \
              read as soon as a folder is added.",
-        ],
-        Page::Done => &["That's it. Here's what's set; all of it is in Settings."],
+        ]),
+        Page::Nam => v(&[
+            "quickRS's own amps, cabs and pedals are all built in. You can also play captures of real gear made with \
+             Neural Amp Modeler (NAM), from TONE3000, with your own free account there.",
+            "Yes lists the gear your songs use most; each opens on TONE3000 for you to pick and download. No: every \
+             song plays on quickRS's own models, and nothing is lost.",
+        ]),
+        Page::Done => v(&["That's it. Here's what's set; all of it is in Settings."]),
     }
+}
+
+/// Whether the output plays through ASIO now (the low-latency page has nothing to set then).
+fn asio_out(st: &AppState) -> bool {
+    st.audio
+        .as_ref()
+        .and_then(|a| a.engine.status().output)
+        .is_some_and(|o| o.mode == "ASIO")
 }
 
 /// What the picture beside a page shows, under it.
 fn pic_caption(pic: Pic) -> &'static str {
     match pic {
-        Pic::Guitar => "Calibration's settings, in Settings > Audio input / output",
-        Pic::Latency => "Where it lives: Settings > Audio input / output, under the output",
+        Pic::Guitar => "Calibration's settings, in Settings > Sound",
+        Pic::Latency => "Where it lives: Settings > Timing > Reduce delay",
         Pic::Widget => "The note widget, over whatever else is on your screen",
-        Pic::Folders => "Settings > Directories: your song folders",
-        Pic::Room => "The amp room: your pedalboard and amps, no song needed",
+        Pic::Folders => "Settings > Library: your song folders",
+        Pic::Room => "The amp room: your rig of amps and pedals, no song needed",
         Pic::Theme(_) => "",
     }
 }
@@ -100,12 +130,24 @@ impl FirstSetup {
     pub fn new() -> FirstSetup {
         FirstSetup {
             flow: Flow::default(),
-            view: SettingsView::new("audio"),
+            view: SettingsView::new("sound"),
             closed: false,
             room: false,
             staged: false,
             acts: Vec::new(),
+            nam_staged: None,
+            nam_pick: None,
+            nam_note: None,
         }
+    }
+
+    /// The setup opened on a page (Settings > Tone's Suggested captures opens it on Use NAM?).
+    pub fn at(page: &str) -> FirstSetup {
+        let mut s = FirstSetup::new();
+        if let Some(p) = Page::parse(page) {
+            s.flow.go(p);
+        }
+        s
     }
 
     /// Screenshots: a page ("look", "guitar", "guitar_<step>" for a step of the guitar setup in it, "latency",
@@ -123,7 +165,10 @@ impl FirstSetup {
         for _ in 0..k {
             s.flow.next();
         }
-        if let Some(step) = step {
+        if p == Page::Nam {
+            // ("nam_yes": the suggestions shown)
+            s.nam_staged = (page == "nam_yes").then_some(true);
+        } else if let Some(step) = step {
             s.view.open_guide_embedded(step, true);
         }
         s
@@ -169,6 +214,8 @@ impl FirstSetup {
             Key::S if !self.flow.is_last() => Some("skip".into()),
             Key::Space if page == Page::Latency => Some("exclusive".into()),
             Key::Space if page == Page::Widget => Some("notewidget".into()),
+            Key::Num1 if page == Page::Nam => Some("nam:no".into()),
+            Key::Num2 if page == Page::Nam => Some("nam:yes".into()),
             Key::Num1 | Key::Num2 | Key::Num3 if page == Page::Look => {
                 let i = match key {
                     Key::Num1 => 0,
@@ -200,6 +247,19 @@ impl FirstSetup {
                 }
             }
             "guitar" => self.start_guitar(),
+            "instrument" => set_instrument(st, qrs_analysis::instrument::Instrument::parse(arg)),
+            "nam" => {
+                let on = arg == "yes";
+                if self.staged {
+                    self.nam_staged = Some(on);
+                } else {
+                    fs::set_nam(&mut st.config, on);
+                    st.save_config();
+                }
+            }
+            "namfind" => self.nam_find(st, arg.parse().unwrap_or(0)),
+            "namcancel" => crate::downloads::cancel(arg.parse().unwrap_or(0)),
+            "namretry" => crate::downloads::retry(arg.parse().unwrap_or(0)),
             "close" => self.close(st),
             "finish" => self.finish(st),
             "room" => {
@@ -258,7 +318,7 @@ impl FirstSetup {
         }
         fs::record(&mut st.config, "skipped");
         st.save_config();
-        st.say("Setup closed: you can run it again from the top of Settings");
+        st.say("Setup closed: you can run it again from Settings › About");
     }
 
     fn finish(&mut self, st: &mut AppState) {
@@ -323,6 +383,7 @@ impl FirstSetup {
         );
         self.draw_steps(
             ui,
+            st.instrument(),
             Rect::from_min_max(pos2(tr.max.x + px(28.0), head.min.y), head.max),
         );
         let body = Rect::from_min_max(
@@ -346,7 +407,7 @@ impl FirstSetup {
 
     /// The steps along the top: a well with a key each (the page on it raised), a light for each page left done
     /// (green) or skipped (amber); a click goes to it.
-    fn draw_steps(&mut self, ui: &Ui, room: Rect) {
+    fn draw_steps(&mut self, ui: &Ui, inst: qrs_analysis::instrument::Instrument, room: Rect) {
         let th = t();
         let p = ui.painter().clone();
         let pages = self.flow.pages();
@@ -383,7 +444,7 @@ impl FirstSetup {
             }
             text::draw(
                 &p,
-                &format!("{}  {}", i + 1, pg.short()),
+                &format!("{}  {}", i + 1, pg.short_for(inst)),
                 pos2(c.x + px(14.0), centre_y(r)),
                 Align2::LEFT_CENTER,
                 Style::new(
@@ -437,7 +498,11 @@ impl FirstSetup {
         let next_label = if last {
             "Finish"
         } else if page == Page::Guitar && !guitar_ready(st) {
-            "Set up my guitar"
+            if st.instrument().is_bass() {
+                "Set up my bass"
+            } else {
+                "Set up my guitar"
+            }
         } else {
             "Next"
         };
@@ -467,7 +532,7 @@ impl FirstSetup {
             if self.flow.page == Page::Done {
                 "Settings has all of this, and this setup again at its top."
             } else {
-                "Close any time: you can run this again from the top of Settings."
+                "Close any time: you can run this again from Settings › About."
             },
             pos2(lx, fy + bh / 2.0),
             Align2::LEFT_CENTER,
@@ -478,7 +543,7 @@ impl FirstSetup {
         // the left column: the step, the heading, the words, the page's controls, and where it is in Settings
         let full = page == Page::Look;
         let gap = px(36.0);
-        let lw = if full {
+        let lw = if full || page == Page::Nam {
             content.width()
         } else if page == Page::Folders {
             snap(content.width() * 0.6)
@@ -495,9 +560,14 @@ impl FirstSetup {
             Align2::LEFT_TOP,
             None,
         );
+        let asio = page == Page::Latency && asio_out(st);
         let tr = text::draw(
             &p,
-            page.title(),
+            if asio {
+                "Low latency: already on"
+            } else {
+                page.title_for(st.instrument())
+            },
             pos2(x, cr.max.y + px(8.0)),
             Align2::LEFT_TOP,
             Style::new(30.0, 800, th.text),
@@ -505,7 +575,7 @@ impl FirstSetup {
         );
         let mut y = tr.max.y + px(10.0);
         let ist = Style::new(15.0, 500, th.text_2);
-        let paras = intro(page);
+        let paras = intro(page, st.instrument(), asio);
         // (the folders page is tight: its words in one line less)
         for (k, para) in paras.iter().enumerate() {
             if k > 0 {
@@ -523,9 +593,11 @@ impl FirstSetup {
         match page {
             Page::Look => self.page_look(ui, ctl),
             Page::Guitar => self.page_guitar(ui, st, ctl),
+            Page::Latency if asio => {}
             Page::Latency => self.page_switch(ui, st, ctl, true),
             Page::Widget => self.page_switch(ui, st, ctl, false),
             Page::Folders => self.page_folders(ui, st, ctl),
+            Page::Nam => self.page_nam(ui, st, ctl),
             Page::Done => self.page_done(ui, st, ctl),
         }
         // where it is later
@@ -683,10 +755,44 @@ impl FirstSetup {
             paint::dot(&p, c, px(4.0), th.track);
         }
         y = sr.max.y + px(18.0);
-        let label = if ready {
-            "Set it up again"
-        } else {
-            "Set up my guitar"
+        // what you play (P32.1): a guitar unless you say bass; Settings > Audio has it per input
+        {
+            use qrs_analysis::instrument::Instrument;
+            let labels = ["Guitar", "Bass", "5-string bass"];
+            let now = st.instrument();
+            let sel = Instrument::ALL.iter().position(|i| *i == now);
+            let seg = Rect::from_min_size(pos2(x, y), vec2(px(360.0).min(w), px(40.0)));
+            let mut so = widgets::Segmented::new(&labels, sel);
+            so.size = 13.0;
+            so.pad = 4.0;
+            so.r = 14.0;
+            so.inner_r = 10.0;
+            let (_, clicked) = widgets::segmented(ui, seg, "first-setup-instrument", &so);
+            if let Some(i) = clicked {
+                self.acts.push(format!("instrument:{}", Instrument::ALL[i].key()));
+            }
+            let cr = text::draw(
+                &p,
+                match now {
+                    Instrument::Bass5 => {
+                        "A 5-string bass: its notes are read down to the low B, and songs open on their bass part."
+                    }
+                    Instrument::Bass => {
+                        "A bass: its notes are read down to the low E, and songs open on their bass part."
+                    }
+                    Instrument::Guitar => "What you play. A guitar can play bass parts too.",
+                },
+                pos2(x, seg.max.y + px(8.0)),
+                Align2::LEFT_TOP,
+                Style::new(13.0, 500, th.caption),
+                Some(w),
+            );
+            y = cr.max.y + px(18.0);
+        }
+        let label = match (ready, st.instrument().is_bass()) {
+            (true, _) => "Set it up again",
+            (false, true) => "Set up my bass",
+            (false, false) => "Set up my guitar",
         };
         let bw = widgets::button_width(&ctx, label, "", 15.0, false).max(px(220.0));
         if widgets::button(
@@ -709,9 +815,12 @@ impl FirstSetup {
         y += px(50.0) + px(26.0);
         // the amp room works with no songs and no keys
         let nst = Style::new(14.0, 500, th.text_2);
-        let words = "No songs or keys yet? You can still play through the amp room and record yourself: it needs \
-                     only your guitar.";
-        let lines = text::wrap(&ctx, words, nst, w - px(40.0));
+        let words = format!(
+            "No songs or keys yet? You can still play through the amp room and record yourself: it needs only \
+             your {}.",
+            st.instrument().noun()
+        );
+        let lines = text::wrap(&ctx, &words, nst, w - px(40.0));
         let lh = text::line_height(&ctx, nst);
         let box_h = px(20.0) + line_h(&ctx, 12.0) + px(6.0) + lines.len() as f32 * lh + px(18.0);
         let bx = Rect::from_min_size(pos2(x, y), vec2(w, box_h));
@@ -794,13 +903,13 @@ impl FirstSetup {
                 "It takes effect straight away; if your device won't do it, quickRS stays on the shared output."
             }
         } else {
-            "It listens to the guitar input you set up, songs or not."
+            "It listens to the input you set up, songs or not."
         };
         y = super::caption_lines(&p, note, x + px(4.0), y, w - px(8.0), 13.0, 2);
         let _ = (y, th);
     }
 
-    /// The folders: songs, Rocksmith's keys, and recordings.
+    /// The folders: songs, RS's keys, and recordings.
     fn page_folders(&mut self, ui: &mut Ui, st: &mut AppState, area: Rect) {
         let th = t();
         let p = ui.painter().clone();
@@ -890,8 +999,8 @@ impl FirstSetup {
         let cx = r.max.x + px(14.0);
         text::draw(
             &p,
-            if st.config.search_dlc() && !qrs_library::config::rocksmith_dlc_dirs().is_empty() {
-                "Rocksmith's dlc folder is read too"
+            if st.config.search_dlc() && !qrs_library::config::rs_dlc_dirs().is_empty() {
+                "RS's dlc folder is read too"
             } else {
                 "Feedpaks play straight away"
             },
@@ -901,10 +1010,10 @@ impl FirstSetup {
             Some((x + w - cx).max(px(20.0))),
         );
         y = r.max.y + px(22.0);
-        // ROCKSMITH KEYS
+        // RS KEYS
         y = self.view.heading(
             &p,
-            "ROCKSMITH KEYS",
+            "RS KEYS",
             x,
             y,
             Some(x + w),
@@ -1090,6 +1199,182 @@ impl FirstSetup {
         }
     }
 
+    /// Find on TONE3000 (P36.7): the search words to the clipboard, and TONE3000's own select flow in the browser
+    /// (your account); the capture you pick downloads into your library.
+    fn nam_find(&mut self, st: &AppState, i: usize) {
+        use crate::captures::tone3000;
+        if self.staged {
+            return;
+        }
+        let (list, _, _) = nam_suggestions(false, 8, st.instrument());
+        let Some(sg) = list.get(i) else { return };
+        let Some(key) = tone3000::client_id(&st.config) else {
+            self.nam_note = Some(
+                "TONE3000 needs your key first: Settings > Neural Amp Modeler says where to get it.".into(),
+            );
+            return;
+        };
+        st.ctx.copy_text(sg.unit.query.to_string());
+        self.nam_pick = Some(crate::downloads::start(key, sg.unit.kind, Some(sg.unit)));
+        self.nam_note = Some(format!(
+            "TONE3000 is open in your browser: search \"{}\" (copied) and pick a capture; it downloads here.",
+            sg.unit.query
+        ));
+    }
+
+    /// Use NAM?: No / Yes, and with Yes the suggested captures (the gear your songs use most).
+    fn page_nam(&mut self, ui: &Ui, st: &AppState, area: Rect) {
+        use crate::captures::tone3000::Phase;
+        let th = t();
+        let p = ui.painter().clone();
+        let ctx = ui.ctx().clone();
+        let (x, w) = (area.min.x, area.width());
+        let choice = if self.staged {
+            self.nam_staged
+        } else {
+            fs::nam_choice(&st.config)
+        };
+        // the answer: two keys (1 / 2)
+        let labels = ["1  No: quickRS's own amps", "2  Yes: NAM captures of real gear"];
+        let seg = Rect::from_min_size(pos2(x, area.min.y), vec2(px(620.0).min(w), px(46.0)));
+        let mut so = widgets::Segmented::new(&labels, choice.map(|on| on as usize));
+        so.size = 14.0;
+        so.pad = 4.0;
+        so.r = 14.0;
+        so.inner_r = 10.0;
+        let (_, clicked) = widgets::segmented(ui, seg, "first-setup-nam", &so);
+        if let Some(i) = clicked {
+            self.acts.push(if i == 1 { "nam:yes" } else { "nam:no" }.into());
+        }
+        let mut y = seg.max.y + px(20.0);
+        // the pick under way
+        if let Some(id) = self.nam_pick {
+            match crate::downloads::view(id).map(|v| v.phase) {
+                Some(Phase::Done(it)) => {
+                    self.nam_note = Some(format!("Added {} to your captures", it.name));
+                    self.nam_pick = None;
+                }
+                Some(Phase::Failed(_, e)) => {
+                    self.nam_note = Some(format!("Didn't download: {e}"));
+                    self.nam_pick = None;
+                }
+                Some(Phase::Cancelled { .. }) | None => {
+                    self.nam_note = None;
+                    self.nam_pick = None;
+                }
+                Some(_) => {}
+            }
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+        let pad = px(20.0);
+        if choice != Some(true) {
+            let words = if choice == Some(false) {
+                "Every song plays on quickRS's own amps, cabs and pedals. You can change your mind any time: \
+                 Settings > Neural Amp Modeler has everything NAM, and the amp room has MODELLED or NAM on each unit."
+            } else {
+                "Not sure? No is fine: quickRS's models play every song. NAM takes more of the computer (each capture \
+                 about a fifth of a core) and a free TONE3000 account."
+            };
+            super::caption_lines(&p, words, x + px(4.0), y, w.min(px(900.0)), 14.0, 3);
+            return;
+        }
+        let (list, covered, total) = nam_suggestions(self.staged, 8, st.instrument());
+        let hh = SettingsView::h_heading(&ctx);
+        let row_h = px(44.0);
+        let rows = list.len().max(1);
+        // (the card leaves room for its caption under it: two lines)
+        let cap_room = px(12.0) + 2.0 * line_h(&ctx, 13.0);
+        let card_h = (2.0 * pad + hh + rows as f32 * row_h + px(8.0)).min(area.max.y - y - cap_room);
+        let card = Rect::from_min_size(pos2(x, y), vec2(w, card_h));
+        paint::card(&p, card, 22.0, false);
+        let note = if list.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "these cover {covered} of your {total} song{}{}",
+                if total == 1 { "" } else { "s" },
+                if st.instrument().is_bass() {
+                    " with a bass part"
+                } else {
+                    ""
+                }
+            )
+        };
+        y = self.view.heading(
+            &p,
+            if st.instrument().is_bass() {
+                "SUGGESTED FOR YOUR BASS PARTS"
+            } else {
+                "SUGGESTED FOR YOUR SONGS"
+            },
+            x + pad,
+            card.min.y + pad,
+            Some(card.max.x - pad),
+            &note,
+            "",
+        );
+        if list.is_empty() {
+            text::draw(
+                &p,
+                if crate::gearindex::reading().is_some() {
+                    "Reading your songs' gear\u{2026}"
+                } else {
+                    "No songs with RS tones yet: add your songs (next pages), then see Settings > Neural Amp Modeler."
+                },
+                pos2(x + pad, y + px(10.0)),
+                Align2::LEFT_TOP,
+                Style::new(14.0, 600, th.text_2),
+                Some(w - 2.0 * pad),
+            );
+        }
+        for (i, sg) in list.iter().enumerate() {
+            let r = Rect::from_min_size(pos2(x + pad, y + i as f32 * row_h), vec2(w - 2.0 * pad, row_h));
+            if r.max.y > card.max.y - px(4.0) {
+                break;
+            }
+            if i > 0 {
+                p.hline(r.min.x..=r.max.x, r.min.y, (1.0, th.divider));
+            }
+            let cy = centre_y(r);
+            let kind = match sg.unit.kind {
+                crate::captures::Kind::Nam => "amp",
+                crate::captures::Kind::Pedal => "pedal",
+                crate::captures::Kind::Ir => "cab (IR)",
+            };
+            let nr = text::draw(
+                &p,
+                sg.unit.name,
+                pos2(r.min.x + px(4.0), cy),
+                Align2::LEFT_CENTER,
+                Style::new(15.0, 700, th.text),
+                Some(r.width() * 0.45),
+            );
+            text::draw(
+                &p,
+                &format!("{kind}{}", if sg.unit.bass { ", bass" } else { "" }),
+                pos2(nr.max.x + px(12.0), cy),
+                Align2::LEFT_CENTER,
+                Style::new(12.0, 600, th.caption),
+                None,
+            );
+            let bw = px(150.0);
+            let br = Rect::from_min_size(pos2(r.max.x - bw, cy - px(16.0)), vec2(bw, px(32.0)));
+            match crate::downloads::suggestion_tail(ui, ("setup-sg", i), br, sg.unit, sg.have, sg.songs) {
+                Some(crate::downloads::RowAct::Find) => self.acts.push(format!("namfind:{i}")),
+                Some(crate::downloads::RowAct::Cancel(id)) => self.acts.push(format!("namcancel:{id}")),
+                Some(crate::downloads::RowAct::Retry(id)) => self.acts.push(format!("namretry:{id}")),
+                None => {}
+            }
+        }
+        let ny = card.max.y + px(12.0);
+        let words = self.nam_note.clone().unwrap_or_else(|| {
+            "Each opens TONE3000 in your browser: sign in with your own account, pick a capture, and it downloads \
+             into your captures. Songs use the ones you have; the rest stay on quickRS's models."
+                .into()
+        });
+        super::caption_lines(&p, &words, x + px(4.0), ny, w, 13.0, 2);
+    }
+
     /// Done: what's set, and where to go with no songs (the amp room, feedpaks, the converter).
     fn page_done(&mut self, ui: &Ui, st: &AppState, area: Rect) {
         let th = t();
@@ -1097,15 +1382,55 @@ impl FirstSetup {
         let ctx = ui.ctx().clone();
         let (x, w) = (area.min.x, area.width());
         let mut rows: Vec<(&str, String, bool)> = vec![("Look", theme::theme().label().to_string(), true)];
+        // (a step you skipped says so: not "not calibrated yet" right after you chose to skip it, P37.6a)
+        let inner = self.view.guide_flow.as_ref();
+        let page_skipped = self.flow.mark(Page::Guitar) == Mark::Skipped;
+        let skipped = |s: Step| page_skipped || inner.is_some_and(|f| f.mark(s) == Mark::Skipped);
         let (gs, gok) = guitar_status(st);
-        rows.push(("Your guitar", gs.trim_start_matches("Now: ").to_string(), gok));
+        let gs = if !gok && skipped(Step::Calibrate) {
+            "Skipped: Settings > Sound sets it up any time".to_string()
+        } else {
+            gs.trim_start_matches("Now: ").to_string()
+        };
+        rows.push((Page::Guitar.short_for(st.instrument()), gs, gok));
+        let timing = super::timing_tool::summary(st);
+        rows.push((
+            "Timing",
+            match &timing {
+                Some(t) => t.clone(),
+                None if skipped(Step::Timing) => {
+                    "Skipped: Settings > Timing > Calibrate timing any time".into()
+                }
+                None => "not measured yet (Settings > Timing > Calibrate timing)".into(),
+            },
+            timing.is_some(),
+        ));
         if self.flow.pages().contains(&Page::Latency) {
             let on = st
                 .audio
                 .as_ref()
                 .map(|a| a.prefs().exclusive)
                 .unwrap_or_else(|| fs::low_latency(&st.config));
-            rows.push(("Low latency", if on { "On" } else { "Off" }.into(), true));
+            let what = if asio_out(st) {
+                "ASIO: already direct"
+            } else if on {
+                "On"
+            } else {
+                "Off"
+            };
+            rows.push(("Low latency", what.into(), true));
+        }
+        if self.flow.pages().contains(&Page::Nam) {
+            let nam = self.nam_staged.or(fs::nam_choice(&st.config));
+            rows.push((
+                "Tones",
+                match nam {
+                    Some(true) => "NAM captures where you have them, quickRS's models for the rest".into(),
+                    Some(false) => "quickRS's own models".into(),
+                    None => "not asked (Settings > Neural Amp Modeler)".into(),
+                },
+                nam.is_some(),
+            ));
         }
         let nw = fs::note_widget(&st.config);
         rows.push(("Note widget", if nw { "On" } else { "Off" }.into(), true));
@@ -1130,7 +1455,7 @@ impl FirstSetup {
         ));
         let keys = matches!(st.key_state, KeyState::Found { .. });
         rows.push((
-            "Rocksmith keys",
+            "RS keys",
             if keys {
                 "found".into()
             } else {
@@ -1184,10 +1509,10 @@ impl FirstSetup {
         if songs == 0 || !keys {
             let words = if songs == 0 {
                 "No songs yet? Feedpaks play straight away: drop a folder of them on the window, or make them from \
-                 your own Rocksmith songs with quickRS Converter. Meanwhile the amp room needs no songs: play \
+                 your own RS songs with quickRS Converter. Meanwhile the amp room needs no songs: play \
                  through its amps and pedals, and record yourself."
             } else {
-                "Your psarc songs wait for Rocksmith's keys (Settings > Directories); feedpaks play now. The amp \
+                "Your psarc songs wait for RS's keys (Settings > Library); feedpaks play now. The amp \
                  room needs no songs: play through its amps and pedals, and record yourself."
             };
             let nst = Style::new(13.0, 500, th.text_2);
@@ -1226,20 +1551,81 @@ impl Default for FirstSetup {
     }
 }
 
-/// Whether the guitar input listening now has been calibrated (the guitar page's Next moves on then).
+/// The suggestions shown: the library's (`captures::suggested_captures`), or, in screenshots, a made-up library's.
+/// The made-up library's cabs and amps vary song to song (P37.6a: one cab on every song read as "a Princeton 1x10 for
+/// 40 of 40 songs", which no real library does); a bass's are bass parts' gear.
+pub(super) fn nam_suggestions(
+    staged: bool,
+    limit: usize,
+    inst: qrs_analysis::instrument::Instrument,
+) -> (Vec<crate::captures::suggest::Suggestion>, usize, usize) {
+    if staged {
+        let bass = inst.is_bass();
+        let songs: Vec<Vec<String>> = (0..40)
+            .map(|i| {
+                let (amp, cab) = if bass {
+                    match i % 7 {
+                        0..=2 => ("Bass_Amp_HT300B", "Bass_Cab_AT810BC_57_Cone"),
+                        3 | 4 => ("Bass_Amp_LT25B", "Bass_Cab_AT1150BC_Tube_Cone"),
+                        5 => ("DI_Amp_BassDriver", "Bass_Cab_BT410BC_Tube_Cone"),
+                        _ => ("Bass_Amp_CH300B", "Bass_Cab_BT410BC_Tube_Cone"),
+                    }
+                } else {
+                    match i % 7 {
+                        0..=2 => ("Amp_AT20", "Cab_EN212C_57_Cone"),
+                        3 | 4 => ("Amp_TW26", "Cab_TW110C_57_Cone"),
+                        5 => ("Pedal_TubeScreamer", "Cab_CA412C_57_Cone"),
+                        _ => ("Amp_MarshallPlexi", "Cab_GB412CMKIII_57_Cone"),
+                    }
+                };
+                vec![amp.to_string(), cab.to_string()]
+            })
+            .collect();
+        let have = |u: &crate::captures::suggest::Unit| {
+            u.rs.contains(&"Amp_TW26") || u.rs.contains(&"Bass_Amp_LT25B")
+        };
+        let (l, c) = crate::captures::suggest::rank(&songs, have, limit, bass);
+        return (l, c, songs.len());
+    }
+    crate::captures::suggested_captures(limit, inst)
+}
+
+/// Whether the guitar input listening now has been calibrated (the guitar page's Next moves on then): a run that
+/// asked for another go doesn't count, unless it was kept anyway (P36.3).
 fn guitar_ready(st: &AppState) -> bool {
-    calibrate::current_input(st).is_some_and(|(id, _)| calibrate::load(&st.config, &id).peak_db.is_some())
+    calibrate::current_input(st).is_some_and(|(id, _)| calibrate::load(&st.config, &id).calibrated())
 }
 
 /// How the guitar stands, in a line, and whether it's set up.
+/// What you play, from the setup's pick (P32.1): the default for inputs never set, and the input listening now.
+fn set_instrument(st: &mut AppState, inst: qrs_analysis::instrument::Instrument) {
+    st.config.set("instrument", serde_json::json!(inst.key()));
+    if let Some((id, _)) = calibrate::current_input(st) {
+        let mut c = calibrate::load(&st.config, &id);
+        c.instrument = inst;
+        calibrate::save(&mut st.config, &id, &c);
+    }
+    st.save_config();
+}
+
 fn guitar_status(st: &AppState) -> (String, bool) {
     match calibrate::current_input(st) {
-        Some((id, name)) if calibrate::load(&st.config, &id).peak_db.is_some() => {
-            (format!("Now: {name}, calibrated"), true)
+        Some((id, name)) if calibrate::load(&st.config, &id).calibrated() => {
+            match calibrate::load(&st.config, &id).caveat() {
+                Some(c) => (format!("Now: {name}, calibrated ({c})"), true),
+                None => (format!("Now: {name}, calibrated"), true),
+            }
         }
-        Some((_, name)) => (format!("Now: {name}, not calibrated yet"), false),
+        Some((id, name)) if calibrate::load(&st.config, &id).peak_db.is_some() => (
+            format!("Now: {name}: the last calibration asked for another go, calibrate again"),
+            false,
+        ),
+        Some((_, name)) => (format!("Now: {name}, its level not set yet"), false),
         None if st.audio.is_none() => ("The audio engine isn't running".into(), false),
-        None => ("No guitar input found yet: plug it in".into(), false),
+        None => (
+            format!("No input found yet: plug your {} in", st.instrument().noun()),
+            false,
+        ),
     }
 }
 

@@ -8,7 +8,7 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use egui::{Align2, CursorIcon, Rect, Sense, Ui, pos2, vec2};
+use egui::{Align2, CursorIcon, Rect, Sense, Ui, pos2};
 use qrs_analysis::detect::{EARLY, Live, NoteGroup};
 use qrs_analysis::{Held, Pluck};
 use qrs_ui::keys::jewel_lamp;
@@ -32,7 +32,7 @@ const BREATH: f32 = 1.6;
 /// The stone's diameter (points).
 const LAMP_D: f32 = 12.0;
 /// The lamp's name, beside it.
-const NAME: &str = "note-for-note";
+const NAME: &str = "note by note"; // (as Controls names it: P37.6b)
 
 /// The note the song is waiting at.
 #[derive(Clone, Copy, Debug)]
@@ -101,10 +101,7 @@ impl PlayerView {
                     "the song waits for each note  ·  W turns it off",
                 );
             } else {
-                self.say(
-                    "Note by note listens to your guitar: ",
-                    "no guitar input right now",
-                );
+                self.say("Note by note listens to your instrument: ", "no input right now");
             }
         } else {
             self.nbn_release(true);
@@ -227,17 +224,18 @@ impl PlayerView {
         self.waiting.map(|w| (w.gi, w.swell(), w.wrong()))
     }
 
-    /// The jewel lamp, above the transport cradle's right end: dark when off, a lit ruby when on, breathing while
-    /// the song waits for you; a word beside it while it's on.
-    pub(super) fn draw_nbn_lamp(&mut self, ui: &Ui, cradle: Rect) {
+    /// The jewel lamp, first on the lamps' row (its slot `x`, `w` wide, at `y`; P37.11): dark when off, a lit ruby
+    /// when on, breathing while the song waits for you; what for in its name's place then (back to `lo` at most).
+    pub(super) fn draw_nbn_lamp(&mut self, ui: &Ui, x: f32, w: f32, y: f32, compact: bool, lo: f32) {
         let th = t();
         let p = ui.painter();
-        let c = pos2(cradle.max.x - px(17.0), cradle.min.y - px(9.0));
+        let c = pos2(x + w - px(8.0), y);
         // its name left of it (owner request): quiet lowercase, as the seek bar's "bar 9 of 141", and clickable
         let name = text::Style::new(12.0, 500, th.caption);
-        let name_w = text::width(ui.ctx(), NAME, name);
-        let hit = Rect::from_center_size(c, vec2(px(26.0), px(18.0)));
-        let hit = Rect::from_min_max(pos2(hit.min.x - px(4.0) - name_w, hit.min.y), hit.max);
+        let hit = Rect::from_min_max(
+            pos2(x - px(2.0), y - px(super::footer_keys::ROW_HALF)),
+            pos2(x + w + px(2.0), y + px(super::footer_keys::ROW_HALF)),
+        );
         let resp = interact(ui, hit, "nbn-lamp", Sense::click());
         let lesson = self
             .coach
@@ -259,7 +257,7 @@ impl PlayerView {
         let hot = resp.hovered() && !lesson;
         let lamp = jewel_lamp(p, c, LAMP_D, self.nbn_lit, hot);
         let at = pos2(lamp.min.x - px(7.0), c.y);
-        let max_w = Some(cradle.width() - px(30.0));
+        let max_w = Some((at.x - lo).max(0.0));
         match self.waiting {
             // while the song waits, what for, in its place
             Some(w) if on => {
@@ -271,6 +269,7 @@ impl PlayerView {
                 text::caps(p, word, at, 9.0, col, Align2::RIGHT_CENTER, max_w);
             }
             // brightening as the lamp lights (or under the pointer)
+            _ if compact => {}
             _ => {
                 let lit = if hot { 1.0 } else { self.nbn_lit.min(1.0) };
                 let col = qrs_ui::raster::mix(th.caption, th.text, lit);
@@ -300,8 +299,8 @@ impl PlayerView {
             self.tip = Some((
                 tip.into(),
                 if lesson { String::new() } else { "W".into() },
-                pos2(c.x + px(14.0), hit.min.y - px(4.0)),
-                Align2::RIGHT_BOTTOM,
+                pos2(x, hit.min.y - px(4.0)),
+                Align2::LEFT_BOTTOM,
             ));
         }
         if resp.clicked() && !lesson {

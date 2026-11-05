@@ -1,5 +1,5 @@
 """Render a stretch of a song as a frame sequence and put it beside (or over) a reference video, for comparing
-motion frame by frame (the highway against Rocksmith's own, say).
+motion frame by frame (the highway against RS's own, say).
 
     python tools/hwclip.py --data SCRATCH_DATA --song "Take Me Out" --from 58 --to 66 \\
         --ref reference.mp4 --out SCRATCH_DIR [--fps 30] [--page 13l_highway] [--judge hit] [--stack]

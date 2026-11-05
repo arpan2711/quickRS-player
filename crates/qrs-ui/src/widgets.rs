@@ -8,10 +8,12 @@
 use egui::{Align2, Color32, CursorIcon, Id, Painter, Pos2, Rect, Response, Sense, Ui, Vec2};
 
 use crate::anim;
+use crate::glass;
 use crate::icons::{self, Icon};
 use crate::keys::{self, CapOn, Gem, keycap, keycap_width};
 use crate::material::Mat;
 use crate::paint::{self, Fill, PxRect, ipx, pt, pxr, sc};
+use crate::quiet;
 use crate::raster::{mix, pg};
 use crate::text::{self, Style};
 use crate::theme::{self, IVORY_INK, t};
@@ -69,6 +71,51 @@ pub struct ButtonStyle {
     pub icon_size: f32,
     /// A grey well instead of a raised key: it sinks further while pressed (like the tab toolbar's keys).
     pub sunk: bool,
+    /// On the glass look (the dark themes), a text key: its label and icon on the panel, a faint glass plate while
+    /// hovered (P34.5's keep-or-drop: keys used rarely, or beside the one main action). Elsewhere an ivory key.
+    pub plain: bool,
+    /// On the dark themes, the page's main action that isn't `primary`: it keeps the glass key where every other key
+    /// is quiet (P37.3, D110). No effect in Daylight or the classic look.
+    pub main: bool,
+}
+
+/// Which look a push button takes (P37.3: `draw_button` goes by it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    /// A read-only value in a small screen.
+    Value,
+    Disabled,
+    /// A grey well that sinks while pressed (`ButtonStyle::sunk`).
+    Sunk,
+    /// The glass look's text key (`ButtonStyle::plain`).
+    Plain,
+    /// The dark themes' quiet key: a dark well, the label in the text colours (`crate::quiet`).
+    Quiet,
+    /// The dark themes' glass key: the main action (`primary` or `main`).
+    Glass,
+    /// An ivory key (or cut from a material): Daylight, the classic look, and material keys everywhere.
+    Key,
+}
+
+/// The look `st` takes, `glass_on` being whether the glass look is on (the dark themes, not classic).
+pub fn look(st: &ButtonStyle, glass_on: bool) -> Look {
+    if st.value {
+        Look::Value
+    } else if !st.enabled {
+        Look::Disabled
+    } else if st.sunk {
+        Look::Sunk
+    } else if st.plain && glass_on {
+        Look::Plain
+    } else if st.mat.is_none() && glass_on {
+        if st.primary || st.main {
+            Look::Glass
+        } else {
+            Look::Quiet
+        }
+    } else {
+        Look::Key
+    }
 }
 
 impl Default for ButtonStyle {
@@ -89,6 +136,8 @@ impl Default for ButtonStyle {
             seed: 0,
             icon_size: 16.0,
             sunk: false,
+            plain: false,
+            main: false,
         }
     }
 }
@@ -97,6 +146,13 @@ impl ButtonStyle {
     pub fn primary() -> ButtonStyle {
         ButtonStyle {
             primary: true,
+            ..Default::default()
+        }
+    }
+    /// The page's main action on the dark themes (a glass key), a plain key elsewhere (see `main`).
+    pub fn main() -> ButtonStyle {
+        ButtonStyle {
+            main: true,
             ..Default::default()
         }
     }
@@ -191,16 +247,19 @@ pub fn draw_button(
     let mut lift = 0;
     let mut on_key = CapOn::Material;
     let mut shadow = 0.0;
+    // a glass key (P34.5): its state; the label is engraved under the plate and the room drawn over both
+    let mut glass_st = None;
     let (col, weight);
-    if st.value {
+    let lk = look(&st, glass::on());
+    if lk == Look::Value {
         paint::display_px(p, r, Some(rad), 3.0);
         col = st.color.unwrap_or(th.accent_ink);
         weight = 800;
-    } else if !st.enabled {
+    } else if lk == Look::Disabled {
         paint::inset_px(p, r, Some(rad), 2.0, Fill::Base);
         col = th.caption;
         weight = 700;
-    } else if st.sunk {
+    } else if lk == Look::Sunk {
         paint::inset_px(p, r, Some(rad), if down { 4.5 } else { 3.0 }, Fill::Base);
         col = if st.accent || st.primary {
             th.accent_ink
@@ -217,6 +276,48 @@ pub fn draw_button(
         if down {
             lift = -one;
         }
+    } else if lk == Look::Plain {
+        if hot {
+            glass::plate(p, r.to_rect(ppp), glass::State::of(true, down), 0.45);
+        }
+        col = if st.danger {
+            th.miss
+        } else if hot {
+            th.text
+        } else {
+            th.text_2
+        };
+        weight = 700;
+    } else if lk == Look::Quiet {
+        // pressed into the panel (P37.3): the well sinks deeper while pressed and the label with it
+        let qs = quiet::State::of(hot, down);
+        quiet::key_px(p, r, Some(rad), qs);
+        col = quiet::ink(qs, st.accent, st.danger, st.active);
+        weight = if st.active || st.accent { 800 } else { 700 };
+        if down {
+            lift = -one;
+        }
+    } else if lk == Look::Glass {
+        // the plate's sprites are lifted (hover) and sunk (pressed) already; the label follows them
+        let gs = glass::State::of(hot, down);
+        glass::plate(p, r.to_rect(ppp), gs, 1.0);
+        glass_st = Some(gs);
+        on_key = if st.primary { CapOn::Accent } else { CapOn::Ivory };
+        col = if st.danger {
+            th.miss
+        } else {
+            glass::ink(st.primary || st.accent)
+        };
+        weight = if st.primary || st.active || st.accent {
+            800
+        } else {
+            700
+        };
+        lift = match gs {
+            glass::State::Hover => one,
+            glass::State::Pressed => -one,
+            glass::State::Normal => 0,
+        };
     } else {
         lift = if hot && !down { one } else { 0 };
         let face = r.moved(0, -lift + if down { one } else { 0 });
@@ -280,19 +381,24 @@ pub fn draw_button(
             x += led_w;
         }
         if let Some(ic) = st.icon {
-            icons::icon(p, ic, ptp(x + icon_w / 2, cy, ppp), st.icon_size, col);
+            let at = ptp(x + icon_w / 2, cy, ppp);
+            match glass_st {
+                Some(gs) => {
+                    glass::icon(p, ic, at, st.icon_size, col, gs);
+                }
+                None => {
+                    icons::icon(p, ic, at, st.icon_size, col);
+                }
+            }
             x += icon_w + gap_i;
         }
         let room = right - pxr(9.0, s) - if key.is_empty() { 0 } else { key_w + pxr(6.0, s) } - x;
         if !label.is_empty() {
-            text::draw(
-                p,
-                label,
-                ptp(x, cy, ppp),
-                Align2::LEFT_CENTER,
-                lst,
-                Some(room.max(8) as f32 / ppp),
-            );
+            let max = Some(room.max(8) as f32 / ppp);
+            match glass_st {
+                Some(gs) => glass::label(p, label, ptp(x, cy, ppp), Align2::LEFT_CENTER, lst, max, gs),
+                None => text::draw(p, label, ptp(x, cy, ppp), Align2::LEFT_CENTER, lst, max),
+            };
         }
         if !key.is_empty() {
             keycap(
@@ -303,6 +409,9 @@ pub fn draw_button(
                 11.0,
                 on_key,
             );
+        }
+        if let Some(gs) = glass_st {
+            glass::room(p, r.to_rect(ppp), gs);
         }
         return;
     }
@@ -318,24 +427,31 @@ pub fn draw_button(
         x += led_w;
     }
     if let Some(ic) = st.icon {
-        icons::ink_icon(p, ic, ptp(x + icon_w / 2, cy, ppp), st.icon_size, col, shadow);
+        let at = ptp(x + icon_w / 2, cy, ppp);
+        match glass_st {
+            Some(gs) => {
+                glass::icon(p, ic, at, st.icon_size, col, gs);
+            }
+            None => {
+                icons::ink_icon(p, ic, at, st.icon_size, col, shadow);
+            }
+        }
         x += icon_w + gap_i;
     }
     if !label.is_empty() {
         let room = right - pxr(10.0, s) - x - (key_w + gap_k);
-        let tr = keys::label(
-            p,
-            label,
-            ptp(x, cy, ppp),
-            Align2::LEFT_CENTER,
-            lst,
-            Some(room.max(8) as f32 / ppp),
-            shadow,
-        );
+        let max = Some(room.max(8) as f32 / ppp);
+        let tr = match glass_st {
+            Some(gs) => glass::label(p, label, ptp(x, cy, ppp), Align2::LEFT_CENTER, lst, max, gs),
+            None => keys::label(p, label, ptp(x, cy, ppp), Align2::LEFT_CENTER, lst, max, shadow),
+        };
         x = (tr.max.x * ppp).round() as i32 + gap_k;
     }
     if !key.is_empty() {
         keycap(p, key, ptp(x, cy, ppp), Align2::LEFT_CENTER, 11.0, on_key);
+    }
+    if let Some(gs) = glass_st {
+        glass::room(p, r.to_rect(ppp), gs);
     }
 }
 
@@ -426,6 +542,21 @@ pub fn draw_round_button(
             );
             icons::icon(p, icon, ptp(cx, cy, ppp), icon_size, spec.ink);
         }
+        RoundKind::Ivory if quiet::on() => {
+            // a quiet disc (P37.3): pressed into the panel, the icon in the text colours (held down while active)
+            let qs = quiet::State::of(hot || active, down || active);
+            quiet::key_px(p, r, None, qs);
+            let ink = quiet::ink(quiet::State::of(hot, down), false, false, active);
+            let dy = if down || active { one } else { 0 };
+            icons::icon(p, icon, ptp(cx, r.y + r.h / 2 + dy, ppp), icon_size, ink);
+        }
+        RoundKind::Stone if glass::on() => {
+            // a glass disc (P34.5; the transport's stones are its own art), the sprites lifted and sunk already
+            let gs = glass::State::of(hot, down || active);
+            glass::plate(p, rect, gs, 1.0);
+            glass::icon(p, icon, ptp(cx, cy, ppp), icon_size, glass::ink(false), gs);
+            glass::room(p, rect, gs);
+        }
         RoundKind::Ivory => {
             keys::key_face_px(p, face, None, false, down || active);
             icons::icon(p, icon, ptp(cx, cy, ppp), icon_size, IVORY_INK);
@@ -466,6 +597,9 @@ pub struct Segmented<'a> {
     pub mat: Option<Mat>,
     /// Leave room under the labels for something drawn inside each option (e.g. a level meter).
     pub extra: bool,
+    /// On the glass look, the chosen option is its text and light alone, no key (a state, not an action: the
+    /// player's part tabs, P34.5).
+    pub plain: bool,
 }
 
 impl<'a> Segmented<'a> {
@@ -482,6 +616,7 @@ impl<'a> Segmented<'a> {
             keys: None,
             mat: None,
             extra: false,
+            plain: false,
         }
     }
 }
@@ -512,7 +647,14 @@ pub fn segmented(
     let ppp = p.pixels_per_point();
     let s = sc(ppp);
     let r = PxRect::of(rect, ppp);
-    paint::inset_px(p, r, Some(o.r as f64), 6.0, Fill::Base);
+    // the quiet look (P37.3): the track a dark well, the chosen option a low pad standing in it, accent ink
+    let quiet_sel = quiet::on() && o.mat.is_none() && !o.plain;
+    if quiet::on() {
+        quiet::key_px(p, r, Some(o.r as f64), quiet::State::Normal);
+    } else {
+        paint::inset_px(p, r, Some(o.r as f64), 6.0, Fill::Base);
+    }
+    let plain_sel = o.plain && glass::on();
     let (pd, g) = (pxr(o.pad, s), pxr(o.gap, s));
     let inner = PxRect {
         x: r.x + pd,
@@ -562,6 +704,10 @@ pub fn segmented(
         };
         match o.mat {
             Some(m) => keys::mat_key_px(p, kr, m, Some(o.inner_r as f64), false, 2),
+            None if plain_sel => {}
+            None if quiet_sel => {
+                paint::raised_px(p, kr, Some(o.inner_r as f64), 3.0, Fill::Color(quiet::pad()), 0)
+            }
             None => keys::key_face_px(p, kr, Some(o.inner_r as f64), false, false),
         }
     }
@@ -581,7 +727,13 @@ pub fn segmented(
             clicked = Some(i);
         }
         let col = if chosen {
-            m.map(|m| m.ink).unwrap_or(IVORY_INK)
+            m.map(|m| m.ink).unwrap_or(if plain_sel {
+                th.text
+            } else if quiet_sel {
+                th.accent_ink
+            } else {
+                keys::key_ink(false)
+            })
         } else if hot {
             th.text
         } else {
@@ -623,6 +775,7 @@ pub fn segmented(
             let on = if chosen {
                 match o.mat {
                     Some(mt) => CapOn::for_mat(mt),
+                    None if plain_sel || quiet_sel => CapOn::Material,
                     None => CapOn::Ivory,
                 }
             } else {
@@ -692,6 +845,10 @@ pub fn draw_switch(p: &Painter, rect: Rect, id: Id, on: bool) {
     let ppp = p.pixels_per_point();
     let s = sc(ppp);
     let r = PxRect::of(rect, ppp);
+    if quiet::on() {
+        draw_switch_quiet(p, r, id, on);
+        return;
+    }
     if on {
         paint::pill_px(p, r, th.accent);
         screen_line(
@@ -711,6 +868,32 @@ pub fn draw_switch(p: &Painter, rect: Rect, id: Id, on: bool) {
     keys::thumb_px(p, (x + k as f64 / 2.0) as i32, r.y + r.h / 2, k);
 }
 
+/// The quiet look's switch (P37.3, D111): a dark well (its floor a little lit when on), a graphite thumb that slides
+/// right when on and carries a lit accent light there (an unlit one when off): on and off read by place and light.
+fn draw_switch_quiet(p: &Painter, r: PxRect, id: Id, on: bool) {
+    let th = t();
+    let s = sc(p.pixels_per_point());
+    quiet::track_px(p, r, on);
+    let m = pxr(3.0, s).max(2);
+    let k = r.h - 2 * m;
+    let tt = anim::smooth(p.ctx(), (id, "switch"), if on { 1.0 } else { 0.0 }, 0.05, None) as f64;
+    let x = r.x as f64 + m as f64 + tt * (r.w - 2 * m - k) as f64;
+    let cx = (x + k as f64 / 2.0) as i32;
+    let cy = r.y + r.h / 2;
+    keys::quiet_thumb_px(p, cx, cy, k);
+    let led = ((k as f64 / s) as f32 * 0.34).clamp(4.0, 9.0);
+    if tt > 0.5 {
+        paint::led_px(p, cx, cy, led, th.accent);
+    } else {
+        paint::dot_px(
+            p,
+            (cx, cy),
+            (pxr(led, s) / 2).max(1),
+            quiet::floor(quiet::State::Pressed),
+        );
+    }
+}
+
 /// A sunken groove with an accent fill from the left (or from `zero`, for values either side of a centre) and an
 /// ivory thumb `knob` points across. Drawing only; returns the thumb's rect.
 pub fn slider(
@@ -721,6 +904,26 @@ pub fn slider(
     knob: f32,
     hot: bool,
     color: Option<Color32>,
+) -> Rect {
+    slider_with(p, groove, u, zero, knob, hot, color, 0)
+}
+
+/// A slider with `notches` evenly spaced stops (both ends among them) marked as small dots along its groove: a
+/// stepped value such as the difficulty's 11 levels (P35.1). Drawing only; returns the thumb's rect.
+pub fn slider_notched(p: &Painter, groove: Rect, u: f32, notches: usize, knob: f32, hot: bool) -> Rect {
+    slider_with(p, groove, u, None, knob, hot, None, notches)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn slider_with(
+    p: &Painter,
+    groove: Rect,
+    u: f32,
+    zero: Option<f32>,
+    knob: f32,
+    hot: bool,
+    color: Option<Color32>,
+    notches: usize,
 ) -> Rect {
     let th = t();
     let color = color.unwrap_or(th.accent);
@@ -780,13 +983,32 @@ pub fn slider(
             );
         }
     }
-    keys::thumb_px(
-        p,
-        x as i32,
-        gr.y + gr.h / 2,
-        pxr(knob + if hot { 2.0 } else { 0.0 }, s),
-    )
-    .to_rect(ppp)
+    if notches >= 2 {
+        // the stops: dark on the fill, the groove's tick colour beyond it
+        let r = pxr(1.5, s).max(1) as f32 / ppp;
+        let cy = (gr.y as f32 + gr.h as f32 / 2.0) / ppp;
+        let (x0, x1) = (inner.x + inner.h / 2, inner.x + inner.w - inner.h / 2);
+        for i in 0..notches {
+            let nx = x0 as f64 + (x1 - x0) as f64 * i as f64 / (notches - 1) as f64;
+            let on = nx <= x;
+            let c = if on {
+                mix(color, Color32::BLACK, 0.45)
+            } else {
+                th.tick
+            };
+            p.circle_filled(Pos2::new(nx.round() as f32 / ppp, cy), r, c);
+        }
+    }
+    let d = pxr(knob + if hot { 2.0 } else { 0.0 }, s);
+    if quiet::on() {
+        // a graphite thumb (P37.3) with a small accent light: the fill beside it already says where the value is
+        let r = keys::quiet_thumb_px(p, x as i32, gr.y + gr.h / 2, d);
+        let led = (d as f32 / s as f32 * 0.28).clamp(3.0, 7.0);
+        paint::led_px(p, x as i32, gr.y + gr.h / 2, led, color);
+        r.to_rect(ppp)
+    } else {
+        keys::thumb_px(p, x as i32, gr.y + gr.h / 2, d).to_rect(ppp)
+    }
 }
 
 /// A sunken scrollbar groove with a raised thumb (wider than the groove; or cut from a material) and an accent
@@ -912,6 +1134,72 @@ pub fn radio_rows(
     (rows, clicked)
 }
 
+/// The height of a `fold_row` (a title and a hint under it).
+pub const FOLD_ROW_H: f32 = 52.0;
+
+/// A fold (the settings' "›" rows, one level deep, P35.5): a shallow well across `rect` with a chevron (right when
+/// closed, down when open), the title and a hint line under it; the whole row opens or closes what's under it.
+/// On the glass look a faint glass plate lights it while hovered, elsewhere it rises. Returns the row's response
+/// (`clicked()` toggles).
+pub fn fold_row(ui: &Ui, rect: Rect, id: impl egui::AsId, title: &str, hint: &str, open: bool) -> Response {
+    let th = t();
+    let p = ui.painter();
+    let resp = interact(ui, rect, id, Sense::click());
+    let hot = resp.hovered();
+    let down = resp.is_pointer_button_down_on();
+    if hot {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    if (hot || open) && !glass::on() {
+        paint::raised(p, rect, Some(14.0), if down { 2.0 } else { 3.0 }, Fill::Base, 0.0);
+    } else {
+        paint::inset(p, rect, Some(14.0), 2.0, Fill::Base);
+        if hot && glass::on() {
+            glass::plate(p, rect, glass::State::of(hot, down), 0.45);
+        }
+    }
+    let px = crate::units::px;
+    let cy = rect.center().y;
+    let chev = if open { Icon::Down } else { Icon::Right };
+    icons::icon(
+        p,
+        chev,
+        Pos2::new(rect.min.x + px(22.0), cy),
+        22.0,
+        if hot { th.accent } else { th.text_2 },
+    );
+    let x = rect.min.x + px(42.0);
+    let w = rect.max.x - x - px(16.0);
+    if hint.is_empty() {
+        text::draw(
+            p,
+            title,
+            Pos2::new(x, cy),
+            Align2::LEFT_CENTER,
+            Style::new(15.0, 700, th.text),
+            Some(w),
+        );
+    } else {
+        text::draw(
+            p,
+            title,
+            Pos2::new(x, cy - px(9.0)),
+            Align2::LEFT_CENTER,
+            Style::new(15.0, 700, th.text),
+            Some(w),
+        );
+        text::draw(
+            p,
+            hint,
+            Pos2::new(x, cy + px(11.0)),
+            Align2::LEFT_CENTER,
+            Style::new(12.0, 500, th.caption),
+            Some(w),
+        );
+    }
+    resp
+}
+
 /// A raised pill with a short message (the part in `tail` in the accent): `neu.toast`, the text's box plus
 /// `px(44)` by `px(20)`, centred on `int(center)`.
 pub fn toast(p: &Painter, msg: &str, center: Pos2, tail: &str) {
@@ -952,5 +1240,94 @@ pub fn toast(p: &Painter, msg: &str, center: Pos2, tail: &str) {
             },
             None,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::{self, ThemeName};
+
+    fn styles() -> Vec<ButtonStyle> {
+        let d = ButtonStyle::default();
+        vec![
+            d,
+            ButtonStyle::primary(),
+            ButtonStyle::main(),
+            ButtonStyle::active(true),
+            ButtonStyle { accent: true, ..d },
+            ButtonStyle { danger: true, ..d },
+            ButtonStyle { plain: true, ..d },
+            ButtonStyle { sunk: true, ..d },
+            ButtonStyle {
+                mat: Some(Mat::Tortoise),
+                ..d
+            },
+            ButtonStyle::value(),
+            ButtonStyle { enabled: false, ..d },
+        ]
+    }
+
+    /// Daylight and the classic look take the old path for every style: no quiet or glass key there.
+    #[test]
+    fn daylight_and_classic_keep_the_old_keys() {
+        let _lock = crate::raster::THEME_LOCK.lock();
+        for (name, classic) in [
+            (ThemeName::Daylight, false),
+            (ThemeName::Daylight, true),
+            (ThemeName::Midnight, true),
+            (ThemeName::Graphite, true),
+        ] {
+            theme::set_theme(name);
+            theme::set_classic(classic);
+            assert!(!glass::on() && !quiet::on());
+            for st in styles() {
+                let lk = look(&st, glass::on());
+                assert!(
+                    !matches!(lk, Look::Quiet | Look::Glass | Look::Plain),
+                    "{name:?} {st:?}"
+                );
+            }
+            // `main` changes nothing outside the dark themes
+            assert_eq!(
+                look(&ButtonStyle::main(), glass::on()),
+                look(&ButtonStyle::default(), glass::on())
+            );
+        }
+        theme::set_classic(false);
+        theme::set_theme(ThemeName::Midnight);
+    }
+
+    /// On the dark themes only the main action is glass; the rest are quiet (materials, plain, sunk, values as before).
+    #[test]
+    fn the_dark_themes_keep_glass_for_the_main_action() {
+        let _lock = crate::raster::THEME_LOCK.lock();
+        for name in [ThemeName::Midnight, ThemeName::Graphite] {
+            theme::set_theme(name);
+            theme::set_classic(false);
+            let on = glass::on();
+            assert!(on);
+            let d = ButtonStyle::default();
+            assert_eq!(look(&d, on), Look::Quiet);
+            assert_eq!(look(&ButtonStyle::active(true), on), Look::Quiet);
+            assert_eq!(look(&ButtonStyle { danger: true, ..d }, on), Look::Quiet);
+            assert_eq!(look(&ButtonStyle::primary(), on), Look::Glass);
+            assert_eq!(look(&ButtonStyle::main(), on), Look::Glass);
+            assert_eq!(look(&ButtonStyle { plain: true, ..d }, on), Look::Plain);
+            assert_eq!(look(&ButtonStyle { sunk: true, ..d }, on), Look::Sunk);
+            assert_eq!(
+                look(
+                    &ButtonStyle {
+                        mat: Some(Mat::Tortoise),
+                        ..d
+                    },
+                    on
+                ),
+                Look::Key
+            );
+            assert_eq!(look(&ButtonStyle::value(), on), Look::Value);
+            assert_eq!(look(&ButtonStyle { enabled: false, ..d }, on), Look::Disabled);
+        }
+        theme::set_theme(ThemeName::Midnight);
     }
 }

@@ -174,6 +174,7 @@ mod tests {
                 name: "Lead".into(),
                 tuning: "E Standard".into(),
                 bonus: false,
+                level: None,
             }],
             ..Default::default()
         }

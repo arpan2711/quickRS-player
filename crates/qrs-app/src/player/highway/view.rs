@@ -1,7 +1,7 @@
 //! The highway's 3D world and its one pinhole camera (P30, D78; research/spec/01_camera_geometry.md).
 //!
 //! World units are **string gaps** (g). X runs along the neck toward the higher frets (wire n at
-//! 3.58 · (1 − 0.9752ⁿ) / (1 − 0.9752): fitted on four Rocksmith videos), Y up (the strings are stacked at the
+//! 3.58 · (1 − 0.9752ⁿ) / (1 − 0.9752): fitted on four RS videos), Y up (the strings are stacked at the
 //! strike plane Z = 0, the bottom string at Y = 0, the top at Y = 5), Z away from the player. The floor is the plane
 //! Y = `FLOOR`. Everything on the highway is a point in this world projected through one camera; nothing rides a
 //! lane or drops (the old P19.7 look).
@@ -39,9 +39,22 @@ const ANCHOR_Y: f32 = 0.91;
 const CENTRE: f32 = -1.3;
 /// Camera distance per fret across (spec 01: 2.8; the side-by-sides agree within ~10%: Otherside wants 7% more,
 /// Infected 10% less, Cowboys 16% less, which spec 01 also finds different), and its range (26-70 g measured; the
-/// floor 35 keeps Panic's low chords at Rocksmith's zoom).
+/// floor 35 keeps Panic's low chords at RS's zoom).
 const D_PER_FRET: f32 = 2.8;
 const DIST: (f32, f32) = (35.0, 75.0);
+/// The bottom of the neck's fret numbers (scene's `neck_numbers`: tops at −0.75 g, 1.35 g tall).
+const NUMBERS_BOTTOM: f32 = -0.75 - 1.35;
+
+/// The player's note size (P37.6d, D143): the camera brought closer by this factor (1 = RS's distance, the
+/// default). Closer, the frets and gems are bigger and fewer frets fit, so the camera turns toward the hand's window
+/// as it comes in: the window's middle moves toward the screen's middle column (where the pivot is) in step, and the
+/// window stays framed. The highway's depth is a distance in D, so the seconds of notes ahead don't change.
+pub fn zoomed(cam: (f32, f32), zoom: f32) -> (f32, f32) {
+    let z = zoom.max(0.5);
+    // the hand's window's middle sits this far right of the pivot fret (RsCamera::target: c = mid − 0.692 + 0.030 v)
+    let off = 0.692 - 0.030 * cam.1 - CENTRE;
+    (cam.0 + (1.0 - 1.0 / z) * off, cam.1 / z)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct V3 {
@@ -146,12 +159,18 @@ fn axes() -> [V3; 3] {
 impl View {
     /// `cam` = (fret wire at the screen's middle, frets across); `c` = seconds a note takes from the strike plane to
     /// the camera plane (0.375 × DynamicVisualDensity, divided by the speed setting).
-    pub fn new(well: Rect, cam: (f32, f32), now: f64, c: f64, n_str: usize, invert: bool) -> View {
+    ///
+    /// `zoom` (the note size, [`zoomed`]): the distance divided by it, after the floor and ceiling that keep
+    /// RS's framing at 1, so the default is exactly as before.
+    pub fn new(well: Rect, cam: (f32, f32), zoom: f32, now: f64, c: f64, n_str: usize, invert: bool) -> View {
         let h = well.height().max(1.0);
-        let f = F_W * well.width().max(1.0);
+        // 60° across a 16:9 frame; a wider window keeps 16:9's vertical view and shows more neck to the sides
+        // (the fixed horizontal 60° cropped the fret numbers off the bottom in a wide window: tester, 1440p)
+        let f = F_W * well.width().max(1.0).min(h * 16.0 / 9.0);
         let ctr = well.center();
         let ax = axes();
-        let d = (D_PER_FRET * cam.1).clamp(DIST.0, DIST.1);
+        let d = (D_PER_FRET * cam.1).clamp(DIST.0, DIST.1) / zoom.max(0.5);
+        let cam = zoomed(cam, zoom);
         // the ray through the anchor pixel, in world coordinates; the camera sits on it, D from the string plane
         let dc = v3(0.0, (ANCHOR_Y - 0.5) * h / f, 1.0).norm();
         let dw = ax[0] * dc.x + ax[1] * dc.y + ax[2] * dc.z;
@@ -169,6 +188,28 @@ impl View {
             speed: d / c.max(0.05) as f32,
             n_str,
             invert,
+        }
+    }
+
+    /// Keeps the fret numbers under the camera's frame on screen: the neck slopes down to the right, so in a short
+    /// window the lowest can fall off the bottom; lift the picture by the overflow (a pan: same perspective). Only
+    /// the camera decides it (`cam` as in [`View::new`]): the line the numbers stand on, sampled across the frame, so
+    /// the lift moves with the camera and a number lighting up never jumps the picture (owner report, P30.9).
+    pub fn keep_numbers(&mut self, cam: (f32, f32), zoom: f32) {
+        let cam = zoomed(cam, zoom);
+        let (well, h) = (self.well, self.well.height());
+        // the frame's frets, as the planned camera puts them: its middle wire 0.459 of the way across
+        let (fl, fr) = ((cam.0 - 0.541 * cam.1).max(0.0), cam.0 + 0.459 * cam.1);
+        const N: usize = 48;
+        let low = (0..=N)
+            .map(|i| fl + (fr - fl) * i as f32 / N as f32)
+            .filter_map(|u| self.pt(v3(wire(u), NUMBERS_BOTTOM, 0.0)))
+            .filter(|q| q.x > well.min.x && q.x < well.max.x)
+            .map(|q| q.y)
+            .fold(f32::MIN, f32::max);
+        let over = low - (well.max.y - 0.015 * h);
+        if over > 0.0 {
+            self.c.y -= over.min(0.15 * h);
         }
     }
 
@@ -251,6 +292,7 @@ mod tests {
         View::new(
             Rect::from_min_size(pos2(0.0, 0.0), eframe::egui::vec2(1920.0, 1080.0)),
             (3.0, 14.0),
+            1.0,
             0.0,
             0.49,
             6,
@@ -285,6 +327,66 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_window_keeps_the_fret_numbers_on_screen() {
+        // the tester's 1440p window (≈1.9:1), an ultrawide and 16:9: the hand window's numbers stay inside
+        for (w, h) in [
+            (1750.0, 930.0),
+            (2560.0, 1080.0),
+            (1920.0, 1080.0),
+            (1600.0, 600.0),
+        ] {
+            for (cam, win) in [
+                ((2.0, 11.0), (1, 4)),
+                ((7.0, 12.0), (7, 4)),
+                ((14.0, 14.0), (12, 5)),
+            ] {
+                let mut v = View::new(
+                    Rect::from_min_size(pos2(0.0, 0.0), eframe::egui::vec2(w, h)),
+                    cam,
+                    1.0,
+                    0.0,
+                    0.49,
+                    6,
+                    false,
+                );
+                v.keep_numbers(cam, 1.0);
+                for n in win.0..win.0 + win.1 {
+                    if let Some(q) = v.pt(v3(slot(n), NUMBERS_BOTTOM, 0.0))
+                        && q.x > 0.0
+                        && q.x < w
+                    {
+                        assert!(q.y <= h, "{w}x{h} {cam:?} fret {n}: {q:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_numbers_lift_moves_with_the_camera_only() {
+        // a short wide window, where the lift is in play: small camera steps give small lift steps (no jump), and the
+        // same camera always gives the same lift (nothing else feeds it)
+        let well = Rect::from_min_size(pos2(0.0, 0.0), eframe::egui::vec2(1600.0, 600.0));
+        let lift = |cam: (f32, f32)| {
+            let mut v = View::new(well, cam, 1.0, 0.0, 0.49, 6, false);
+            let y0 = v.c.y;
+            v.keep_numbers(cam, 1.0);
+            y0 - v.c.y
+        };
+        let mut last = lift((2.0, 11.0));
+        let mut most = last;
+        for i in 1..=400 {
+            let cam = (2.0 + 12.0 * i as f32 / 400.0, 11.0 + 3.0 * i as f32 / 400.0);
+            let l = lift(cam);
+            assert!((l - last).abs() < 0.01 * 600.0, "{cam:?}: {last} -> {l}");
+            assert_eq!(l, lift(cam));
+            most = most.max(l);
+            last = l;
+        }
+        assert!(most > 0.0, "the test never reached a lift");
+    }
+
+    #[test]
     fn depth_scales_with_the_camera_and_the_horizon_is_a_distance() {
         let v = view();
         // D = D_PER_FRET × frets across; the far end at 4.87 D is 4.87 c seconds out
@@ -301,5 +403,53 @@ mod tests {
         let (a, b, c) = (p(0.0), p(30.0), p(200.0));
         let cross = (b - a).x * (c - a).y - (b - a).y * (c - a).x;
         assert!(cross.abs() < 1.0, "{cross}");
+    }
+
+    #[test]
+    fn closer_notes_keep_the_hand_window_framed() {
+        // RS's camera on 4-fret windows low, middle and high on the neck, at every note size: the window's
+        // frets stay on screen at the strike plane with their numbers, and the frets grow with the size
+        use qrs_analysis::hwcamera::RsCamera;
+        for (w, h) in [(1920.0, 1080.0), (960.0, 630.0), (1600.0, 600.0)] {
+            let well = Rect::from_min_size(pos2(0.0, 0.0), eframe::egui::vec2(w, h));
+            for lo in [1, 3, 5, 7, 9, 12, 15, 17] {
+                let cam = RsCamera::new(&[(0.0, 60.0, lo, 4)], &[0.0], 60.0).at(30.0);
+                let mut last = 0.0;
+                for zoom in [0.85, 1.0, 1.25, 1.5, 1.8] {
+                    let mut v = View::new(well, cam, zoom, 0.0, 0.49, 6, false);
+                    v.keep_numbers(cam, zoom);
+                    for f in lo..lo + 4 {
+                        for y in [0.0, 5.0] {
+                            let q = v.pt(v3(slot(f), y, 0.0)).unwrap();
+                            assert!(
+                                q.x > 0.02 * w && q.x < 0.98 * w && q.y > 0.0 && q.y < h,
+                                "{w}x{h} window {lo} zoom {zoom} fret {f}: {q:?}"
+                            );
+                        }
+                        let q = v.pt(v3(slot(f), NUMBERS_BOTTOM, 0.0)).unwrap();
+                        assert!(
+                            q.y <= h + 0.5,
+                            "{w}x{h} window {lo} zoom {zoom} number {f}: {q:?}"
+                        );
+                    }
+                    let a = v.pt(v3(wire(lo as f32 - 1.0), 0.0, 0.0)).unwrap();
+                    let b = v.pt(v3(wire((lo + 3) as f32), 0.0, 0.0)).unwrap();
+                    assert!(b.x - a.x > last, "zoom {zoom}: the window grows");
+                    last = b.x - a.x;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_default_size_is_the_camera_as_it_was() {
+        assert_eq!(zoomed((5.5, 11.0), 1.0), (5.5, 11.0));
+        let well = Rect::from_min_size(pos2(0.0, 0.0), eframe::egui::vec2(1920.0, 1080.0));
+        let v = View::new(well, (3.0, 14.0), 1.0, 0.0, 0.49, 6, false);
+        assert!((v.d - D_PER_FRET * 14.0).abs() < 1e-4);
+        // and the seconds ahead stay the same however close
+        let near = View::new(well, (3.0, 14.0), 1.8, 0.0, 0.49, 6, false);
+        assert!((near.look() - v.look()).abs() < 1e-6);
+        assert!(near.d < v.d);
     }
 }

@@ -9,7 +9,7 @@ use qrs_audio::devices::{self, rank::rank_inputs};
 use qrs_audio::{Audio, AudioPrefs, Choice, DevicePref};
 use qrs_formats::{Keys, Package, song_audio::song_audio};
 
-/// Library folders from a config.json (for finding the Rocksmith install).
+/// Library folders from a config.json (for finding the RS install).
 pub fn library_dirs(config: Option<&Path>) -> Vec<PathBuf> {
     let p = config
         .map(Path::to_path_buf)
@@ -24,7 +24,7 @@ pub fn library_dirs(config: Option<&Path>) -> Vec<PathBuf> {
 
 #[derive(clap::Args)]
 pub struct DeviceArgs {
-    /// config.json with library_dirs (to find the Rocksmith install and its RS_ASIO setup)
+    /// config.json with library_dirs (to find the RS install and its RS_ASIO setup)
     #[arg(long)]
     pub config: Option<PathBuf>,
     /// Every string property of every WASAPI endpoint
@@ -48,7 +48,7 @@ pub fn devices(args: DeviceArgs) -> anyhow::Result<()> {
     }
     let dirs = library_dirs(args.config.as_deref());
     let list = qrs_audio::backend::enumerate();
-    let rs = devices::rocksmith::find_setup(&dirs);
+    let rs = devices::rs_setup::find_setup(&dirs);
     println!("Inputs (best first):");
     for r in rank_inputs(&list, rs.as_ref()) {
         let d = &r.device;
@@ -82,7 +82,7 @@ pub fn devices(args: DeviceArgs) -> anyhow::Result<()> {
     match &rs {
         Some(s) => {
             println!(
-                "\nRocksmith 2014 at {}: exclusive {}, latency buffer {}, microphone {}",
+                "\nRS2014 at {}: exclusive {}, latency buffer {}, microphone {}",
                 s.folder.display(),
                 s.exclusive_mode,
                 s.latency_buffer,
@@ -100,7 +100,7 @@ pub fn devices(args: DeviceArgs) -> anyhow::Result<()> {
                 );
             }
         }
-        None => println!("\nRocksmith 2014: not found (give --config with your library folders)"),
+        None => println!("\nRS2014: not found (give --config with your library folders)"),
     }
     let plan = devices::plan(&AudioPrefs::default(), &list, rs.as_ref());
     println!("\nAutomatic choice:");

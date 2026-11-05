@@ -2,7 +2,10 @@
 //! Gemini Reverb is a blackface combo (black panel, skirted numbered knobs, silver-turquoise grille), the Tweedle Dee a
 //! tweed combo (chrome top plate, brown pointers), the Dartford 30 a copper-topped combo (cream chicken-heads, brown
 //! diamond grille), the Perspex 100 and Bletchley 800 Marshall-style heads (gold panel along the top, gold-capped
-//! knobs), the Petaluma Plate a chrome diamond-plate head, the Blue Line 300 a silver-panelled bass head.
+//! knobs), the Petaluma Plate a chrome diamond-plate head, the Blue Line 300 a silver-panelled bass head. P41.2: the
+//! Lagunitas C+ a black head with a cane grille and its five graphic-EQ sliders on the panel, the Snakeskin 100 a
+//! chrome-panelled head in snakeskin, the Tangerine 50 an orange head with a cream panel and a basket-weave grille,
+//! the Surrey 103 a black head with a grey panel and the name on a plate on the grille.
 //!
 //! `Detail::Board` is the whole front at the unit's own proportions; `Detail::Full` is the same front with the panel
 //! enlarged to half the height so the controls are big enough to use. Everything static (covering, cloth, panel,
@@ -388,24 +391,6 @@ impl Cv {
             );
         }
     }
-
-    /// A bat toggle from the front: hex nut and lever, up or down.
-    pub(super) fn bat(&mut self, c: Pos2, s: f32, up: bool) {
-        let nut: Vec<Pos2> = (0..6).map(|i| at(c, s * 0.44, 30.0 + 60.0 * i as f32)).collect();
-        self.poly(&nut, 0xb4b9be, 1.0);
-        self.disc(c, s * 0.24, 0x8e9399, 1.0);
-        let sg = if up { -1.0 } else { 1.0 };
-        let lever = [
-            c + vec2(-s * 0.09, 0.0),
-            c + vec2(-s * 0.17, sg * s * 0.84),
-            c + vec2(0.0, sg * s * 0.98),
-            c + vec2(s * 0.17, sg * s * 0.84),
-            c + vec2(s * 0.09, 0.0),
-        ];
-        let sh: Vec<Pos2> = lever.iter().map(|&p| p + vec2(s * 0.08, s * 0.06)).collect();
-        self.poly(&sh, 0x000000, 0.35);
-        self.poly(&lever, 0xdfe2e5, 1.0);
-    }
 }
 
 // -- textures ---------------------------------------------------------------------------------------------------------
@@ -448,6 +433,9 @@ pub(super) enum Cloth {
     Tweed,
     /// Blue check (flip-top covering).
     BlueCheck,
+    /// The Mark combo's cane (wicker) grille; the Orange guitar head's beige basket weave (P41.2).
+    Cane,
+    BasketTan,
     /// Chrome diamond plate.
     Tread,
 }
@@ -527,6 +515,8 @@ pub(super) fn cloth(c: Cloth, x: f32, y: f32, k: f32) -> [f32; 3] {
             d
         }
         Cloth::Basket => basket(x, y, 0x1a1918, 0x3a3631, 0x080706, 5.0, 0.85, 0.9),
+        Cloth::Cane => basket(x, y, 0x9c7a45, 0xd8bb82, 0x3d2a14, 7.0, 0.8, 0.9),
+        Cloth::BasketTan => basket(x, y, 0xb9a986, 0xe6dcc2, 0x5e533e, 4.5, 0.8, 0.85),
         Cloth::SaltPepper => {
             let mut d = basket(x, y, 0x77705f, 0xddd8cb, 0x26241f, 5.0, 0.75, 0.85);
             let (tx, ty) = (x.rem_euclid(5.0), y.rem_euclid(5.0));
@@ -1095,15 +1085,15 @@ pub(super) fn lab(
     style: Lettering,
 ) {
     if style == Lettering::Print {
-        text::caps(
-            p,
-            &s.to_uppercase(),
-            pos,
-            size,
-            color,
-            anchor,
-            Some(max_w.max(4.0)),
-        );
+        // (a label a little too wide for its knob prints smaller before it's cut: "TREB…", P37.6c)
+        let up = s.to_uppercase();
+        let w = text::width(p.ctx(), &up, text::Style::caps(size, color));
+        let size = if w > max_w && w > 0.0 {
+            (size * max_w / w * 0.95).max(size * 0.5)
+        } else {
+            size
+        };
+        text::caps(p, &up, pos, size, color, anchor, Some(max_w.max(4.0)));
     } else {
         // (the display faces run small at a label's size: all capitals, little x-height)
         let k = if style == Lettering::Condensed { 1.3 } else { 1.0 };
@@ -1151,6 +1141,47 @@ pub(super) enum Amp {
     Jcm,
     Mesa,
     Svt,
+    /// The bass heads in the Blue Line 300's build (P37.6c): the flip-top's head, the solid-state head, the
+    /// orange all-tube head.
+    B15,
+    Gk,
+    Orange,
+    /// The guitar heads of P41.2 (D167): the Mark, the SLO, the Orange-style guitar head, the Hiwatt-style head.
+    Mark,
+    Slo,
+    Tang,
+    Hiwatt,
+}
+
+impl Amp {
+    /// A head drawn in the SVT's build (a panel over a grille).
+    fn head(self) -> bool {
+        matches!(
+            self,
+            Amp::Svt | Amp::B15 | Amp::Gk | Amp::Orange | Amp::Mark | Amp::Slo | Amp::Tang | Amp::Hiwatt
+        )
+    }
+}
+
+/// The amps with a designed face (P37.2: the new bass heads use the generic one until theirs are drawn).
+pub(super) fn designed(id: &str) -> bool {
+    matches!(
+        id,
+        "amp_clean"
+            | "amp_tweed"
+            | "amp_chime"
+            | "amp_crunch"
+            | "amp_lead"
+            | "amp_modern"
+            | "amp_bass"
+            | "amp_b15"
+            | "amp_bass_ss"
+            | "amp_bass_tube"
+            | "amp_cali"
+            | "amp_snake"
+            | "amp_tangerine"
+            | "amp_surrey"
+    )
 }
 
 pub(super) fn amp_of(id: &str) -> Amp {
@@ -1161,6 +1192,13 @@ pub(super) fn amp_of(id: &str) -> Amp {
         "amp_crunch" => Amp::Plexi,
         "amp_lead" => Amp::Jcm,
         "amp_modern" => Amp::Mesa,
+        "amp_b15" => Amp::B15,
+        "amp_bass_ss" => Amp::Gk,
+        "amp_bass_tube" => Amp::Orange,
+        "amp_cali" => Amp::Mark,
+        "amp_snake" => Amp::Slo,
+        "amp_tangerine" => Amp::Tang,
+        "amp_surrey" => Amp::Hiwatt,
         _ => Amp::Svt,
     }
 }
@@ -1183,10 +1221,10 @@ enum It {
     /// The name on the panel (only where there's room).
     Logo(f32),
     Fuse,
-    /// The Mesa's mode switch.
-    Mode,
-    /// The Ampeg's ULTRA LO / HI toggles.
-    Ultra,
+    /// The Rectifier's mode switch (P41.2: a real three-way switch on the face, its knob index).
+    Mode(usize),
+    /// The Mark's five-band graphic EQ: five sliders from this knob index (P41.2).
+    Geq(usize),
     Gap(f32),
 }
 
@@ -1201,37 +1239,39 @@ impl It {
             It::Standby | It::Power => 0.55,
             It::Logo(w) => w,
             It::Fuse => 0.5,
-            It::Mode => 0.85,
-            It::Ultra => 0.9,
+            It::Mode(_) => 0.85,
+            It::Geq(_) => 3.0,
             It::Gap(g) => g,
         }
     }
 
     fn decor(self) -> bool {
-        matches!(
-            self,
-            It::Jacks(_) | It::Logo(_) | It::Fuse | It::Mode | It::Ultra | It::Gap(_) | It::Power
-        )
+        matches!(self, It::Jacks(_) | It::Logo(_) | It::Fuse | It::Power)
     }
 }
 
 fn items(a: Amp) -> &'static [It] {
     use It::*;
     match a {
+        // (P37.6c, D140: a control the real amp doesn't have isn't on its panel: Master on the Twin, the tweed, the
+        // Plexi and the B-15, Depth on the Rectifier sit on the "added" plate beside the face)
+        // (P41.2, D169: as the real panel runs, Bright then Volume, Treble, Middle, Bass, Reverb, Speed, Intensity)
         Amp::Twin => &[
             Jacks(2),
-            Tog(4),
-            K(0),
+            Tog(0),
             K(1),
             K(2),
             K(3),
+            K(4),
             K(5),
-            Logo(2.4),
+            K(6),
+            K(7),
+            Logo(1.6),
             Standby,
             Power,
             Jewel,
         ],
-        Amp::Tweed => &[Logo(1.9), Jacks(4), K(0), K(1), K(2), Fuse, Jewel, Standby, Power],
+        Amp::Tweed => &[Logo(1.9), Jacks(4), K(0), K(1), Fuse, Jewel, Standby, Power],
         Amp::Ac30 => &[
             Jacks(4),
             K(0),
@@ -1254,7 +1294,6 @@ fn items(a: Amp) -> &'static [It] {
             K(2),
             K(3),
             K(4),
-            K(5),
             Jacks(4),
         ],
         Amp::Jcm => &[
@@ -1274,13 +1313,12 @@ fn items(a: Amp) -> &'static [It] {
             Jewel,
             Standby,
             Logo(1.5),
-            Mode,
+            Mode(7),
             K(0),
             K(1),
             K(2),
             K(3),
             K(4),
-            K(5),
             K(6),
             Jacks(1),
         ],
@@ -1292,11 +1330,108 @@ fn items(a: Amp) -> &'static [It] {
             K(3),
             K(4),
             K(5),
-            Ultra,
+            Tog(6),
+            Gap(0.4),
+            Tog(7),
             Power,
             Standby,
             Jewel,
             Logo(1.1),
+        ],
+        Amp::B15 => &[
+            Jacks(2),
+            Tog(3),
+            K(0),
+            K(1),
+            K(2),
+            Gap(0.3),
+            Power,
+            Standby,
+            Jewel,
+            Logo(1.3),
+        ],
+        Amp::Gk => &[
+            Jacks(1),
+            K(0),
+            K(1),
+            K(2),
+            K(3),
+            K(4),
+            Tog(5),
+            K(6),
+            Power,
+            Standby,
+            Jewel,
+            Logo(1.1),
+        ],
+        Amp::Orange => &[
+            Jacks(1),
+            K(0),
+            K(1),
+            K(2),
+            K(3),
+            K(4),
+            Gap(0.3),
+            Power,
+            Standby,
+            Jewel,
+            Logo(1.3),
+        ],
+        // the Mark IIC+: Volume (our Drive), Treble, Bass, Middle, Master, Presence, the graphic EQ at the right
+        Amp::Mark => &[
+            Jacks(1),
+            K(0),
+            K(1),
+            K(2),
+            K(3),
+            K(4),
+            K(5),
+            Geq(6),
+            Standby,
+            Power,
+            Jewel,
+        ],
+        // the SLO-100: Gain, Bass, Middle, Treble, Master, Presence
+        Amp::Slo => &[
+            Jacks(1),
+            K(0),
+            K(1),
+            K(2),
+            K(3),
+            K(4),
+            K(5),
+            Logo(1.3),
+            Standby,
+            Power,
+            Jewel,
+        ],
+        // the Orange dirty channel: Volume, Treble, Middle, Bass, Gain
+        Amp::Tang => &[
+            Logo(1.4),
+            K(0),
+            K(1),
+            K(2),
+            K(3),
+            K(4),
+            Gap(0.3),
+            Jacks(1),
+            Standby,
+            Power,
+            Jewel,
+        ],
+        // the DR103: four inputs, Normal, Brilliant, Bass, Treble, Middle, Presence, Master
+        Amp::Hiwatt => &[
+            Jacks(4),
+            K(0),
+            K(1),
+            K(2),
+            K(3),
+            K(4),
+            K(5),
+            K(6),
+            Standby,
+            Power,
+            Jewel,
         ],
     }
 }
@@ -1318,7 +1453,12 @@ fn dress(a: Amp) -> Dress {
         Amp::Ac30 => (Knob::Cream, 0x2a160a, Lettering::Print, false, 0xc21e1e),
         Amp::Plexi | Amp::Jcm => (Knob::Gold, 0x161616, Lettering::Condensed, true, 0xb5121b),
         Amp::Mesa => (Knob::Dome, 0xededed, Lettering::Condensed, true, 0xb3141c),
-        Amp::Svt => (Knob::Silver, 0x161616, Lettering::Print, true, 0xc8102e),
+        Amp::Svt | Amp::B15 => (Knob::Silver, 0x161616, Lettering::Print, true, 0xc8102e),
+        Amp::Gk => (Knob::Dome, 0xeeeeee, Lettering::Condensed, true, 0xd8401e),
+        Amp::Orange | Amp::Tang => (Knob::BlackChicken, 0x161616, Lettering::Heavy, true, 0xe8761e),
+        Amp::Mark => (Knob::Silver, 0xe9e6dc, Lettering::Condensed, false, 0xd02a1e),
+        Amp::Slo => (Knob::Silver, 0x141414, Lettering::Condensed, true, 0xd8261c),
+        Amp::Hiwatt => (Knob::Silver, 0xe6e6e2, Lettering::Print, false, 0xc8102e),
     };
     Dress {
         knob,
@@ -1355,11 +1495,21 @@ fn geo(a: Amp, r: Rect, detail: Detail) -> Geo {
     let ch = cab.height();
     let b = (w.min(ch) * 0.035).clamp(3.0, 10.0);
     match a {
-        Amp::Twin | Amp::Plexi | Amp::Jcm | Amp::Svt => {
+        Amp::Twin
+        | Amp::Plexi
+        | Amp::Jcm
+        | Amp::Svt
+        | Amp::B15
+        | Amp::Gk
+        | Amp::Orange
+        | Amp::Mark
+        | Amp::Slo
+        | Amp::Tang
+        | Amp::Hiwatt => {
             let f = match (a, full) {
                 (_, true) => 0.56,
                 (Amp::Twin, false) => 0.3,
-                (Amp::Svt, false) => 0.42,
+                (a, false) if a.head() => 0.42,
                 _ => 0.47,
             };
             let side = if a == Amp::Svt && !full { w * 0.025 } else { 0.0 };
@@ -1472,6 +1622,38 @@ fn place(a: Amp, g: &Geo, detail: Detail) -> (Vec<(It, Pos2)>, f32) {
     (out, d)
 }
 
+/// The Rectifier's mode switch: the lever and its three names (the click spot).
+fn mode_rect(c: Pos2, d: f32) -> Rect {
+    Rect::from_min_max(c + vec2(-d * 0.42, -d * 0.62), c + vec2(d * 0.62, d * 0.62))
+}
+
+/// The Mark's graphic EQ sliders' tracks, in an item `wt` knobs wide centred on `c`.
+fn geq_tracks(c: Pos2, d: f32, wt: f32) -> Vec<Rect> {
+    let span = d / 0.74 * wt * 0.86;
+    let step = span / 5.0;
+    let h = d * 1.15;
+    (0..5)
+        .map(|k| {
+            let x = c.x - span * 0.5 + step * (k as f32 + 0.5);
+            Rect::from_center_size(pos2(x, c.y - d * 0.05), vec2((step * 0.42).clamp(5.0, 12.0), h))
+        })
+        .collect()
+}
+
+/// A three-way mini toggle: the lever up (-1), centre (0) or down (1).
+fn toggle3(p: &Painter, c: Pos2, s: f32, pos: i32) {
+    let nut: Vec<Pos2> = (0..6).map(|i| at(c, s * 0.44, 30.0 + 60.0 * i as f32)).collect();
+    p.add(Shape::convex_polygon(
+        nut,
+        c32(0xb4b9be),
+        Stroke::new(0.7, c32(0x3a3e42)),
+    ));
+    p.circle_filled(c, s * 0.24, c32(0x8e9399));
+    let end = c + vec2(0.0, pos as f32 * s * 0.9);
+    p.line_segment([c, end], Stroke::new((s * 0.22).max(1.5), c32(0xdfe2e5)));
+    p.circle_filled(end, (s * 0.17).max(1.2), c32(0xf2f4f6));
+}
+
 fn label_size(d: f32) -> f32 {
     (d * 0.21).clamp(5.5, 10.5)
 }
@@ -1509,6 +1691,12 @@ pub(super) fn layout(b: &Block, r: Rect, detail: Detail) -> Layout {
                 .push((i, Rect::from_center_size(c, vec2(d * 0.42, d * 0.8)))),
             It::Standby => l.switch = Rect::from_center_size(c, vec2(d * 0.55, d * 0.85)),
             It::Jewel => l.led = c,
+            It::Mode(i) => l.choices.push((i, mode_rect(c, d))),
+            It::Geq(i) => {
+                for (k, tr) in geq_tracks(c, d, It::Geq(i).weight()).into_iter().enumerate() {
+                    l.faders.push((i + k, tr));
+                }
+            }
             _ => {}
         }
     }
@@ -1538,7 +1726,7 @@ pub(super) fn body(b: &Block, r: Rect, l: &Layout, ppp: f32) -> Image {
         match a {
             Amp::Tweed => cv.strap(c.center().x, r.min.y, w * 0.26, hh * 0.9, true),
             Amp::Ac30 => cv.strap(c.center().x, r.min.y, w * 0.38, hh * 0.9, false),
-            Amp::Svt => {}
+            a if a.head() => {}
             Amp::Mesa => cv.strap(c.center().x, r.min.y, w * 0.3, hh * 1.1, false),
             _ => cv.strap(c.center().x, r.min.y, w * 0.25, hh * 0.95, false),
         }
@@ -1577,6 +1765,23 @@ pub(super) fn body(b: &Block, r: Rect, l: &Layout, ppp: f32) -> Image {
         }
         Amp::Twin => cv.pattern(c, g.rad, tolex(0x151515, 0.9, h)),
         Amp::Mesa => cv.pattern(c, g.rad, tolex(0x101010, 1.8, h)),
+        // (the flip-top's blue check vinyl, the orange head's orange tolex)
+        Amp::B15 => cv.pattern(c, g.rad, |x, y| {
+            let d = cloth(Cloth::BlueCheck, x, y, 1.0);
+            let s = 0.05 * (1.0 - y / h * 4.0).max(0.0) - 0.12 * ((y / h - 0.7) * 3.0).max(0.0);
+            [d[0] + s, d[1] + s, d[2] + s, 1.0]
+        }),
+        Amp::Orange | Amp::Tang => cv.pattern(c, g.rad, tolex(0xd8661a, 1.1, h)),
+        // (the SLO's snakeskin: dark scales over the black)
+        Amp::Slo => cv.pattern(c, g.rad, move |x, y| {
+            let (sx, sy) = (x / 7.0, y / 5.0 + 0.5 * (x / 7.0).floor());
+            let (fx, fy) = (sx.fract() - 0.5, sy.fract() - 0.5);
+            let e = (fx * fx * 1.6 + fy * fy).sqrt();
+            let base = 0.09 + 0.05 * vnoise(sx.floor(), sy.floor(), 11);
+            let v = base * (1.25 - e) + if e > 0.46 { -0.04 } else { 0.0 };
+            let s = 0.05 * (1.0 - y / h * 4.0).max(0.0);
+            [v + s, v * 0.95 + s, v * 0.85 + s, 1.0]
+        }),
         _ => cv.pattern(c, g.rad, tolex(0x121212, 1.3, h)),
     }
     // a bevel: light along the top, dark along the bottom
@@ -1740,6 +1945,86 @@ pub(super) fn body(b: &Block, r: Rect, l: &Layout, ppp: f32) -> Image {
             );
             cv.rr_stroke(p.shrink(1.5), 2.0, 0.8, 0x464b50, 0.5);
         }
+        Amp::B15 => {
+            // brushed steel, darker than the SVT's, with no stripe
+            cv.pattern(p, pr, |_, y| {
+                let d = sample(&[(0.0, 0xd3d7db), (0.5, 0xb6bbc0), (1.0, 0x9ea4aa)], y / ph);
+                let hl = if y.rem_euclid(2.0) < 0.5 { 0.08 } else { 0.0 };
+                [d[0] + hl, d[1] + hl, d[2] + hl, 1.0]
+            });
+            cv.rr_stroke(p.shrink(1.5), 2.0, 0.8, 0x2b3c66, 0.7);
+        }
+        Amp::Gk => {
+            // black anodised, a red-orange stripe along the top
+            cv.rr_v(
+                p,
+                pr,
+                &[(0.0, 0x222225, 1.0), (0.4, 0x161618, 1.0), (1.0, 0x0e0e10, 1.0)],
+            );
+            let ly = p.min.y + ph * 0.1;
+            cv.rr(
+                Rect::from_min_max(
+                    pos2(p.min.x + ph * 0.06, ly),
+                    pos2(p.max.x - ph * 0.06, ly + (ph * 0.035).max(1.5)),
+                ),
+                0.5,
+                0xd8401e,
+                1.0,
+            );
+            cv.rr_stroke(p.shrink(1.5), 2.0, 0.8, 0xffffff, 0.1);
+        }
+        Amp::Orange => {
+            // a cream panel with a black border
+            cv.rr_v(
+                p,
+                pr,
+                &[(0.0, 0xf6f1e4, 1.0), (0.6, 0xe9e2d0, 1.0), (1.0, 0xd9d1bc, 1.0)],
+            );
+            cv.rr_stroke(p.shrink(2.0), 2.0, 1.4, 0x161616, 0.85);
+        }
+        Amp::Tang => {
+            // the cream panel, its black border and a thin orange line inside
+            cv.rr_v(
+                p,
+                pr,
+                &[(0.0, 0xf6f1e4, 1.0), (0.6, 0xe9e2d0, 1.0), (1.0, 0xd9d1bc, 1.0)],
+            );
+            cv.rr_stroke(p.shrink(2.0), 2.0, 1.4, 0x161616, 0.85);
+            cv.rr_stroke(p.shrink(ph * 0.09), 1.5, 0.8, 0xd8661a, 0.8);
+        }
+        Amp::Mark => {
+            // a black panel, a thin silver frame round the EQ
+            cv.rr_v(
+                p,
+                pr,
+                &[(0.0, 0x1c1c1c, 1.0), (0.45, 0x111111, 1.0), (1.0, 0x0a0a0a, 1.0)],
+            );
+            cv.rr_stroke(p.shrink(1.5), 2.0, 0.8, 0xffffff, 0.12);
+        }
+        Amp::Slo => {
+            // a polished chrome panel
+            cv.chrome(p, pr);
+            cv.rr_stroke(p.shrink(1.0), 2.0, 0.8, 0x2e3236, 0.7);
+        }
+        Amp::Hiwatt => {
+            // the grey panel, white print, a white rule along the top
+            cv.rr_v(
+                p,
+                pr,
+                &[(0.0, 0x3a3b3d, 1.0), (0.5, 0x2c2d2f, 1.0), (1.0, 0x222325, 1.0)],
+            );
+            let ly = p.min.y + ph * 0.12;
+            cv.rr(
+                Rect::from_min_max(
+                    pos2(p.min.x + ph * 0.08, ly),
+                    pos2(p.max.x - ph * 0.08, ly + (ph * 0.025).max(1.0)),
+                ),
+                0.5,
+                0xe6e6e2,
+                0.8,
+            );
+            cv.rr_stroke(p.shrink(1.5), 2.0, 0.8, 0x000000, 0.6);
+        }
     }
     // the static parts on the panel
     let (its, d) = place(a, &g, detail);
@@ -1790,10 +2075,11 @@ pub(super) fn body(b: &Block, r: Rect, l: &Layout, ppp: f32) -> Image {
                     1.0,
                 );
             }
-            It::Mode => cv.bat(c + vec2(-d * 0.22, 0.0), d * 0.4, false),
-            It::Ultra => {
-                cv.bat(c - vec2(d * 0.22, 0.0), d * 0.38, false);
-                cv.bat(c + vec2(d * 0.22, 0.0), d * 0.38, true);
+            It::Geq(_) => {
+                // the sliders' slots
+                for tr in geq_tracks(c, d, it.weight()) {
+                    cv.rr(tr.shrink2(vec2(tr.width() * 0.32, 0.0)), 1.0, 0x000000, 0.9);
+                }
             }
             It::Logo(_) => match a {
                 Amp::Tweed => {
@@ -1817,6 +2103,7 @@ pub(super) fn body(b: &Block, r: Rect, l: &Layout, ppp: f32) -> Image {
                 }
                 Amp::Mesa => oval_badge(&mut cv, Rect::from_center_size(c, vec2(d * 1.35, d * 0.66))),
                 Amp::Svt => blue_plate(&mut cv, Rect::from_center_size(c, vec2(d * 1.05, d * 0.44))),
+                Amp::B15 => blue_plate(&mut cv, Rect::from_center_size(c, vec2(d * 1.25, d * 0.44))),
                 _ => {}
             },
             _ => {}
@@ -1939,6 +2226,44 @@ pub(super) fn body(b: &Block, r: Rect, l: &Layout, ppp: f32) -> Image {
             blue_plate(&mut cv, svt_plate(gq));
             corners_metal(&mut cv, c, (w.min(h) * 0.085).clamp(6.0, 16.0), true);
         }
+        Amp::B15 => {
+            cv.rr_stroke(gq.expand(2.0), 2.5, 2.0, 0xc3c8cc, 1.0);
+            grille(&mut cv, gq, 2.0, Cloth::SilverSparkle, g.k);
+            blue_plate(&mut cv, svt_plate(gq));
+        }
+        Amp::Gk => {
+            grille(&mut cv, gq, 2.0, Cloth::BlackWeave, g.k);
+            corners_metal(&mut cv, c, (w.min(h) * 0.085).clamp(6.0, 16.0), false);
+        }
+        Amp::Orange => {
+            cv.rr_stroke(gq.expand(1.5), 2.5, 1.6, 0x161616, 0.9);
+            grille(&mut cv, gq, 2.0, Cloth::SaltPepper, g.k);
+            corners_plastic(&mut cv, c, (w.min(h) * 0.085).clamp(6.0, 16.0));
+        }
+        Amp::Tang => {
+            cv.rr_stroke(gq.expand(1.5), 2.5, 1.6, 0x161616, 0.9);
+            grille(&mut cv, gq, 2.0, Cloth::BasketTan, g.k);
+            corners_plastic(&mut cv, c, (w.min(h) * 0.085).clamp(6.0, 16.0));
+        }
+        Amp::Mark => {
+            cv.rr_stroke(gq.expand(2.0), 2.5, 2.0, 0x0a0a0a, 1.0);
+            grille(&mut cv, gq, 2.0, Cloth::Cane, g.k);
+            corners_metal(&mut cv, c, (w.min(h) * 0.085).clamp(6.0, 16.0), false);
+        }
+        Amp::Slo => {
+            cv.rr_stroke(gq.expand(2.0), 2.5, 2.0, 0xc9cdd1, 1.0);
+            grille(&mut cv, gq, 2.0, Cloth::BlackWeave, g.k);
+            corners_metal(&mut cv, c, (w.min(h) * 0.085).clamp(6.0, 16.0), true);
+        }
+        Amp::Hiwatt => {
+            cv.rr_stroke(gq.expand(1.5), 2.5, 1.4, 0x8d9297, 0.9);
+            grille(&mut cv, gq, 2.0, Cloth::BlackWeave, g.k);
+            // the name plate across the grille's middle
+            let q = hiwatt_plate(gq);
+            cv.shadow(q.translate(vec2(0.0, 1.5)), 2.0, 2.0, 0.5);
+            cv.rr_v(q, 2.0, &[(0.0, 0x26272a, 1.0), (1.0, 0x0b0b0c, 1.0)]);
+            cv.rr_stroke(q, 2.0, 1.0, 0xe6e6e2, 0.9);
+        }
     }
     cv.image()
 }
@@ -1947,6 +2272,13 @@ fn tweed_plate(gq: Rect) -> Rect {
     Rect::from_center_size(
         pos2(gq.center().x, gq.min.y + gq.height() * 0.07),
         vec2(gq.width() * 0.5, (gq.height() * 0.2).clamp(10.0, 34.0)),
+    )
+}
+
+fn hiwatt_plate(gq: Rect) -> Rect {
+    Rect::from_center_size(
+        gq.center(),
+        vec2(gq.width() * 0.46, (gq.height() * 0.3).clamp(10.0, 40.0)),
     )
 }
 
@@ -2093,7 +2425,7 @@ fn scale(p: &Painter, a: Amp, c: Pos2, d: f32, kd: &KnobDef, ink: Color32, room:
                 }
             }
         }
-        Amp::Ac30 | Amp::Mesa => {
+        Amp::Ac30 | Amp::Mesa | Amp::Mark => {
             for i in 0..11 {
                 let ang = -150.0 + 300.0 * i as f32 / 10.0;
                 p.circle_filled(at(c, r * 1.22, ang), (d * 0.028).clamp(0.8, 1.7), ink);
@@ -2108,8 +2440,8 @@ fn scale(p: &Painter, a: Amp, c: Pos2, d: f32, kd: &KnobDef, ink: Color32, room:
                 }
             }
         }
-        Amp::Svt => {
-            if matches!(kd.unit, Unit::Hz) {
+        Amp::Svt | Amp::B15 | Amp::Gk | Amp::Orange | Amp::Tang | Amp::Slo | Amp::Hiwatt => {
+            if a == Amp::Svt && matches!(kd.unit, Unit::Hz) {
                 // the frequency selector's stops
                 for (i, s) in ["220", "450", "800", "1.6k", "3k"].iter().enumerate() {
                     let ang = -120.0 + 60.0 * i as f32;
@@ -2226,10 +2558,16 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
                     room,
                     dr.letters,
                 );
+                // (its name under it when the names are over the controls: "ON" is over it)
+                let name_y = if dr.above {
+                    plate.max.y + ls * 0.9
+                } else {
+                    ly(c, d)
+                };
                 lab(
                     p,
                     def.knobs[i].label,
-                    pos2(q.center().x, ly(c, d)),
+                    pos2(q.center().x, name_y),
                     Align2::CENTER_CENTER,
                     ls,
                     ink,
@@ -2266,7 +2604,7 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
             It::Standby => {
                 let q = l.switch;
                 match a {
-                    Amp::Jcm | Amp::Svt => {
+                    a if a == Amp::Jcm || a.head() => {
                         rocker(p, q.center(), d * 0.5, d * 0.72, None, false);
                         if !b.on {
                             // a black rocker shows its state by which half is pressed: darken the top when off
@@ -2304,7 +2642,7 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
             }
             It::Power => {
                 match a {
-                    Amp::Svt => rocker(p, c, d * 0.5, d * 0.72, Some(0xc8231d), b.on),
+                    a if a.head() => rocker(p, c, d * 0.5, d * 0.72, Some(0xc8231d), b.on),
                     _ => bat(p, c + vec2(0.0, d * 0.08), d * 0.42, true),
                 }
                 lab(
@@ -2338,36 +2676,105 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
                 room,
                 dr.letters,
             ),
-            It::Mode => {
-                let x = c.x + d * 0.02;
-                for (k, (s, lit)) in [("RAW", false), ("VINTAGE", false), ("MODERN", true)]
-                    .iter()
-                    .enumerate()
-                {
+            It::Mode(i) => {
+                // the Rectifier's three-way mode switch (P41.2): the lever where the knob is, its position lit
+                let pos = b.v[i].round().clamp(0.0, 2.0) as i32;
+                let lever = c + vec2(-d * 0.2, 0.0);
+                toggle3(p, lever, d * 0.42, pos - 1);
+                let x = c.x + d * 0.04;
+                for (k, s) in ["RAW", "VINTAGE", "MODERN"].iter().enumerate() {
                     lab(
                         p,
                         s,
                         pos2(x, c.y + (k as f32 - 1.0) * ls * 1.15),
                         Align2::LEFT_CENTER,
                         ls * 0.72,
-                        if *lit { Color32::WHITE } else { c32(0x9a9a9a) },
+                        if k as i32 == pos {
+                            Color32::WHITE
+                        } else {
+                            c32(0x8a8a8a)
+                        },
                         d,
                         dr.letters,
                     );
                 }
-                p.circle_filled(c + vec2(-d * 0.22, -d * 0.5), (d * 0.06).max(1.5), c32(0xff3b2f));
+                if full {
+                    lab(
+                        p,
+                        def.knobs[i].label,
+                        pos2(c.x, ly(c, d)),
+                        Align2::CENTER_CENTER,
+                        ls,
+                        ink,
+                        room,
+                        dr.letters,
+                    );
+                }
+                if hot.hover == Some(i) {
+                    p.rect_stroke(
+                        mode_rect(c, d),
+                        3.0,
+                        Stroke::new(1.5, th.accent),
+                        egui::StrokeKind::Outside,
+                    );
+                }
             }
-            It::Ultra => {
-                lab(
-                    p,
-                    "ULTRA",
-                    pos2(c.x, ly(c, d)),
-                    Align2::CENTER_CENTER,
-                    ls * 0.75,
-                    ink,
-                    d,
-                    dr.letters,
-                );
+            It::Geq(i0) => {
+                // the Mark's graphic EQ: a cap on each slot, the frequency under it, the centre line
+                for (k, tr) in geq_tracks(c, d, it.weight()).into_iter().enumerate() {
+                    let i = i0 + k;
+                    let Some(kd) = def.knobs.get(i) else {
+                        continue;
+                    };
+                    let u = kd.to_u(b.v[i]);
+                    p.line_segment(
+                        [
+                            pos2(tr.min.x - 1.5, tr.center().y),
+                            pos2(tr.max.x + 1.5, tr.center().y),
+                        ],
+                        Stroke::new(0.8, ca(dr.ink, 0.6)),
+                    );
+                    let cy = tr.max.y - u * tr.height();
+                    let cap = Rect::from_center_size(
+                        pos2(tr.center().x, cy),
+                        vec2(tr.width(), (d * 0.16).max(4.0)),
+                    );
+                    p.rect_filled(cap.translate(vec2(0.6, 1.0)), 1.0, Color32::from_black_alpha(120));
+                    p.rect_filled(cap, 1.0, c32(0xc9cdd1));
+                    p.line_segment(
+                        [pos2(cap.min.x + 1.0, cy), pos2(cap.max.x - 1.0, cy)],
+                        Stroke::new(1.0, c32(0x2a2a2a)),
+                    );
+                    let hot_here = hot.active == Some(i) || hot.hover == Some(i);
+                    let pos = pos2(tr.center().x, tr.max.y + ls * 0.95);
+                    if hot_here {
+                        p.rect_stroke(
+                            tr.expand(2.5),
+                            2.0,
+                            Stroke::new(1.4, th.accent),
+                            egui::StrokeKind::Outside,
+                        );
+                        text::draw(
+                            p,
+                            &kd.text(b.v[i]),
+                            pos,
+                            Align2::CENTER_CENTER,
+                            Style::new(ls, 800, ink),
+                            None,
+                        );
+                    } else {
+                        lab(
+                            p,
+                            kd.label,
+                            pos,
+                            Align2::CENTER_CENTER,
+                            ls * 0.8,
+                            ink,
+                            tr.width() * 3.0,
+                            dr.letters,
+                        );
+                    }
+                }
             }
             It::Logo(wt) => {
                 let mw = wt * room * 0.95;
@@ -2497,6 +2904,73 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
                         Lettering::Rounded,
                         false,
                     ),
+                    Amp::B15 => logo(
+                        p,
+                        "portable 15",
+                        c,
+                        Align2::CENTER_CENTER,
+                        d * 0.24,
+                        c32(0xe8ebee),
+                        d * 1.1,
+                        Lettering::Rounded,
+                        false,
+                    ),
+                    Amp::Gk => logo(
+                        p,
+                        "SILICON 800",
+                        c,
+                        Align2::CENTER_CENTER,
+                        d * 0.26,
+                        c32(0xeeeeee),
+                        d * 1.0,
+                        Lettering::Heavy,
+                        false,
+                    ),
+                    Amp::Orange => logo(
+                        p,
+                        "CITRUS",
+                        c,
+                        Align2::CENTER_CENTER,
+                        d * 0.34,
+                        c32(0xd8661a),
+                        d * 1.2,
+                        Lettering::Heavy,
+                        false,
+                    ),
+                    Amp::Tang => logo(
+                        p,
+                        "TANGERINE",
+                        c,
+                        Align2::CENTER_CENTER,
+                        d * 0.3,
+                        c32(0xd8661a),
+                        mw,
+                        Lettering::Heavy,
+                        false,
+                    ),
+                    Amp::Slo => {
+                        lab(
+                            p,
+                            "SNAKESKIN",
+                            c - vec2(0.0, d * 0.1),
+                            Align2::CENTER_CENTER,
+                            d * 0.26,
+                            c32(0x141414),
+                            mw,
+                            Lettering::Heavy,
+                        );
+                        lab(
+                            p,
+                            "SUPER LEAD OVERDRIVE 100",
+                            c + vec2(0.0, d * 0.18),
+                            Align2::CENTER_CENTER,
+                            ls * 0.6,
+                            c32(0x141414),
+                            mw,
+                            Lettering::Condensed,
+                        );
+                    }
+                    Amp::Mark | Amp::Hiwatt => {}
                 }
             }
             It::Gap(_) => {}
@@ -2611,6 +3085,100 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
                 Lettering::Condensed,
             );
         }
+        Amp::B15 => {
+            let q = svt_plate(gq);
+            logo(
+                p,
+                "portable 15",
+                q.center(),
+                Align2::CENTER_CENTER,
+                q.height() * 0.62,
+                c32(0xe8ebee),
+                q.width() * 0.9,
+                Lettering::Rounded,
+                false,
+            );
+        }
+        Amp::Gk => {
+            logo(
+                p,
+                "SILICON 800",
+                gq.min + vec2(gq.width() * 0.05, gq.height() * 0.12),
+                Align2::LEFT_TOP,
+                (gq.height() * 0.2).clamp(7.0, 30.0),
+                c32(0xeeeeee),
+                gq.width() * 0.5,
+                Lettering::Heavy,
+                true,
+            );
+        }
+        Amp::Orange => {
+            logo(
+                p,
+                "CITRUS 200",
+                gq.center(),
+                Align2::CENTER_CENTER,
+                (gq.height() * 0.3).clamp(8.0, 40.0),
+                c32(0xd8661a),
+                gq.width() * 0.7,
+                Lettering::Heavy,
+                true,
+            );
+        }
+        Amp::Tang => {
+            logo(
+                p,
+                "TANGERINE",
+                gq.center(),
+                Align2::CENTER_CENTER,
+                (gq.height() * 0.3).clamp(8.0, 40.0),
+                c32(0xd8661a),
+                gq.width() * 0.7,
+                Lettering::Heavy,
+                true,
+            );
+        }
+        Amp::Mark => {
+            // the script logo on the cane, at the left
+            logo(
+                p,
+                "Lagunitas",
+                gq.min + vec2(gq.width() * 0.05, gq.height() * 0.1),
+                Align2::LEFT_TOP,
+                (gq.height() * 0.32).clamp(9.0, 44.0),
+                c32(0x161616),
+                gq.width() * 0.55,
+                Lettering::Script,
+                false,
+            );
+        }
+        Amp::Slo => {
+            logo(
+                p,
+                def.name,
+                gq.center(),
+                Align2::CENTER_CENTER,
+                (gq.height() * 0.28).clamp(8.0, 36.0),
+                c32(0xd6dadd),
+                gq.width() * 0.75,
+                Lettering::Condensed,
+                true,
+            );
+        }
+        Amp::Hiwatt => {
+            let q = hiwatt_plate(gq);
+            logo(
+                p,
+                "Surrey",
+                q.center(),
+                Align2::CENTER_CENTER,
+                q.height() * 0.7,
+                c32(0xf2f2ee),
+                q.width() * 0.9,
+                Lettering::Script,
+                false,
+            );
+        }
         Amp::Svt => {
             let q = svt_plate(gq);
             logo(
@@ -2634,12 +3202,14 @@ pub(super) fn controls(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Deta
 
 pub(super) fn board_size(b: &Block) -> Vec2 {
     match amp_of(b.def().id) {
-        Amp::Twin => vec2(262.0, 200.0),
+        Amp::Twin => vec2(352.0, 200.0),
         Amp::Tweed => vec2(214.0, 190.0),
-        Amp::Ac30 => vec2(262.0, 206.0),
+        Amp::Ac30 => vec2(312.0, 206.0),
         Amp::Plexi | Amp::Jcm => vec2(330.0, 128.0),
         Amp::Mesa => vec2(326.0, 132.0),
-        Amp::Svt => vec2(300.0, 160.0),
+        Amp::Svt | Amp::B15 | Amp::Gk | Amp::Orange => vec2(300.0, 160.0),
+        Amp::Slo | Amp::Tang | Amp::Hiwatt => vec2(320.0, 160.0),
+        Amp::Mark => vec2(360.0, 170.0),
     }
 }
 
@@ -2668,11 +3238,18 @@ mod tests {
                 }
                 let r = Rect::from_min_size(pos2(10.0, 20.0), size);
                 let l = super::super::layout(&b, r, detail);
+                // (on the board an added control or a late one may sit only on the open unit's ADDED plate beside
+                // the face, P37.6c: every one has a spot in Full)
                 for i in 0..def.front_len() {
                     let found = l.knobs.iter().any(|k| k.0 == i)
                         || l.choices.iter().any(|k| k.0 == i)
-                        || l.faders.iter().any(|k| k.0 == i);
-                    assert!(found, "{} knob {i} has no spot ({detail:?})", def.id);
+                        || l.faders.iter().any(|k| k.0 == i)
+                        || l.extra.iter().any(|k| k.0 == i);
+                    assert!(
+                        found || detail == Detail::Board,
+                        "{} knob {i} has no spot ({detail:?})",
+                        def.id
+                    );
                 }
                 // the back panel stays off the face (the editor's Back panel shows it)
                 for (i, _) in def.back_knobs() {

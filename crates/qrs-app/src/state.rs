@@ -44,6 +44,8 @@ pub struct AppState {
     scan_pending: bool,
     /// There was no config.json at the start (the first run: the first-time setup opens, P23.14).
     pub first_run: bool,
+    /// Home shows "run the setup again?" this start: an update to this version (P37.15, `whatsnew`).
+    pub whats_new: bool,
     pub library: Arc<Library>,
     /// The folders scanned (the configured ones, plus a feedpak folder next to a dlc folder).
     pub dirs: Vec<PathBuf>,
@@ -125,7 +127,7 @@ impl AppState {
                 AudioPrefs {
                     input: qrs_audio::Choice::Off,
                     output: qrs_audio::Choice::Off,
-                    use_rocksmith: false,
+                    use_rs_setup: false,
                     ..Default::default()
                 }
             } else if audio == AudioMode::Shots {
@@ -140,7 +142,7 @@ impl AppState {
                     input: qrs_audio::Choice::Device(stand_in.clone()),
                     channel: Some(0),
                     output: qrs_audio::Choice::Device(stand_in),
-                    use_rocksmith: false,
+                    use_rs_setup: false,
                     ..Default::default()
                 }
             } else {
@@ -149,9 +151,9 @@ impl AppState {
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
                     .unwrap_or_default()
             };
-            // (Rocksmith's own setup is found next to its dlc folder, searched for songs or not)
+            // (RS's own setup is found next to its dlc folder, searched for songs or not)
             let mut setup_dirs = dirs.clone();
-            setup_dirs.extend(config::rocksmith_dlc_dirs());
+            setup_dirs.extend(config::rs_dlc_dirs());
             let a = Audio::start(prefs, setup_dirs);
             a.engine.set_song_gain(config.f64("volume", 0.8) as f32);
             a.engine.set_guitar_gain(config.f64("guitar_volume", 0.8) as f32);
@@ -181,6 +183,7 @@ impl AppState {
             key_watch,
             scan_pending: false,
             first_run,
+            whats_new: false,
             library,
             dirs,
             songs: Arc::new(Vec::new()),
@@ -204,6 +207,56 @@ impl AppState {
             }),
             lessons,
             updater,
+            #[cfg(feature = "nux")]
+            pedal: None,
+            #[cfg(feature = "nux")]
+            mg300_control: None,
+        }
+    }
+
+    /// Tests: a state on a scratch data folder with one song in its library (no scan, no devices, no engine: the
+    /// caller gives the player an engine on the null devices). Never the owner's data.
+    #[cfg(test)]
+    pub fn for_test(ctx: &egui::Context, root: PathBuf, entry: SongEntry) -> AppState {
+        let data = DataDir::at(root);
+        let config = Config::load(data.config());
+        let userdata = UserData::load(data.userdata());
+        let keys = Keys::default();
+        let canonical = format!("{}|{}", entry.artist, entry.title).to_lowercase();
+        AppState {
+            ctx: ctx.clone(),
+            config,
+            userdata,
+            keys: keys.clone(),
+            key_state: crate::keyfile::KeyState::Missing,
+            key_files: Vec::new(),
+            key_watch: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            scan_pending: false,
+            first_run: false,
+            whats_new: false,
+            library: Library::new(),
+            dirs: Vec::new(),
+            songs: Arc::new(vec![entry]),
+            groups: vec![Group {
+                members: vec![0],
+                preferred: 0,
+                canonical,
+            }],
+            regroups: 0,
+            moves: Default::default(),
+            loose: Vec::new(),
+            mic_applied: None,
+            lib_version: u64::MAX,
+            version: 0,
+            covers: Covers::new(ctx.clone(), data.art(), keys.clone()),
+            audio: None,
+            audio_mode: AudioMode::Off,
+            previewer: Previewer::new(None, keys),
+            toast: None,
+            rec: Default::default(),
+            lessons: Vec::new(),
+            updater: crate::update::Updater::new(None),
+            data,
             #[cfg(feature = "nux")]
             pedal: None,
             #[cfg(feature = "nux")]
@@ -286,9 +339,14 @@ impl AppState {
         self.set_groups(old);
     }
 
-    /// The guitar input is a microphone (an acoustic guitar played to a webcam or laptop mic, Rocksmith's
+    /// The guitar input is a microphone (an acoustic guitar played to a webcam or laptop mic, RS's
     /// "microphone" mode, PLAN.md section 4.1): as you set the input's kind (Settings > Audio, D33), else by the
     /// device's kind.
+    /// What the input now listening plays (P32.1): a guitar unless Settings > Audio says bass.
+    pub fn instrument(&self) -> qrs_analysis::instrument::Instrument {
+        crate::calibrate::instrument(self)
+    }
+
     pub fn mic_input(&self) -> bool {
         use crate::calibrate::{self, Kind};
         let device = || {
@@ -329,9 +387,7 @@ impl AppState {
         }
         crate::calibrate::apply(self); // (the pluck threshold: this input's, else a mic's or a guitar's)
         if mic && !first {
-            self.say(
-                "A microphone is the guitar input: hearing it through the speakers is off (M turns it on)",
-            );
+            self.say("A microphone is the input: hearing it through the speakers is off (M turns it on)");
         }
     }
 
@@ -439,9 +495,9 @@ impl AppState {
         Ok(format!("Removed {} from the library", dir.display()))
     }
 
-    /// Search Rocksmith's own dlc folder for songs, or not (feedpaks only).
+    /// Search RS's own dlc folder for songs, or not (feedpaks only).
     pub fn set_search_dlc(&mut self, on: bool) {
-        self.config.set("search_rocksmith_dlc", on);
+        self.config.set(config::SEARCH_RS_DLC, on);
         self.save_config();
         self.apply_dirs();
     }
@@ -493,7 +549,7 @@ impl AppState {
                 self.loose.extend(fresh);
             }
             self.scan_soon();
-            self.say("Rocksmith keys found: reading the psarc songs again");
+            self.say("RS keys found: reading the psarc songs again");
         }
     }
 

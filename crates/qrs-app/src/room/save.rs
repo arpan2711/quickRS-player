@@ -11,7 +11,7 @@ use qrs_ui::units::px;
 use qrs_ui::widgets::interact;
 
 use super::draw::{self, KeyLook};
-use super::rigs::{self, COLOURS, Rig, SCENE_COLOURS, SCENE_NAMES, TAGS};
+use super::rigs::{self, COLOURS, Rig, SCENE_COLOURS, TAGS};
 use crate::ampbutton::rgb;
 use crate::pedalfaces as faces;
 use crate::state::AppState;
@@ -87,6 +87,8 @@ impl Sheet {
         let panel = Rect::from_center_size(area.center(), vec2(w, h));
         // a click outside: nothing (it's a sheet, Esc or Cancel closes it)
         interact(ui, area, "room-save-back", Sense::click());
+        // (opaque: the room mustn't show through a dialog)
+        p.rect_filled(panel, px(24.0), t().base);
         paint::floating(&p, panel, Some(px(24.0)));
         let x0 = panel.min.x + px(30.0);
         let x1 = panel.max.x - px(30.0);
@@ -429,8 +431,8 @@ impl Sheet {
             wr.max.x - mx - px(28.0),
         );
         let mut sx = wr.min.x + px(16.0);
-        for (i, name) in SCENE_NAMES.iter().enumerate() {
-            let label = format!("{} {name}", i + 1);
+        for i in 0..rigs::SCENES {
+            let label = format!("{}", i + 1);
             let cw = draw::chip_w(&ctx, &label, false, 11.5) + px(18.0);
             let cr = Rect::from_min_size(pos2(sx, wr.max.y - px(36.0)), vec2(cw, px(26.0)));
             paint::inset(&p, cr, Some(px(9.0)), 1.5, Fill::Base);

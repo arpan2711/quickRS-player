@@ -10,8 +10,11 @@
 //! - Mod: a digital delay whose time is chorused.
 //!
 //! Changing Time glides the read head (a tape-like pitch bend) instead of jumping.
+//!
+//! Sync (P37.2): Off, or a note value at the song's tempo (`board::tempo`, set by the app when a song opens): the
+//! Time knob is then ignored, and a tempo change glides the repeats there.
 
-use super::catalog::HEAD_BITS;
+use super::catalog::{HEAD_BITS, SYNC_BEATS};
 use super::dsp::{Biquad, Filter, Lfo, Line, OnePole, Smooth, coef_ms, flush, sweep, unit10};
 use super::{MAX_KNOBS, Pedal};
 
@@ -44,6 +47,8 @@ struct Delay {
     last: f32,
     /// Tape: the playback heads that play (bit k: head k + 1, at k + 1 times the Time).
     heads: u8,
+    /// Sync: the repeat in quarter notes at the song's tempo (0: the Time knob).
+    beats: f32,
 }
 
 fn new(voice: Voice, rate: f32, max_s: f32) -> Box<dyn Pedal> {
@@ -73,6 +78,7 @@ fn new(voice: Voice, rate: f32, max_s: f32) -> Box<dyn Pedal> {
         sat: 1.0,
         last: 0.0,
         heads: 1,
+        beats: 0.0,
     })
 }
 
@@ -89,9 +95,23 @@ pub fn modulated(rate: f32) -> Box<dyn Pedal> {
     new(Voice::Mod, rate, 1.03)
 }
 
+impl Delay {
+    /// Sync on: the repeat time from the song's tempo (it glides there when the tempo changes).
+    fn sync(&mut self) {
+        if self.beats > 0.0 {
+            let bpm = super::tempo();
+            if bpm > 0.0 {
+                let max = (self.line.len() - 8) as f32 / (if self.heads > 1 { 3.0 } else { 1.0 });
+                self.target = (60.0 / bpm * self.beats * self.rate).clamp(2.0, max);
+            }
+        }
+    }
+}
+
 impl Pedal for Delay {
     fn process(&mut self, x: &mut [f32]) {
         let r = self.rate;
+        self.sync();
         for v in x.iter_mut() {
             self.d += (self.target - self.d) * self.glide;
             let p = self.lfo.step();
@@ -139,6 +159,12 @@ impl Pedal for Delay {
         let time = v[0] * 1e-3;
         let repeats = unit10(v[1]);
         self.target = (time * r).max(2.0);
+        let sync = match self.voice {
+            Voice::Analog | Voice::Digital => v[4],
+            Voice::Tape => v[5],
+            Voice::Mod => v[5],
+        };
+        self.beats = SYNC_BEATS[(sync.round().max(0.0) as usize).min(SYNC_BEATS.len() - 1)];
         self.wet.target = (v[2] / 100.0).clamp(0.0, 1.0) * 1.3;
         match self.voice {
             Voice::Analog => {
@@ -205,6 +231,7 @@ impl Pedal for Delay {
         self.lp.reset();
         self.hp.reset();
         self.bump.reset();
+        self.sync();
         self.d = self.target;
         self.last = 0.0;
         self.wet.snap();

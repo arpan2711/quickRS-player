@@ -9,7 +9,7 @@
 //! manifest tuning/capo override the chart's own; song_timeline.json's beats and sections win over ones in a
 //! chart, which are otherwise taken from the first chart that has them.
 //!
-//! Rocksmith conversions (rsfeedpak) add a `rocksmith` block used here too: each part's own sections, and the
+//! RS conversions (rsfeedpak) add a `rocksmith` block used here too: each part's own sections, and the
 //! source .psarc and song key (`rsplay_id`, to share score history with the psarc).
 
 use std::collections::{HashMap, HashSet};
@@ -196,7 +196,7 @@ pub fn safe_relpath(p: &str) -> Result<&str> {
 }
 
 // feedpak boolean note fields -> techniques. `mt` (string mute) and `fhm` (fret-hand mute) both draw as a
-// fret-hand mute, as the XML reader does with Rocksmith's "mute".
+// fret-hand mute, as the XML reader does with RS's "mute".
 const TECHS: [(&str, Techs); 15] = [
     ("ho", Techs::HAMMER_ON),
     ("po", Techs::PULL_OFF),
@@ -262,7 +262,7 @@ fn non_latin_script(text: &str) -> bool {
         && letters.iter().filter(|&&c| c as u32 > 0x24F).count() as f64 > letters.len() as f64 * 0.02
 }
 
-/// feedpak numbers downbeats from 1 (-1 = other beats); the model, like Rocksmith's SNG, from 0.
+/// feedpak numbers downbeats from 1 (-1 = other beats); the model, like RS's SNG, from 0.
 fn measure(v: Option<&Value>) -> i32 {
     let m = int32(v, -1);
     if m > 0 {
@@ -311,7 +311,7 @@ fn templates(raw: Option<&Value>) -> Vec<Template> {
         .unwrap_or_default()
 }
 
-/// A list of densities (numbers, or numbers as strings), as Rocksmith's manifest and the feedpak extension key
+/// A list of densities (numbers, or numbers as strings), as RS's manifest and the feedpak extension key
 /// carry DynamicVisualDensity; anything else is empty.
 pub(crate) fn densities(v: Option<&Value>) -> Vec<f32> {
     match v {
@@ -578,7 +578,7 @@ impl FeedpakPackage {
         num(self.manifest.get("duration"), 0.0).max(0.0)
     }
     /// The conversion's provenance block (source .psarc, song key, rsplay_id), or empty.
-    pub fn rocksmith(&self) -> Map<String, Value> {
+    pub fn rs_block(&self) -> Map<String, Value> {
         self.manifest
             .get("rocksmith")
             .and_then(|v| v.as_object())
@@ -587,7 +587,7 @@ impl FeedpakPackage {
     }
     /// "file_p.psarc|SongKey" style id of the psarc this pack was converted from, if any.
     pub fn source_id(&self) -> String {
-        vstr(self.rocksmith().get("rsplay_id"))
+        vstr(self.rs_block().get("rsplay_id"))
     }
 
     fn entries(&self) -> Vec<Map<String, Value>> {
@@ -658,7 +658,7 @@ impl FeedpakPackage {
                 song_length: duration,
                 bonus,
                 source_chart: vstr(rs.get("chart")),
-                // (an extension key the converter writes: Rocksmith's DynamicVisualDensity)
+                // (an extension key the converter writes: RS's DynamicVisualDensity)
                 visual_density: densities(rs.get("visualDensity")),
                 ..Default::default()
             });

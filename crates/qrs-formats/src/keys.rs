@@ -18,7 +18,7 @@ pub const ENV_SNG_MAC: &str = "RSPLAY_SNG_MAC_KEY";
 pub const ENV_FILE: &str = "RSPLAY_KEYS_FILE";
 
 const HELP: &str = "Set it in keys.json (see keys.example.json) or via the {env} environment variable. \
-The key is published in open-source Rocksmith modding tools; it is not shipped with quickRS.";
+The key is published in open-source RS modding tools; it is not shipped with quickRS.";
 
 pub type Key = [u8; 32];
 

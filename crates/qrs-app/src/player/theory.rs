@@ -406,10 +406,9 @@ impl PlayerView {
                     Some((m, None, _)) => (format!("Not one of them: you played {}", label(m)), th.miss),
                     None if unclear => ("Didn't catch that one: pick it clearly".into(), th.caption),
                     None if all => ("Every one found".into(), th.hit),
-                    None if !self.has_input() => (
-                        "No guitar input: Settings (F2) > Audio input / output".into(),
-                        th.miss,
-                    ),
+                    None if !self.has_input() => {
+                        ("No input: Settings (F2) > Audio input / output".into(), th.miss)
+                    }
                     None => ("Play a ringed note".into(), th.caption),
                 };
                 txt(
@@ -943,7 +942,7 @@ impl PlayerView {
             };
             item(&sc.name, &|at| {
                 p.circle_filled(at, px(5.0), th.key_white);
-                p.circle_stroke(at, px(5.0), Stroke::new(px(1.0), th.caption));
+                p.circle_stroke(at, px(5.0), Stroke::new(qrs_ui::units::px_line(1.0), th.caption));
             });
             item(&format!("root {}", sc.root), &|at| {
                 p.circle_filled(at, px(5.0), th.accent);
@@ -1037,7 +1036,11 @@ impl PlayerView {
         let gx = |s: i32| grid.min.x + s as f32 * sx;
         for k in 0..=rows {
             let y = grid.min.y + k as f32 * ry;
-            let wdt = if k == 0 && first == 1 { px(4.0) } else { px(1.2) };
+            let wdt = if k == 0 && first == 1 {
+                px(4.0)
+            } else {
+                qrs_ui::units::px_line(1.2)
+            };
             p.line_segment(
                 [pos2(grid.min.x, y), pos2(grid.max.x, y)],
                 Stroke::new(wdt, th.text_2),
@@ -1046,7 +1049,7 @@ impl PlayerView {
         for s in 0..n {
             p.line_segment(
                 [pos2(gx(s), grid.min.y), pos2(gx(s), grid.max.y)],
-                Stroke::new(px(1.2), th.text_2),
+                Stroke::new(qrs_ui::units::px_line(1.2), th.text_2),
             );
         }
         if first > 1 {
@@ -1073,7 +1076,7 @@ impl PlayerView {
                     txt(p, "x", top, 11.0, th.caption, 800, Align2::CENTER_CENTER, None);
                 }
                 0 => {
-                    p.circle_stroke(top, px(4.0), Stroke::new(px(1.5), th.text_2));
+                    p.circle_stroke(top, px(4.0), Stroke::new(qrs_ui::units::px_line(1.5), th.text_2));
                 }
                 f => {
                     let row = (f - first) as f32;
@@ -1107,7 +1110,7 @@ fn tag(p: &egui::Painter, label: &str, at: egui::Pos2) {
     p.rect_stroke(
         r,
         px(5.0),
-        Stroke::new(px(1.0), th.accent_ink),
+        Stroke::new(qrs_ui::units::px_line(1.0), th.accent_ink),
         egui::StrokeKind::Inside,
     );
     txt(

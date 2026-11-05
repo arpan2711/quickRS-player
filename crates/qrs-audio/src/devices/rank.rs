@@ -1,6 +1,6 @@
 //! Which input is the guitar: every device gets a score and a reason, highest first.
 //!
-//! 1. Rocksmith's Real Tone Cable (USB VID_12BA&PID_00FF, what Rocksmith itself looks for).
+//! 1. RS's Real Tone Cable (USB VID_12BA&PID_00FF, what RS itself looks for).
 //! 2. The ASIO input from the imported RS_ASIO setup.
 //! 3. An audio interface's own ASIO driver (generic wrappers like ASIO4ALL rank lower).
 //! 4. A USB input that looks like an instrument interface ("Line", "Instrument", "Hi-Z", known brands);
@@ -13,14 +13,14 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::rocksmith::RocksmithSetup;
+use super::rs_setup::RsSetup;
 use crate::backend::{Backend, Bus, DeviceInfo};
 
 pub const RTC_VID_PID: (u16, u16) = (0x12BA, 0x00FF);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InputKind {
-    /// Rocksmith Real Tone Cable.
+    /// RS Real Tone Cable.
     RealToneCable,
     /// An audio interface / guitar interface / amp modeller.
     Interface,
@@ -143,12 +143,12 @@ pub fn is_real_tone_cable(d: &DeviceInfo) -> bool {
             .instance_paths
             .iter()
             .any(|p| p.to_uppercase().contains("VID_12BA&PID_00FF"))
-        || t.contains("rocksmith")
+        || t.contains(qrs_formats::game_names::CABLE_NAME_PART)
         || t.contains("real tone")
 }
 
 /// Score every input device (devices without inputs are left out).
-pub fn rank_inputs(devices: &[DeviceInfo], rs: Option<&RocksmithSetup>) -> Vec<RankedInput> {
+pub fn rank_inputs(devices: &[DeviceInfo], rs: Option<&RsSetup>) -> Vec<RankedInput> {
     let asio_names: Vec<String> = devices
         .iter()
         .filter(|d| d.id.backend == Backend::Asio)
@@ -170,16 +170,10 @@ pub fn rank_inputs(devices: &[DeviceInfo], rs: Option<&RocksmithSetup>) -> Vec<R
                 Backend::System if d.id.id == "default-in" => {
                     (100, InputKind::SystemDefault, "the system's default input".into())
                 }
-                _ if is_real_tone_cable(d) => {
-                    (1000, InputKind::RealToneCable, "Rocksmith Real Tone Cable".into())
-                }
+                _ if is_real_tone_cable(d) => (1000, InputKind::RealToneCable, "RS Real Tone Cable".into()),
                 Backend::Asio => {
                     if rs_asio_input.as_deref() == Some(d.name.to_lowercase().as_str()) {
-                        (
-                            900,
-                            InputKind::Interface,
-                            "your Rocksmith (RS_ASIO) guitar input".into(),
-                        )
+                        (900, InputKind::Interface, "your RS_ASIO guitar input".into())
                     } else if has_any(&t, &GENERIC_ASIO) {
                         (300, InputKind::Other, "generic ASIO driver".into())
                     } else {
@@ -461,8 +455,8 @@ mod tests {
             None,
             "",
         ));
-        let setup = RocksmithSetup {
-            rs_asio: Some(super::super::rocksmith::RsAsio {
+        let setup = RsSetup {
+            rs_asio: Some(super::super::rs_setup::RsAsio {
                 enable_asio: true,
                 inputs: vec![("NUX Audio".into(), 0)],
                 ..Default::default()

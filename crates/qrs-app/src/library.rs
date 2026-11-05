@@ -22,6 +22,7 @@ use qrs_ui::widgets::{self, ButtonStyle, RoundKind, button, button_width, intera
 use crate::state::AppState;
 
 mod lessons;
+pub mod levels;
 mod licks;
 
 // -- the Python app's whole pixels ----------------------------------------------------------------------------------
@@ -102,14 +103,21 @@ pub fn line(p: &Painter, a: Pos2, b: Pos2, w: i64, color: Color32) {
     paint::rrect(p, r, 0.0, color);
 }
 
-pub const SORTS: [&str; 6] = [
+pub const SORTS: [&str; 8] = [
     "artist",
     "title",
     "recently added",
     "recently played",
     "best score",
     "most played",
+    "difficulty",
+    "length",
 ];
+
+/// The sort a column's header picks (P37.6b): SONG artist / title, LEVEL difficulty, BEST best score, LENGTH length.
+pub fn sort_index(name: &str) -> usize {
+    SORTS.iter().position(|s| *s == name).unwrap_or(0)
+}
 const EXPAND: f32 = 100.0;
 const ROW_H: f32 = 52.0;
 const PREVIEW_DELAY: f32 = 0.5;
@@ -127,23 +135,35 @@ pub enum View {
     Played,
     Unplayed,
     Tuning(String),
+    /// Songs with a bass part (P37.6a: listed when the input is a bass).
+    Bass,
     Playlist(String),
     /// An automatic playlist (owner request, 2026-11-02): every song with a run at full speed of at least this
     /// accuracy (70, 80 or 90 percent), so 70% holds the 80% and 90% songs too.
     Over(u8),
+    /// Songs by difficulty (P37.6b, D137): a band of `levels::BANDS` (Easy, Medium, Hard).
+    Level(usize),
 }
 
 /// The automatic playlists' thresholds (percent), shown above your own playlists (65 / 80 / 90: owner, 2026-11-03).
 pub const OVER: [u8; 3] = [65, 80, 90];
 
 /// An automatic playlist's rank mark (`tier` 0, 1, 2 for `OVER`'s thresholds), centred at `c`: one bronze chevron,
-/// two silver, three gold.
+/// two silver, three gold (deeper metals on a light theme, where the pale silver and gold were lost: P37.10).
 pub fn draw_rank(p: &Painter, c: Pos2, tier: usize) {
-    let col = [
-        Color32::from_rgb(0xcd, 0x86, 0x4e),
-        Color32::from_rgb(0xd4, 0xdb, 0xe3),
-        Color32::from_rgb(0xf5, 0xc5, 0x42),
-    ][tier.min(2)];
+    let col = if theme::is_dark() {
+        [
+            Color32::from_rgb(0xcd, 0x86, 0x4e),
+            Color32::from_rgb(0xd4, 0xdb, 0xe3),
+            Color32::from_rgb(0xf5, 0xc5, 0x42),
+        ]
+    } else {
+        [
+            Color32::from_rgb(0xa8, 0x5c, 0x26),
+            Color32::from_rgb(0x6e, 0x7a, 0x88),
+            Color32::from_rgb(0xb8, 0x82, 0x0a),
+        ]
+    }[tier.min(2)];
     let n = tier.min(2) + 1;
     let (w, h, gap) = (px(5.0), px(3.0), px(4.0));
     let top = c.y - (n as f32 - 1.0) * gap / 2.0;
@@ -159,6 +179,87 @@ pub fn reached(acc: f64, pc: u8) -> bool {
     (acc * 100.0).round() >= pc as f64
 }
 
+/// The rank tier an accuracy (0 to 1) has reached: 0, 1, 2 for `OVER`'s 65 / 80 / 90%, None under 65% (P37.10).
+pub fn rank_tier(acc: f64) -> Option<usize> {
+    OVER.iter().rposition(|&pc| reached(acc, pc))
+}
+
+/// A song's rank badge (P37.10, D117): (tier, its best accuracy at full speed, the part it was on), by the automatic
+/// playlists' own rule, so a song in "80% and up" shows the 80% mark everywhere. None: never played at full speed,
+/// or under 65%.
+pub fn song_rank(ud: &qrs_library::UserData, ids: &[String]) -> Option<(usize, f64, String)> {
+    let (acc, part) = ud.best_full_speed(ids)?;
+    Some((rank_tier(acc)?, acc, part))
+}
+
+/// A badge's tooltip: "Best at full speed: 89% (Lead). Rank marks: one chevron 65%, two 80%, three 90%" (P37.6b:
+/// the marks were never explained).
+pub fn rank_tip(acc: f64, part: &str) -> String {
+    let mut name: String = part.chars().take(1).flat_map(char::to_uppercase).collect();
+    name.push_str(&part.chars().skip(1).collect::<String>());
+    format!(
+        "Best at full speed: {}% ({name}). Rank marks: one chevron 65%, two 80%, three 90% and up",
+        (acc * 100.0).round() as i64
+    )
+}
+
+/// The room a rank badge takes after a title (its gap and the chevrons; points at scale 1).
+pub const RANK_W: f32 = 18.0;
+
+/// A random pick of one of `cands` (P37.10): not one of `avoid` while another is left, the last of `avoid` given up
+/// first when every candidate is in it (so `[just played, selected]` keeps away from the song just played the
+/// longest). `seed`: any number (`random_seed` in the app, fixed in tests).
+pub fn pick_random(cands: &[usize], avoid: &[usize], seed: u64) -> Option<usize> {
+    if cands.is_empty() {
+        return None;
+    }
+    let mut x = seed.wrapping_add(0x9E37_79B9_7F4A_7C15); // splitmix64
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    for keep in (0..=avoid.len()).rev() {
+        let pool: Vec<usize> = cands
+            .iter()
+            .copied()
+            .filter(|c| !avoid[..keep].contains(c))
+            .collect();
+        if !pool.is_empty() {
+            return Some(pool[(x % pool.len() as u64) as usize]);
+        }
+    }
+    None
+}
+
+/// A fresh seed for `pick_random`: the clock's nanoseconds and a count of the calls.
+pub fn random_seed() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    t ^ N
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_mul(0x2545_F491_4F6C_DD1D)
+}
+
+/// A list's Random key (P37.10): the shuffle icon, quiet (secondary ink, a plate only under the pointer, as the
+/// toolbar's tools), with its tooltip.
+pub fn random_key(ui: &Ui, rect: Rect, id: impl egui::AsId, tip: &str) -> egui::Response {
+    let th = t();
+    let resp = interact(ui, rect, id, Sense::click());
+    let hot = resp.hovered();
+    let p = ui.painter();
+    if hot {
+        paint::raised(p, rect, Some(10.0), 2.0, Fill::Base, 0.0);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let down = resp.is_pointer_button_down_on();
+    let c = rect.center() + vec2(0.0, if down { pixels(1.0) } else { 0.0 });
+    icons::icon(p, Icon::Shuffle, c, 17.0, if hot { th.text } else { th.text_2 });
+    resp.on_hover_text(tip)
+}
+
 impl View {
     pub fn title(&self) -> String {
         match self {
@@ -171,8 +272,10 @@ impl View {
             View::Played => "Played".into(),
             View::Unplayed => "Not played yet".into(),
             View::Tuning(t) => t.clone(),
+            View::Bass => "Has a bass part".into(),
             View::Playlist(n) => n.clone(),
             View::Over(pc) => format!("{pc}% and up"),
+            View::Level(b) => format!("{} songs", levels::BANDS[(*b).min(2)].0),
         }
     }
 }
@@ -188,6 +291,11 @@ pub enum Req {
     /// Open the player on row g's part paused, at the start, without counting in (a double-click on a song: owner
     /// request, 2026-11-02); its first Play counts in as ever.
     Open {
+        g: usize,
+        part: String,
+    },
+    /// Open the player on row g's part paused, its last review up (Home's Carry on card, P34.6: as E there).
+    Review {
         g: usize,
         part: String,
     },
@@ -246,15 +354,43 @@ pub fn main_tuning(e: &qrs_library::SongEntry) -> String {
         .unwrap_or_else(|| "?".into())
 }
 
+/// The tuning a row shows: on a bass (P37.6a) its bass part's, when it has one; else `main_tuning`.
+pub fn shown_tuning(st: &AppState, e: &qrs_library::SongEntry) -> String {
+    tuning_for(e, st.instrument().is_bass())
+}
+
+/// `shown_tuning` for an instrument that is (`bass`) or isn't a bass.
+pub fn tuning_for(e: &qrs_library::SongEntry, bass: bool) -> String {
+    match bass_part(e).filter(|_| bass) {
+        Some(b) => b.tuning.clone(),
+        None => main_tuning(e),
+    }
+}
+
 /// The part you'd play by default: the kind you played last (lead, rhythm, bass...), else the first that isn't a
-/// bonus.
+/// bonus. On a bass (P32.1) the song's bass part first.
 pub fn last_part<'a>(st: &AppState, e: &'a qrs_library::SongEntry) -> Option<&'a qrs_library::PartEntry> {
+    if st.instrument().is_bass()
+        && let Some(b) = bass_part(e)
+    {
+        return Some(b);
+    }
     let want = st.config.str("last_arrangement", "lead");
     e.arrangements
         .iter()
         .find(|a| a.name.to_lowercase() == want)
         .or_else(|| e.arrangements.iter().find(|a| !a.bonus))
         .or(e.arrangements.first())
+}
+
+/// A song's bass part (its main one: not a bonus, when there's one).
+pub fn bass_part(e: &qrs_library::SongEntry) -> Option<&qrs_library::PartEntry> {
+    let bass = |a: &&qrs_library::PartEntry| a.name.to_lowercase().starts_with("bass");
+    e.arrangements
+        .iter()
+        .filter(bass)
+        .find(|a| !a.bonus)
+        .or_else(|| e.arrangements.iter().find(bass))
 }
 
 /// The sidebar well and the main column, for Home and the library pages.
@@ -461,6 +597,10 @@ pub struct Counts {
     pub playlists: Vec<(String, usize)>,
     /// Songs in each automatic playlist (`OVER`).
     pub over: [usize; 3],
+    /// Songs in each difficulty band (`levels::BANDS`).
+    pub level: [usize; 3],
+    /// Songs with a bass part.
+    pub bass: usize,
 }
 
 impl Default for LibView {
@@ -519,15 +659,17 @@ impl LibView {
     }
 
     pub fn tuning_counts(&mut self, st: &AppState) -> Vec<(String, usize)> {
+        // (a bass shows its parts' tunings: the key holds which, P37.6a)
+        let key = st.version.wrapping_mul(2) | st.instrument().is_bass() as u64;
         if let Some((v, tc)) = &self.tunings
-            && *v == st.version
+            && *v == key
         {
             return tc.clone();
         }
         let mut m: HashMap<String, usize> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
         for g in Self::rows(st) {
-            let tn = main_tuning(st.song(g));
+            let tn = shown_tuning(st, st.song(g));
             if !m.contains_key(&tn) {
                 order.push(tn.clone());
             }
@@ -535,7 +677,7 @@ impl LibView {
         }
         let mut tc: Vec<(String, usize)> = order.into_iter().map(|k| (k.clone(), m[&k])).collect();
         tc.sort_by_key(|t| std::cmp::Reverse(t.1)); // Counter.most_common: by count, ties in first-seen order
-        self.tunings = Some((st.version, tc.clone()));
+        self.tunings = Some((key, tc.clone()));
         tc
     }
 
@@ -553,6 +695,7 @@ impl LibView {
             ..Default::default()
         };
         let mut row_ids: Vec<Vec<String>> = Vec::new();
+        let bass = st.instrument().is_bass();
         for g in Self::rows(st) {
             let ids = st.ids(g);
             c.all += 1;
@@ -567,9 +710,17 @@ impl LibView {
             if ud.best(&ids, None).is_some() {
                 c.played += 1;
             }
+            if bass_part(st.song(g)).is_some() {
+                c.bass += 1;
+            }
             if let Some(acc) = ud.best_full_speed_acc(&ids) {
                 for (n, pc) in c.over.iter_mut().zip(OVER) {
                     *n += reached(acc, pc) as usize;
+                }
+            }
+            if let Some(lv) = levels::song_level(st.song(g), bass) {
+                for (n, b) in c.level.iter_mut().zip(levels::BANDS) {
+                    *n += (b.1..=b.2).contains(&lv) as usize;
                 }
             }
             row_ids.push(ids);
@@ -602,7 +753,9 @@ impl LibView {
             self.rows_of = st.regroups;
         }
         let key = (
-            st.version.wrapping_mul(1_000_003) ^ st.userdata.version,
+            st.version.wrapping_mul(1_000_003)
+                ^ st.userdata.version
+                ^ ((st.instrument().is_bass() as u64) << 63),
             self.query.clone(),
             self.sort,
             self.view.clone(),
@@ -620,6 +773,7 @@ impl LibView {
             return;
         }
         let ud = &st.userdata;
+        let bass = st.instrument().is_bass();
         let top_tunings: Vec<String> = self.tuning_counts(st).into_iter().take(6).map(|t| t.0).collect();
         let mut items: Vec<usize> = Self::rows(st)
             .filter(|&g| {
@@ -629,12 +783,17 @@ impl LibView {
                     View::Recent => ud.last_played(&ids).is_some(),
                     View::Played => ud.best(&ids, None).is_some(),
                     View::Unplayed => ud.last_played(&ids).is_none(),
+                    View::Bass => bass_part(st.song(g)).is_some(),
                     View::Tuning(tn) => {
-                        let mt = main_tuning(st.song(g));
+                        let mt = shown_tuning(st, st.song(g));
                         mt == *tn || (tn == "Other" && !top_tunings.contains(&mt))
                     }
                     View::Playlist(name) => ud.in_playlist(name, &ids),
                     View::Over(pc) => ud.best_full_speed_acc(&ids).is_some_and(|a| reached(a, *pc)),
+                    View::Level(b) => {
+                        let (_, lo, hi) = levels::BANDS[(*b).min(2)];
+                        levels::song_level(st.song(g), bass).is_some_and(|l| (lo..=hi).contains(&l))
+                    }
                     _ => true,
                 }
             })
@@ -691,6 +850,18 @@ impl LibView {
             items.sort_by(|&a, &b| acc(b).total_cmp(&acc(a)));
         } else if mode == "most played" {
             items.sort_by_key(|&g| -ud.plays(&st.ids(g)));
+        } else if mode == "difficulty" {
+            // easiest first, songs not worked out yet last; then by artist and title
+            items.sort_by_cached_key(|&g| {
+                let s = st.song(g);
+                (
+                    levels::song_level(s, bass).unwrap_or(u8::MAX),
+                    s.artist.to_lowercase(),
+                    s.display_title().to_lowercase(),
+                )
+            });
+        } else if mode == "length" {
+            items.sort_by(|&a, &b| st.song(a).length.total_cmp(&st.song(b).length));
         }
         self.items = items;
         if let Some(c) = current
@@ -954,6 +1125,85 @@ impl LibView {
         }
     }
 
+    /// The Random key (P37.10): select a random row of the list on screen, as a click on it would (the search's
+    /// matches only, when there is a search), scrolled to the middle; not the song played last (nor the row
+    /// selected) while the list has others. On Saved licks a random lick, one whose song is in the library first.
+    pub fn random(&mut self, st: &mut AppState, area: Rect) {
+        let seed = random_seed();
+        if self.view == View::Licks {
+            let all: Vec<usize> = (0..self.lick_items.len()).collect();
+            let here: Vec<usize> = all
+                .iter()
+                .copied()
+                .filter(|&i| self.lick_rows.get(i).copied().flatten().is_some())
+                .collect();
+            let cands = if here.is_empty() { all } else { here };
+            let Some(i) = pick_random(&cands, &[self.sel], seed) else {
+                return;
+            };
+            self.sel = i;
+            let n = self.lick_visible_rows(area);
+            self.top = i
+                .saturating_sub(n / 2)
+                .min(self.lick_items.len().saturating_sub(n));
+            if let Some(l) = self.lick_items.get(i).and_then(|&li| st.userdata.licks.get(li)) {
+                let name = l.name.clone();
+                st.say(format!("Random lick: {name}"));
+            }
+            return;
+        }
+        if matches!(self.view, View::Home | View::Lessons) {
+            return;
+        }
+        let ud = &st.userdata;
+        let last_t = ud.recent.values().copied().reduce(f64::max);
+        let last = self
+            .items
+            .iter()
+            .position(|&g| last_t.is_some() && ud.last_played(&st.ids(g)) == last_t);
+        let cands: Vec<usize> = (0..self.items.len()).collect();
+        let avoid: Vec<usize> = last.into_iter().chain([self.sel]).collect();
+        let Some(i) = pick_random(&cands, &avoid, seed) else {
+            return;
+        };
+        self.sel = i;
+        let g = self.items[i];
+        if !Self::expanding(st) {
+            self.opened = Some(st.song(g).id());
+        }
+        let n = self.visible_rows(st, area);
+        self.top = i.saturating_sub(n / 2).min(self.items.len().saturating_sub(n));
+        let e = st.song(g);
+        let msg = if e.artist.is_empty() {
+            format!("Random pick: {}", e.display_title())
+        } else {
+            format!("Random pick: {} by {}", e.display_title(), e.artist)
+        };
+        st.say(msg);
+    }
+
+    /// The Random key's tooltip for the list on screen.
+    fn random_tip(&self) -> String {
+        let (n, noun) = if self.view == View::Licks {
+            (self.lick_items.len(), "lick")
+        } else {
+            (self.items.len(), "song")
+        };
+        let from = if self.query.is_empty() {
+            "this list".to_string()
+        } else {
+            format!(
+                "the {} matching your search",
+                if n == 1 {
+                    format!("1 {noun}")
+                } else {
+                    format!("{} {noun}s", fmt_int(n as i64))
+                }
+            )
+        };
+        format!("Random {noun}: pick one from {from} (Ctrl+R)")
+    }
+
     /// Open a sidebar page (Home included).
     pub fn go(&mut self, st: &mut AppState, v: View) {
         // (no Lessons page without the `lessons` feature, D50)
@@ -1045,6 +1295,7 @@ impl LibView {
                         }
                     }
                     Key::D if ctrl => self.act(st, area, "fav"),
+                    Key::R if ctrl => self.random(st, area),
                     Key::P if ctrl => self.act(st, area, "addto"),
                     Key::Delete => self.act(st, area, "remove"),
                     Key::ArrowDown => self.sel = (self.sel + 1).min(n.saturating_sub(1)),
@@ -1454,7 +1705,7 @@ impl LibView {
         if self.view != View::Licks && self.view != View::Lessons {
             left.push(("Preview the selected song", vec![], "select_preview", "switch"));
         }
-        let right: Vec<(&str, Vec<&str>, &str, &str)> = vec![
+        let mut right: Vec<(&str, Vec<&str>, &str, &str)> = vec![
             (
                 if self.view == View::Lessons {
                     "Read the lessons again"
@@ -1485,6 +1736,44 @@ impl LibView {
             }
             w
         };
+        // a narrow window (or a playlist's five keys): give way step by step until both ends fit with a gap
+        // (P37.4: at 1440 a playlist's switch ran under Rescan): a shorter preview label, the right's keycaps, no
+        // Fullscreen key (F11 still works), the left's keycaps, shorter labels
+        type Tool<'a> = (&'a str, Vec<&'a str>, &'a str, &'a str);
+        let need = |l: &[Tool<'_>], r: &[Tool<'_>]| -> f32 {
+            let side = |v: &[Tool<'_>]| -> f32 {
+                v.iter()
+                    .map(|(lb, k, _, kind)| {
+                        width(lb, k, kind) + px(4.0) + if *kind == "switch" { px(12.0) } else { 0.0 }
+                    })
+                    .sum()
+            };
+            side(l) + side(r) + px(20.0) + px(24.0)
+        };
+        for step in 0..5 {
+            if need(&left, &right) <= bar.width() {
+                break;
+            }
+            match step {
+                0 => {
+                    for t in left.iter_mut().filter(|t| t.3 == "switch") {
+                        t.0 = "Preview";
+                    }
+                }
+                1 => right.iter_mut().for_each(|t| t.1.clear()),
+                2 => right.retain(|t| t.2 != "fullscreen"),
+                3 => left.iter_mut().for_each(|t| t.1.clear()),
+                _ => {
+                    for t in left.iter_mut() {
+                        t.0 = match t.0 {
+                            "Add to playlist" => "Add to…",
+                            "Start the riff over" => "Start over",
+                            l => l,
+                        };
+                    }
+                }
+            }
+        }
         let mut acts: Vec<&str> = Vec::new();
         let tool = |x: f32,
                     label: &str,
@@ -1570,21 +1859,26 @@ impl LibView {
         }
     }
 
-    /// x of each column in the song list: star, cover, song, tuning, best, length (at its right edge).
-    fn columns(r: Rect) -> [f32; 6] {
+    /// x of each column in the song list: star, cover, song, parts, tuning, level, best, length (at its right
+    /// edge). The parts (L R C B) and the level (P37.6b) give way in a narrow list: the parts first.
+    fn columns(r: Rect) -> [f32; 8] {
         let s = scale();
         let x = r.min.x + px(12.0);
         let inner = r.width() - px(24.0);
         let (tun_w, best_w, len_w) = (
-            trunc_px((160.0 * s).min(ipx(inner) * 0.18)),
             trunc_px((150.0 * s).min(ipx(inner) * 0.17)),
+            trunc_px((140.0 * s).min(ipx(inner) * 0.16)),
             px(70.0),
         );
+        let level_w = if inner > px(560.0) { px(84.0) } else { 0.0 };
+        let parts_w = if inner > px(720.0) { px(78.0) } else { 0.0 };
         let length = x + inner;
         let best = length - len_w - best_w;
-        let tuning = best - tun_w;
+        let level = best - level_w;
+        let tuning = level - tun_w;
+        let parts = tuning - parts_w;
         let art = x + px(30.0);
-        [x, art, art + px(56.0), tuning, best, length] // star, art, song, tuning, best, length
+        [x, art, art + px(56.0), parts, tuning, level, best, length]
     }
 
     /// The songs on a screen: a header of columns, then a row each (a star for favourites, the cover, title and
@@ -1593,18 +1887,87 @@ impl LibView {
     fn draw_list(&mut self, ui: &Ui, st: &mut AppState, area: Rect, well: Rect) {
         let p = ui.painter().clone();
         let th = t();
+        let bass_input = st.instrument().is_bass();
         paint::display(&p, well, Some(24.0), 6.0);
         let r = Rect::from_min_size(
             pos2(well.min.x + px(12.0), well.min.y + px(10.0) + px(34.0)),
             vec2(well.width() - px(24.0), well.height() - px(10.0) - px(34.0)),
         );
         self.list = Some(r);
-        let [c_star, c_art, c_song, c_tun, c_best, c_len] = Self::columns(r);
+        let [c_star, c_art, c_song, c_parts, c_tun, c_lvl, c_best, c_len] = Self::columns(r);
+        let bass = st.instrument().is_bass();
         let hy = well.min.y + px(10.0) + px(17.0);
-        caps(&p, "SONG", pos2(c_song, hy), 11.0, Align2::LEFT_CENTER, None);
-        caps(&p, "TUNING", pos2(c_tun, hy), 11.0, Align2::LEFT_CENTER, None);
-        caps(&p, "BEST", pos2(c_best, hy), 11.0, Align2::LEFT_CENTER, None);
-        caps(&p, "LENGTH", pos2(c_len, hy), 11.0, Align2::RIGHT_CENTER, None);
+        // the column heads: a click on SONG, LEVEL, BEST or LENGTH sorts by it (SONG: artist, again: title)
+        let mut sort_to: Option<usize> = None;
+        let mode = SORTS[self.sort];
+        let mut head = |label: &str, x: f32, align: Align2, sorts: Option<(&str, &str)>, tip: &str| {
+            let on = sorts.is_some_and(|(a, b)| mode == a || mode == b);
+            let col = if on { th.accent_ink } else { th.caption };
+            let tr = text::caps(&p, label, anchor_at(pos2(x, hy)), 11.0, col, align, None);
+            let hit = tr.expand2(vec2(px(6.0), px(8.0)));
+            let resp = interact(ui, hit, ("lib-head", label), Sense::click());
+            let Some((a, b)) = sorts else {
+                if !tip.is_empty() {
+                    resp.on_hover_text(tip);
+                }
+                return;
+            };
+            if on {
+                let cx = if align == Align2::RIGHT_CENTER {
+                    tr.min.x - px(9.0)
+                } else {
+                    tr.max.x + px(9.0)
+                };
+                icons::icon(&p, Icon::Down, pos2(cx, hy), 11.0, col);
+            }
+            let then = if mode == a && a != b { b } else { a };
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if resp.on_hover_text(format!("Sort by {then}")).clicked() {
+                sort_to = Some(sort_index(then));
+            }
+        };
+        head("SONG", c_song, Align2::LEFT_CENTER, Some(("artist", "title")), "");
+        if c_tun > c_parts {
+            head(
+                "PARTS",
+                c_parts,
+                Align2::LEFT_CENTER,
+                None,
+                "The parts a song has: L lead, R rhythm, C combo, B bass",
+            );
+        }
+        head("TUNING", c_tun, Align2::LEFT_CENTER, None, "");
+        if c_best > c_lvl {
+            head(
+                "LEVEL",
+                c_lvl,
+                Align2::LEFT_CENTER,
+                Some(("difficulty", "difficulty")),
+                "",
+            );
+        }
+        head(
+            "BEST",
+            c_best,
+            Align2::LEFT_CENTER,
+            Some(("best score", "best score")),
+            "",
+        );
+        head(
+            "LENGTH",
+            c_len,
+            Align2::RIGHT_CENTER,
+            Some(("length", "length")),
+            "",
+        );
+        if let Some(i) = sort_to {
+            self.sort = i;
+        }
+        // the Random key over the covers, just left of SONG (P37.10)
+        let rk = Rect::from_center_size(pos2(c_art + px(20.0), hy), vec2(px(36.0), px(28.0)));
+        let random = !self.items.is_empty() && random_key(ui, rk, "lib-random", &self.random_tip()).clicked();
         let rh = px(ROW_H);
         // (the rows stop 14 pt above the well's foot, clear of its shaded edge and round corners, and fade out into
         // its screen there: cut off at the edge, the last row met the page's lighter grey. Owner report, 2026-11-03)
@@ -1695,8 +2058,10 @@ impl LibView {
             if !crate::covers::draw(&lp, &st.covers, &e, ipx(art_r.width()), art_r, 9.0, false) {
                 paint::rrect(&lp, art_r, px(9.0), th.screen_hi);
             }
-            let tw = c_tun - px(16.0) - c_song;
-            txt(
+            let tw = c_parts - px(16.0) - c_song;
+            // the title, then its rank badge (P37.10): the titles keep their line
+            let rank = song_rank(&st.userdata, &ids);
+            let tr = txt(
                 &lp,
                 &e.display_title(),
                 pos2(c_song, cy - px(9.0)),
@@ -1704,8 +2069,33 @@ impl LibView {
                 th.text,
                 800,
                 Align2::LEFT_CENTER,
-                Some(tw),
+                Some(if rank.is_some() { tw - px(RANK_W) } else { tw }),
             );
+            if let Some((tier, acc, part)) = &rank {
+                let bc = pos2(tr.max.x + px(11.0), cy - px(9.0));
+                draw_rank(&lp, bc, *tier);
+                let hit = Rect::from_center_size(bc, vec2(px(20.0), px(20.0)));
+                if hot && ui.rect_contains_pointer(hit.intersect(clip)) {
+                    resp.clone().on_hover_text(rank_tip(*acc, part));
+                }
+            }
+            // the album and year on the title (P37.6b: review 3 #8)
+            if hot && ui.rect_contains_pointer(tr.intersect(clip)) {
+                let about: Vec<String> = [
+                    e.album.clone(),
+                    if e.year > 0 {
+                        e.year.to_string()
+                    } else {
+                        String::new()
+                    },
+                ]
+                .into_iter()
+                .filter(|v| !v.is_empty())
+                .collect();
+                if !about.is_empty() {
+                    resp.clone().on_hover_text(about.join("  ·  "));
+                }
+            }
             let sub = if e.needs_keys {
                 "needs keys".to_string()
             } else {
@@ -1729,19 +2119,87 @@ impl LibView {
             } else {
                 sr.max.x + px(8.0)
             };
-            if mx + fw <= c_song + tw + px(8.0) {
-                format_mark(&lp, &fmt, pos2(mx, cy + px(10.0)), 10.0);
+            // the file's format only on the row under the pointer or the selected one (P37.6b: on every row it was
+            // noise to a newcomer); on a bass (P37.6a, D134) NO BASS on the few songs without a bass part
+            let mut mx = mx;
+            if (hot || chosen) && mx + fw <= c_song + tw + px(8.0) {
+                mx = format_mark(&lp, &fmt, pos2(mx, cy + px(10.0)), 10.0).max.x + px(6.0);
+            }
+            let bw = format_mark_width(&st.ctx, "NO BASS", 10.0);
+            if bass_input && bass_part(&e).is_none() && mx + bw <= c_song + tw + px(8.0) {
+                format_mark(&lp, "NO BASS", pos2(mx, cy + px(10.0)), 10.0);
+            }
+            if c_tun > c_parts {
+                // the parts it has, as letters
+                let (lsz, mut lx) = (levels::letter_size(), c_parts);
+                for ch in levels::part_letters(&e) {
+                    let lr = Rect::from_min_size(pos2(lx, cy - snap(lsz.y / 2.0)), lsz);
+                    lp.rect_stroke(
+                        lr,
+                        px(4.0),
+                        Stroke::new(pixels(1.0), th.caption.gamma_multiply(0.5)),
+                        egui::StrokeKind::Inside,
+                    );
+                    txt(
+                        &lp,
+                        &ch.to_string(),
+                        lr.center(),
+                        10.0,
+                        th.text_2,
+                        800,
+                        Align2::CENTER_CENTER,
+                        None,
+                    );
+                    lx = snap(lr.max.x + px(3.0));
+                }
+                let cell = Rect::from_min_max(pos2(c_parts, row.min.y), pos2(c_tun - px(6.0), row.max.y));
+                if hot && ui.rect_contains_pointer(cell.intersect(clip)) {
+                    resp.clone().on_hover_text(levels::parts_tip(&e));
+                }
             }
             txt(
                 &lp,
-                &main_tuning(&e),
+                &tuning_for(&e, bass_input),
                 pos2(c_tun, cy),
                 13.0,
                 th.text_2,
                 500,
                 Align2::LEFT_CENTER,
-                Some(c_best - c_tun - px(14.0)),
+                Some(c_lvl - c_tun - px(14.0)),
             );
+            if c_best > c_lvl {
+                let cell = Rect::from_min_max(pos2(c_lvl, row.min.y), pos2(c_best - px(6.0), row.max.y));
+                match levels::song_level(&e, bass) {
+                    Some(lv) => {
+                        let pr = levels::draw_pips(&lp, pos2(c_lvl, cy), lv);
+                        txt(
+                            &lp,
+                            &lv.to_string(),
+                            pos2(pr.max.x + px(8.0), cy),
+                            12.0,
+                            levels::level_color(lv),
+                            800,
+                            Align2::LEFT_CENTER,
+                            None,
+                        );
+                    }
+                    None => {
+                        txt(
+                            &lp,
+                            "–",
+                            pos2(c_lvl, cy),
+                            13.0,
+                            th.caption,
+                            500,
+                            Align2::LEFT_CENTER,
+                            None,
+                        );
+                    }
+                }
+                if hot && ui.rect_contains_pointer(cell.intersect(clip)) {
+                    resp.clone().on_hover_text(levels::level_tip(&e, bass));
+                }
+            }
             let best = st.userdata.best(&ids, None);
             let btxt = best_text(best);
             let bcol = if best.is_some() { th.text } else { th.caption };
@@ -1852,20 +2310,22 @@ impl LibView {
                 None,
             );
         } else if !st.scanning() && st.songs.is_empty() {
-            let dirs: Vec<String> = st.dirs.iter().map(|d| d.display().to_string()).collect();
-            txt(
-                &p,
-                &format!(
-                    "No songs yet: put your .psarc or .feedpak files in {}",
-                    dirs.join("  or  ")
-                ),
-                pos2(r.min.x + px(16.0), r.min.y + px(80.0)),
-                15.0,
-                th.accent_ink,
-                500,
-                Align2::LEFT_TOP,
-                Some(r.width() - px(32.0)),
-            );
+            // (wrapped: P37.6b's note on where songs come from is a few lines)
+            let style = Style::new(15.0, 500, th.accent_ink);
+            let note = format!("No songs yet. {}", crate::home::songs_note(st));
+            let mut ly = r.min.y + px(80.0);
+            for l in text::wrap(&st.ctx, &note, style, r.width() - px(32.0)) {
+                ly = text::draw(
+                    &p,
+                    &l,
+                    pos2(r.min.x + px(16.0), ly),
+                    Align2::LEFT_TOP,
+                    style,
+                    None,
+                )
+                .max
+                .y;
+            }
         }
         if layout
             .last()
@@ -1881,7 +2341,9 @@ impl LibView {
             );
         }
         self.draw_scrollbar(ui, st, area, r);
-        if let Some(g) = star_hit {
+        if random {
+            self.random(st, area);
+        } else if let Some(g) = star_hit {
             self.toggle_favorite(st, Some(g));
         } else if let Some((i, double)) = clicked_row {
             self.sel = i;
@@ -2046,6 +2508,15 @@ impl LibView {
                 1..=9 => "1 to 9 plays".into(),
                 _ => "Never played".into(),
             },
+            "difficulty" => match levels::song_level(s, st.instrument().is_bass()) {
+                Some(l) => format!("{} ({l}/10)", qrs_library::PartLevel::word(l)),
+                None => "Not worked out yet".into(),
+            },
+            "length" => match s.length {
+                l if l < 180.0 => "Under 3 minutes".into(),
+                l if l < 300.0 => "3 to 5 minutes".into(),
+                _ => "Over 5 minutes".into(),
+            },
             _ => return None,
         })
     }
@@ -2129,6 +2600,8 @@ impl LibView {
         let fav = st.userdata.is_favorite(&ids);
         let fmt = format_label(st, g);
         let fw = format_mark_width(ctx, &fmt, 11.0) + px(12.0);
+        let rank = song_rank(&st.userdata, &ids);
+        let rw = if rank.is_some() { px(RANK_W + 4.0) } else { 0.0 };
         let tr = txt(
             p,
             &e.display_title(),
@@ -2137,8 +2610,15 @@ impl LibView {
             th.text,
             800,
             Align2::LEFT_TOP,
-            Some(tw - px(28.0) - fw),
+            Some(tw - px(28.0) - fw - rw),
         );
+        if let Some((tier, acc, part)) = &rank {
+            let bc = pos2(tr.max.x + px(13.0), centery(tr));
+            draw_rank(p, bc, *tier);
+            let hit = Rect::from_center_size(bc, vec2(px(22.0), px(22.0)));
+            interact(ui, hit, ("lib-open-rank", g), Sense::hover()).on_hover_text(rank_tip(*acc, part));
+        }
+        let tr = tr.union(Rect::from_min_size(tr.min, vec2(tr.width() + rw, tr.height())));
         let star = draw_star(p, pos2(tr.max.x + px(16.0), centery(tr)), 8.0, fav);
         format_mark(p, &fmt, pos2(star.max.x + px(12.0), centery(tr)), 11.0);
         if interact(
@@ -2174,7 +2654,10 @@ impl LibView {
             Some(tw),
         );
         let parts: Vec<&str> = e.arrangements.iter().map(|a| a.name.as_str()).collect();
-        let mut bits = vec![parts.join(", "), main_tuning(e)];
+        let mut bits = vec![parts.join(", "), shown_tuning(st, e)];
+        if let Some(lv) = levels::song_level(e, st.instrument().is_bass()) {
+            bits.push(format!("{} {lv}/10", qrs_library::PartLevel::word(lv)));
+        }
         if let Some((score, acc, _)) = st.userdata.best(&ids, None) {
             bits.push(format!(
                 "best {} ({}%)",
@@ -2201,7 +2684,7 @@ impl LibView {
         if e.needs_keys {
             txt(
                 p,
-                "This psarc needs Rocksmith's keys: add them in Settings > Directories (F2).",
+                "This psarc needs RS's keys: add them in Settings > Directories (F2).",
                 pos2(x, tr.max.y + px(56.0)),
                 13.0,
                 th.miss,
@@ -2371,6 +2854,12 @@ impl LibView {
                 draw_rank(&sp, pos2(x + px(8.0), rcy), tier);
                 x += px(24.0);
             }
+            if let Some(View::Level(b)) = &view {
+                // the band's colour as a dot (the rows' pips in that colour)
+                let lv = levels::BANDS[(*b).min(2)].1;
+                sp.circle_filled(pos2(x + px(8.0), rcy), px(4.5), levels::level_color(lv));
+                x += px(24.0);
+            }
             match icon {
                 Some(Icon::Star) => {
                     draw_star(&sp, pos2(x + px(7.0), rcy), 7.0, true);
@@ -2405,6 +2894,15 @@ impl LibView {
                     None,
                 );
             }
+            let resp = match &view {
+                Some(View::Over(pc)) => resp.on_hover_text(format!(
+                    "Songs you've played to {pc}% or more at full speed (the chevrons by their titles: one 65%,                      two 80%, three 90%)"
+                )),
+                Some(View::Level(_)) => resp.on_hover_text(
+                    "By difficulty, worked out from each part's chart: notes a second, chords, techniques, how high                      up the neck, tempo (1 easiest, 10 hardest)",
+                ),
+                _ => resp,
+            };
             if resp.clicked() {
                 match view {
                     Some(v) => go = Some(v),
@@ -2467,6 +2965,27 @@ impl LibView {
             None,
             36.0,
         );
+        if st.instrument().is_bass() {
+            item(
+                &mut y,
+                "Has a bass part",
+                Some(View::Bass),
+                Some(counts.bass),
+                None,
+                36.0,
+            );
+        }
+        header(&mut y, "DIFFICULTY");
+        for (b, (name, lo, hi)) in levels::BANDS.iter().enumerate() {
+            item(
+                &mut y,
+                &format!("{name} ({lo}-{hi})"),
+                Some(View::Level(b)),
+                Some(counts.level[b]),
+                None, // (its colour: a dot)
+                36.0,
+            );
+        }
         header(&mut y, "PLAYLISTS");
         // the automatic ones first, your own under them
         for (pc, n) in OVER.into_iter().zip(counts.over) {
@@ -3274,6 +3793,51 @@ fn first_row(top: usize, len: usize) -> usize {
 #[cfg(test)]
 mod tests {
 
+    /// P32.1: a song's bass part (its main one before a bonus bass), none in a song without one.
+    #[test]
+    fn a_songs_bass_part() {
+        use qrs_library::{PartEntry, SongEntry};
+        let part = |key: &str, name: &str, bonus: bool| PartEntry {
+            key: key.into(),
+            name: name.into(),
+            bonus,
+            ..PartEntry::default()
+        };
+        let mut e = SongEntry {
+            arrangements: vec![
+                part("lead", "Lead", false),
+                part("bass2", "Bass", true),
+                part("bass", "Bass", false),
+            ],
+            ..SongEntry::default()
+        };
+        assert_eq!(super::bass_part(&e).map(|a| a.key.as_str()), Some("bass"));
+        e.arrangements.truncate(2);
+        assert_eq!(super::bass_part(&e).map(|a| a.key.as_str()), Some("bass2"));
+        e.arrangements.truncate(1);
+        assert!(super::bass_part(&e).is_none());
+    }
+
+    /// P37.6a: on a bass the row's tuning is its bass part's; a song without one shows its guitar part's.
+    #[test]
+    fn a_bass_sees_the_bass_parts_tuning() {
+        use qrs_library::{PartEntry, SongEntry};
+        let part = |key: &str, name: &str, tuning: &str| PartEntry {
+            key: key.into(),
+            name: name.into(),
+            tuning: tuning.into(),
+            ..PartEntry::default()
+        };
+        let mut e = SongEntry {
+            arrangements: vec![part("lead", "Lead", "Drop D"), part("bass", "Bass", "E Standard")],
+            ..SongEntry::default()
+        };
+        assert_eq!(super::tuning_for(&e, false), "Drop D");
+        assert_eq!(super::tuning_for(&e, true), "E Standard");
+        e.arrangements.truncate(1);
+        assert_eq!(super::tuning_for(&e, true), "Drop D");
+    }
+
     /// P27.2: the smooth scroll gets there without overshooting, and a touchpad's small deltas add up instead of
     /// being cut to nothing.
     #[test]
@@ -3291,6 +3855,82 @@ mod tests {
         // twenty touchpad nudges of a twentieth of a notch each: three rows, as one notch
         let t = (0..20).fold(0.0f32, |t, _| t + 0.05 * 3.0);
         assert!((t - 3.0).abs() < 1e-4);
+    }
+
+    /// P37.10: the badge's tier at and around the playlists' 65 / 80 / 90% (rounded as the results card: 64.51% is 65%).
+    #[test]
+    fn rank_tiers_at_the_thresholds() {
+        use super::rank_tier;
+        for (acc, tier) in [
+            (0.0, None),
+            (0.6449, None),
+            (0.6451, Some(0)),
+            (0.65, Some(0)),
+            (0.79, Some(0)),
+            (0.7949, Some(0)),
+            (0.7951, Some(1)),
+            (0.89, Some(1)),
+            (0.8949, Some(1)),
+            (0.8951, Some(2)),
+            (0.9, Some(2)),
+            (1.0, Some(2)),
+        ] {
+            assert_eq!(rank_tier(acc), tier, "{acc}");
+        }
+    }
+
+    /// P37.10: a song's badge is its best at full speed (any part), named in the tooltip; never played or under 65%:
+    /// none.
+    #[test]
+    fn a_songs_rank_and_its_tip() {
+        let p = std::env::temp_dir().join(format!("qrs-rank-{}.json", std::process::id()));
+        std::fs::write(
+            &p,
+            r#"{"scores": {"r|": {"lead": {"best": 700, "best_acc": 0.89, "speed": 1.0},
+                                 "rhythm": {"best": 990, "best_acc": 0.97, "speed": 0.7}},
+                          "l|": {"lead": {"best": 100, "best_acc": 0.6, "speed": 1.0}},
+                          "g|": {"bass": {"best": 900, "best_acc": 0.93, "speed": 1.0}}}}"#,
+        )
+        .unwrap();
+        let ud = qrs_library::UserData::load(&p);
+        let ids = |s: &str| vec![s.to_string()];
+        let (tier, acc, part) = super::song_rank(&ud, &ids("r|")).unwrap();
+        assert_eq!(
+            (tier, part.as_str()),
+            (1, "lead"),
+            "Reptilia at 89%: the 80% mark, its slowed 97% not counted"
+        );
+        assert!(
+            super::rank_tip(acc, &part)
+                .starts_with("Best at full speed: 89% (Lead). Rank marks: one chevron 65%")
+        );
+        assert_eq!(super::song_rank(&ud, &ids("g|")).map(|r| r.0), Some(2));
+        assert!(super::song_rank(&ud, &ids("l|")).is_none(), "under 65%");
+        assert!(super::song_rank(&ud, &ids("never|")).is_none(), "never played");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// P37.10: a random pick is one of the list's (the search's matches) rows, not the song played last nor the
+    /// selected row while there are others, spread over the rest; a list of one gives that one.
+    #[test]
+    fn a_random_pick_keeps_to_the_list() {
+        use super::pick_random;
+        let matches = [2usize, 5, 7, 9]; // rows the search left
+        let mut seen = std::collections::HashSet::new();
+        for seed in 0..400u64 {
+            let i = pick_random(&matches, &[5, 7], seed).unwrap();
+            assert!(matches.contains(&i) && i != 5 && i != 7, "{i}");
+            seen.insert(i);
+        }
+        assert_eq!(seen.len(), 2, "both of the others come up");
+        // two rows, one just played and the other selected: the other (the selected one gives way first)
+        for seed in 0..50u64 {
+            assert_eq!(pick_random(&[3, 4], &[3, 4], seed), Some(4));
+        }
+        assert_eq!(pick_random(&[3], &[3], 1), Some(3));
+        assert_eq!(pick_random(&[], &[], 1), None);
+        // the same seed, the same pick
+        assert_eq!(pick_random(&matches, &[], 42), pick_random(&matches, &[], 42));
     }
 
     use super::first_row;

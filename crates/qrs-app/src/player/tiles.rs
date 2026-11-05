@@ -1,6 +1,6 @@
 //! The tiles in the console (port of the tile half of rsplay/app.py `PlayerView`): Note & chord (with a piano or
 //! the guitar neck, and a chord diagram), Lyrics, Score and Tuner, each a screen sunk into the console. They're
-//! chosen and ordered under the controls' TILES heading or by dragging their top edge; each has a close key and, beside
+//! ordered in Settings > Display or by dragging their top edge; none can be deleted (P35.2): beside
 //! its grab bar, a key that folds it to a slim strip (a click on the strip opens it again).
 //! Every layout number is the Python app's, in its whole pixels (`qrs_ui::units`).
 
@@ -10,22 +10,25 @@ use qrs_formats::Techs;
 use qrs_formats::model::{BASS_OPEN_MIDI, GUITAR_OPEN_MIDI, HandShape};
 use qrs_ui::anim;
 use qrs_ui::icons::{self, Icon};
-use qrs_ui::keys::{self, CapOn, Gem, keycap};
+use qrs_ui::keys::{self, CapOn, keycap};
 use qrs_ui::knobs;
 use qrs_ui::paint::{self, Fill};
 use qrs_ui::raster::mix;
 use qrs_ui::text::{self, Style};
 use qrs_ui::theme::{STRING_PALETTE, string_color, string_colors_on, string_highlight, t};
 use qrs_ui::units::{pixels, px, pxr, scale, to_px};
-use qrs_ui::widgets::{self, RoundKind, interact};
+#[cfg(feature = "nux")]
+use qrs_ui::widgets;
+use qrs_ui::widgets::interact;
 use serde_json::{Value, json};
 
 use super::{PlayerView, TileDrag};
 use crate::state::AppState;
+use qrs_library::Config;
 
 #[cfg(feature = "nux")]
 pub const TILES: &[(&str, &str)] = &[
-    ("board", "Pedalboard"),
+    ("board", "Rig"),
     ("note", "Note & chord"),
     ("lyrics", "Lyrics"),
     ("score", "Score"),
@@ -35,7 +38,7 @@ pub const TILES: &[(&str, &str)] = &[
 /// Without the NUX MG-300 support (the shared build): no MG-300 tile, so the pedal is never looked for.
 #[cfg(not(feature = "nux"))]
 pub const TILES: &[(&str, &str)] = &[
-    ("board", "Pedalboard"),
+    ("board", "Rig"),
     ("note", "Note & chord"),
     ("lyrics", "Lyrics"),
     ("score", "Score"),
@@ -43,7 +46,7 @@ pub const TILES: &[(&str, &str)] = &[
 ];
 const OFF_BY_DEFAULT: [&str; 1] = ["mg300"];
 const TILE_GAP: f32 = 12.0;
-/// The top right of every tile, kept free for its close key.
+/// The top right of every tile, kept free (it held the close key until P35.2; the tiles' layouts keep the slot).
 pub const CLOSE_SLOT: f32 = 40.0;
 const STD_GUITAR: [&str; 6] = ["E", "A", "D", "G", "B", "e"];
 const STD_BASS: [&str; 6] = ["E", "A", "D", "G", "B", "C"];
@@ -188,10 +191,19 @@ fn static_key(k: &str) -> Option<&'static str> {
     TILES.iter().map(|t| t.0).find(|x| *x == k)
 }
 
-/// The tiles in order, with whether each is shown; tiles added in later versions go in their default place.
+/// Tiles whose on/off is a device's (shown only when the device is used: Settings > Display turns it on); every other
+/// tile is always in the column, open or folded (P35.2: a tile can't be deleted).
+const DEVICE_TILES: [&str; 1] = ["mg300"];
+
+/// The tiles in order, with their saved on/off bit ("tiles", the Python app's shape); tiles added in later versions
+/// go in their default place. Off means folded for every tile but a device's (`tile_collapsed`).
 pub fn tile_order(st: &AppState) -> Vec<(&'static str, bool)> {
+    order_in(&st.config)
+}
+
+fn order_in(cfg: &Config) -> Vec<(&'static str, bool)> {
     let mut order: Vec<(&'static str, bool)> = Vec::new();
-    if let Some(Value::Array(saved)) = st.config.get("tiles") {
+    if let Some(Value::Array(saved)) = cfg.get("tiles") {
         for item in saved {
             let (Some(k), Some(on)) = (
                 item.get(0).and_then(Value::as_str),
@@ -221,19 +233,37 @@ pub fn tile_order(st: &AppState) -> Vec<(&'static str, bool)> {
     order
 }
 
+fn bit_in(cfg: &Config, key: &str) -> bool {
+    order_in(cfg).iter().any(|(k, on)| *k == key && *on)
+}
+
+/// Whether a tile is in the column (open or folded): every tile, but a device's only while it's on.
 pub fn tile_on(st: &AppState, key: &str) -> bool {
-    tile_order(st).iter().any(|(k, on)| *k == key && *on)
+    on_in(&st.config, key)
+}
+
+fn on_in(cfg: &Config, key: &str) -> bool {
+    !DEVICE_TILES.contains(&key) || bit_in(cfg, key)
 }
 
 pub fn set_tiles(st: &mut AppState, order: &[(&'static str, bool)]) {
-    st.config.set(
+    set_order_in(&mut st.config, order);
+}
+
+fn set_order_in(cfg: &mut Config, order: &[(&'static str, bool)]) {
+    cfg.set(
         "tiles",
         Value::Array(order.iter().map(|(k, on)| json!([k, on])).collect()),
     );
 }
 
+/// `tile:<k>` folds a tile or opens it (a device's tile: on or off); `tileup:` / `tiledown:` move it.
 pub fn tile_action(st: &mut AppState, name: &str) {
-    let mut order = tile_order(st);
+    action_in(&mut st.config, name);
+}
+
+fn action_in(cfg: &mut Config, name: &str) {
+    let mut order = order_in(cfg);
     let Some((verb, key)) = name.split_once(':') else {
         return;
     };
@@ -241,32 +271,58 @@ pub fn tile_action(st: &mut AppState, name: &str) {
         return;
     };
     match verb {
-        "tile" => order[i].1 = !order[i].1,
+        "tile" if DEVICE_TILES.contains(&key) => order[i].1 = !order[i].1,
+        "tile" => {
+            let folded = collapsed_in(cfg, key);
+            set_collapsed_in(cfg, key, !folded);
+            return;
+        }
         "tileup" if i > 0 => order.swap(i - 1, i),
         "tiledown" if i + 1 < order.len() => order.swap(i, i + 1),
         _ => {}
     }
-    set_tiles(st, &order);
+    set_order_in(cfg, &order);
 }
 
 /// Tiles folded to a slim strip (owner request, 2026-10-26): still in the column, their name showing, a click opens
-/// them again. Kept apart from "tiles" so that list keeps the Python app's shape.
+/// them again. Kept apart from "tiles" so that list keeps the Python app's shape. A tile hidden in an older version
+/// (off in "tiles") reads as folded, so it's never lost (P35.2).
 pub fn tile_collapsed(st: &AppState, key: &str) -> bool {
-    matches!(st.config.get("tiles_collapsed"), Some(Value::Array(a)) if a.iter().any(|v| v.as_str() == Some(key)))
+    collapsed_in(&st.config, key)
+}
+
+fn collapsed_in(cfg: &Config, key: &str) -> bool {
+    let listed = matches!(cfg.get("tiles_collapsed"), Some(Value::Array(a)) if a.iter().any(|v| v.as_str() == Some(key)));
+    listed || (!DEVICE_TILES.contains(&key) && !bit_in(cfg, key))
 }
 
 pub fn set_tile_collapsed(st: &mut AppState, key: &str, on: bool) {
-    let mut keys: Vec<String> = match st.config.get("tiles_collapsed") {
+    set_collapsed_in(&mut st.config, key, on);
+}
+
+fn set_collapsed_in(cfg: &mut Config, key: &str, on: bool) {
+    let mut keys: Vec<String> = match cfg.get("tiles_collapsed") {
         Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
         _ => Vec::new(),
     };
     keys.retain(|k| k != key);
     if on {
         keys.push(key.to_string());
+    } else if !DEVICE_TILES.contains(&key) && !bit_in(cfg, key) {
+        // opened: an old "off" goes too
+        let order: Vec<(&'static str, bool)> = order_in(cfg)
+            .into_iter()
+            .map(|(k, b)| (k, b || k == key))
+            .collect();
+        set_order_in(cfg, &order);
     }
-    st.config.set("tiles_collapsed", json!(keys));
+    cfg.set("tiles_collapsed", json!(keys));
 }
 
+/// Whether a tile shows open in the column (in it, and not folded to a strip).
+pub fn tile_open(st: &AppState, key: &str) -> bool {
+    on_in(&st.config, key) && !collapsed_in(&st.config, key)
+}
 /// A folded tile's height.
 const STRIP_H: f32 = 34.0;
 
@@ -361,8 +417,24 @@ impl PlayerView {
         (qrs_analysis::pitch::note_label(midi as f64), detail, col)
     }
 
-    /// (name, MIDI note of each open string) the tuner tunes to; the song's own tuning by default.
-    fn tuner_targets(&self) -> (String, Vec<i32>) {
+    /// (name, MIDI note of each open string) the tuner tunes to; the song's own tuning by default. On a bass
+    /// (P32.5): a 5-string's low B under a bass part's four, and a guitar part's low four strings an octave down
+    /// (what a bass plays it on); a guitar's are the part's, as before.
+    pub(super) fn tuner_targets(&self) -> (String, Vec<i32>) {
+        let (name, opens) = self.tuner_targets_part();
+        let inst = self.instrument;
+        if !inst.is_bass() {
+            return (name, opens);
+        }
+        if self.chart.arr.is_bass {
+            (name, inst.strings_for(&opens))
+        } else {
+            let low: Vec<i32> = opens.iter().take(4).map(|o| o - 12).collect();
+            (format!("{name}, on bass"), inst.strings_for(&low))
+        }
+    }
+
+    fn tuner_targets_part(&self) -> (String, Vec<i32>) {
         let (name, offs) = TUNINGS[self.tuning_choice % TUNINGS.len()];
         match offs {
             None => (
@@ -496,7 +568,7 @@ impl PlayerView {
         let board = crate::calibrate::board_tile_wanted(st);
         let order: Vec<&'static str> = tile_order(st)
             .into_iter()
-            .filter(|(k, on)| *on && (board || *k != "board"))
+            .filter(|(k, _)| tile_on(st, k) && (board || *k != "board"))
             .map(|(k, _)| k)
             .collect();
         let gap = px(TILE_GAP);
@@ -509,7 +581,7 @@ impl PlayerView {
         self.tile_rects.clear();
         self.tiles_top = y;
         let drag_key = self.tile_drag.as_ref().map(|d| d.key);
-        // (in the order the Python app draws them, so the close keys over them come in its order too)
+        // (in the order the Python app draws them)
         let mut drawn: Vec<(&'static str, Rect)> = Vec::new();
         for k in &order {
             if drag_key == Some(*k) {
@@ -540,15 +612,14 @@ impl PlayerView {
             ctx.set_cursor_icon(CursorIcon::Move);
         }
         self.tile_rects.extend(drawn.iter().copied());
-        // the grab bar and close key on the tile under the mouse; dragging a tile's top edge reorders
+        // the grab bar and fold key on the tile under the mouse; dragging a tile's top edge reorders
         let mouse = ctx.input(|i| i.pointer.hover_pos());
         for (k, r) in drawn {
             let grab = Self::tile_grab_rect(r);
             let folded = tile_collapsed(st, k);
             // a folded tile: its whole strip is a key that opens it (its grab bar, drawn over, still drags it)
             if folded {
-                let open = Rect::from_min_max(r.min, pos2(Self::tile_close_rect(r).min.x - px(4.0), r.max.y));
-                let oresp = interact(ui, open.intersect(panel), ("tile-open", k), Sense::click());
+                let oresp = interact(ui, r.intersect(panel), ("tile-open", k), Sense::click());
                 if oresp.hovered() {
                     ctx.set_cursor_icon(CursorIcon::PointingHand);
                 }
@@ -582,28 +653,23 @@ impl PlayerView {
                 {
                     d.y = pos.y - d.grab;
                     let centre = d.y + self.tile_h.get(k).copied().unwrap_or(0.0) / 2.0;
+                    // (the tiles in the column, reordered; each keeps its saved bit: an old "off" is a fold)
                     let all = tile_order(st);
-                    let others: Vec<&'static str> = all
-                        .iter()
-                        .filter(|(kk, on)| *on && *kk != k)
-                        .map(|o| o.0)
-                        .collect();
+                    let shown: Vec<(&'static str, bool)> =
+                        all.iter().copied().filter(|(kk, _)| tile_on(st, kk)).collect();
+                    let others: Vec<(&'static str, bool)> =
+                        shown.iter().copied().filter(|o| o.0 != k).collect();
                     let idx = others
                         .iter()
-                        .filter(|o| self.tile_rects.get(*o).is_some_and(|rr| rr.center().y < centre))
+                        .filter(|o| self.tile_rects.get(o.0).is_some_and(|rr| rr.center().y < centre))
                         .count();
-                    let mut new_on = others.clone();
-                    new_on.insert(idx, k);
-                    let cur_on: Vec<&'static str> = all.iter().filter(|o| o.1).map(|o| o.0).collect();
-                    if new_on != cur_on {
-                        let off: Vec<(&'static str, bool)> = all
-                            .iter()
-                            .filter(|(kk, on)| !*on && *kk != k)
-                            .map(|o| (o.0, false))
-                            .collect();
-                        let mut order: Vec<(&'static str, bool)> =
-                            new_on.iter().map(|kk| (*kk, true)).collect();
-                        order.extend(off);
+                    let mut new_shown = others.clone();
+                    if let Some(mine) = shown.iter().find(|o| o.0 == k) {
+                        new_shown.insert(idx.min(new_shown.len()), *mine);
+                    }
+                    if new_shown != shown {
+                        let mut order = new_shown;
+                        order.extend(all.iter().copied().filter(|(kk, _)| !tile_on(st, kk)));
                         set_tiles(st, &order);
                     }
                 }
@@ -658,31 +724,8 @@ impl PlayerView {
             if fresp.clicked() {
                 set_tile_collapsed(st, k, !folded);
             }
-            let cx = Self::tile_close_rect(r);
-            if widgets::round_button(
-                ui,
-                cx,
-                ("tile-close", k),
-                Icon::XBold,
-                13.0,
-                RoundKind::Gem(Gem::Ruby),
-                false,
-            )
-            .clicked()
-            {
-                let order: Vec<(&'static str, bool)> = tile_order(st)
-                    .into_iter()
-                    .map(|(kk, on)| (kk, on && kk != k))
-                    .collect();
-                set_tiles(st, &order);
-                self.say(
-                    format!("{} tile hidden", tile_label(k)),
-                    "  ·  bring it back under TILES",
-                );
-            }
-            if mouse.is_some_and(|m| grab.contains(m) && !cx.contains(m) && !fold.contains(m))
-                && self.tile_drag.is_none()
-            {
+            // (no close key: a tile can't be deleted, only folded, P35.2)
+            if mouse.is_some_and(|m| grab.contains(m) && !fold.contains(m)) && self.tile_drag.is_none() {
                 ctx.set_cursor_icon(CursorIcon::Move);
             }
         }
@@ -715,13 +758,6 @@ impl PlayerView {
             #[cfg(not(feature = "nux"))]
             _ => y,
         }
-    }
-
-    /// A tile's close key (a ruby), in the top right corner kept free for it (in the middle of a folded strip).
-    fn tile_close_rect(r: Rect) -> Rect {
-        let d = px(26.0);
-        let cy = r.min.y + px(24.0).min(half(r.height()));
-        Rect::from_min_size(pos2(r.max.x - px(19.0) - half(d), cy - half(d)), vec2(d, d))
     }
 
     /// A folded tile: a slim screen with its name and an arrow that says it opens. Returns its bottom.
@@ -793,7 +829,7 @@ impl PlayerView {
                 center(r),
                 10.0,
                 if i == sel {
-                    qrs_ui::theme::IVORY_INK
+                    keys::key_ink(false)
                 } else {
                     th.caption
                 },
@@ -927,11 +963,7 @@ impl PlayerView {
                 let dw = card.max.x - pad_x - dx;
                 txt(
                     &p,
-                    if has_input {
-                        "you're playing"
-                    } else {
-                        "no guitar input"
-                    },
+                    if has_input { "you're playing" } else { "no input" },
                     pos2(dx, mid - px(9.0)),
                     14.0,
                     th.text_2,
@@ -1585,11 +1617,23 @@ impl PlayerView {
         let ctx = ui.ctx().clone();
         let (pad_x, pad_y) = (px(16.0), px(12.0));
         let gauge_h = px(100.0);
+        // the tuning card (D136): a song in another standard tuning offers to be shifted into E's
+        let offer = self.retune_offer();
+        let offer_h = if offer.is_some() { px(116.0) } else { 0.0 };
         let card = Rect::from_min_size(
             pos2(x, y),
             vec2(
                 w,
-                pad_y + px(18.0) + px(10.0) + px(28.0) + px(6.0) + gauge_h + px(4.0) + px(30.0) + pad_y,
+                pad_y
+                    + px(18.0)
+                    + px(10.0)
+                    + px(28.0)
+                    + px(6.0)
+                    + gauge_h
+                    + px(4.0)
+                    + px(30.0)
+                    + pad_y
+                    + offer_h,
             ),
         );
         self.tile_card(&p, card, lifting);
@@ -1637,14 +1681,17 @@ impl PlayerView {
             Some(name_w),
         );
         let m = self.tuner_midi;
-        let near = m.and_then(|m| {
-            let i = (0..targets.len()).min_by(|&a, &b| {
-                (targets[a] as f64 - m)
-                    .abs()
-                    .total_cmp(&(targets[b] as f64 - m).abs())
-            })?;
-            ((targets[i] as f64 - m).abs() <= 2.5).then_some(i) // not close to any string: just show the nearest note
-        });
+        // (P37.6b, D136: measured as the header's readout, cents to the nearest note; a string more than half a
+        // semitone off says so in semitones, where it read "+203¢")
+        let reading = m.map(|m| super::tuning::read(m, &targets));
+        let near = reading.as_ref().and_then(|r| r.string);
+        if let Some(o) = &offer {
+            let r = Rect::from_min_max(
+                pos2(card.min.x + pad_x, card.max.y - pad_y - offer_h + px(8.0)),
+                pos2(card.max.x - pad_x, card.max.y - pad_y),
+            );
+            self.draw_retune_card(ui, r, o);
+        }
         let n = targets.len() as f32;
         let gap = px(6.0);
         let cw = (tw - gap * (n - 1.0)) / n.max(1.0);
@@ -1680,7 +1727,7 @@ impl PlayerView {
         }
         let gauge = Rect::from_min_size(pos2(lx, cy0 + px(28.0) + px(6.0)), vec2(tw, gauge_h));
         let base = gauge.max.y + px(4.0) + px(24.0); // the bottom row's baseline
-        let Some(m) = m else {
+        let (Some(m), Some(reading)) = (m, reading) else {
             knobs::arc_gauge(&p, gauge, None, th.text_2);
             self.text_base(
                 &p,
@@ -1695,9 +1742,12 @@ impl PlayerView {
             );
             return card.max.y;
         };
-        let target = near.map(|i| targets[i] as f64).unwrap_or(m.round_ties_even());
-        let cents = (m - target) * 100.0;
-        let col = if cents.abs() <= 5.0 { th.hit } else { th.late };
+        let cents = reading.needle();
+        let col = if reading.semis == 0 && cents.abs() <= 5.0 {
+            th.hit
+        } else {
+            th.late
+        };
         knobs::arc_gauge(&p, gauge, Some(cents as f32), col);
         self.text_base(
             &p,
@@ -1710,27 +1760,96 @@ impl PlayerView {
             Align2::LEFT_TOP,
             None,
         );
-        let verdict = if near.is_none() {
-            "not near a string"
-        } else if cents.abs() <= 5.0 {
-            "in tune"
-        } else if cents < 0.0 {
-            "tune up"
-        } else {
-            "tune down"
-        };
+        let no_tune_up = offer.as_ref().is_some_and(|o| o.k > 0);
+        let label_w = text::width(
+            &ctx,
+            &qrs_analysis::pitch::note_label(m),
+            Style::new(26.0, 800, th.text),
+        );
         self.text_base(
             &p,
-            &format!("{cents:+.0}¢  ·  {verdict}"),
+            &reading.verdict(no_tune_up),
             card.max.x - pad_x,
             base,
             14.0,
             col,
             800,
             Align2::RIGHT_TOP,
-            None,
+            Some(tw - label_w - px(12.0)),
         );
         card.max.y
+    }
+
+    /// The tuning card's offer for the song as it sounds now (the tuner on "this song"'s tuning, not hidden).
+    fn retune_offer(&self) -> Option<super::tuning::Offer> {
+        if self.retune_hidden || TUNINGS[self.tuning_choice % TUNINGS.len()].1.is_some() {
+            return None;
+        }
+        super::tuning::offer(
+            &self.chart.arr.tuning,
+            self.chart.arr.is_bass,
+            self.mixer.pitch,
+            qrs_audio::stretch::MAX_SEMITONES,
+        )
+    }
+
+    /// The tuning card in `r`: the line, the key that shifts the song, a × that hides it for this song.
+    fn draw_retune_card(&mut self, ui: &Ui, r: Rect, o: &super::tuning::Offer) {
+        let p = ui.painter().clone();
+        let th = t();
+        let ctx = ui.ctx().clone();
+        paint::inset(&p, r, Some(12.0), 2.0, Fill::Base);
+        let inner = r.shrink2(vec2(px(12.0), px(8.0)));
+        let st = Style::new(12.0, 600, th.text_2);
+        let close = Rect::from_center_size(
+            pos2(inner.max.x - px(6.0), inner.min.y + px(7.0)),
+            Vec2::splat(px(18.0)),
+        );
+        let mut ly = inner.min.y;
+        for l in text::wrap(&ctx, &o.words(), st, inner.width() - px(20.0))
+            .iter()
+            .take(3)
+        {
+            ly = text::draw(&p, l, pos2(inner.min.x, ly), Align2::LEFT_TOP, st, None)
+                .max
+                .y;
+        }
+        let cresp = interact(ui, close, "retune-close", Sense::click());
+        icons::icon(
+            &p,
+            Icon::X,
+            close.center(),
+            11.0,
+            if cresp.hovered() { th.text } else { th.caption },
+        );
+        if cresp.clicked() {
+            self.retune_hidden = true;
+        }
+        cresp.on_hover_text("Hide this for the song");
+        let label = o.key();
+        let bw = qrs_ui::widgets::button_width(&ctx, &label, "", 12.0, false).min(inner.width());
+        let b = Rect::from_min_size(pos2(inner.min.x, inner.max.y - px(30.0)), vec2(bw, px(30.0)));
+        if qrs_ui::widgets::button(
+            ui,
+            b,
+            "retune-shift",
+            &label,
+            "",
+            qrs_ui::widgets::ButtonStyle {
+                size: 12.0,
+                r: Some(10.0),
+                ..Default::default()
+            },
+        )
+        .on_hover_text(
+            self.instrument.say(
+                "Shifts the song's pitch (and the scoring) to match your guitar; the tab stays as written",
+            ),
+        )
+        .clicked()
+        {
+            self.acts.push(format!("pitch_to:{}", o.to_pitch));
+        }
     }
 
     /// Accuracy as a ring; the score with its multiplier and streak, the counts, and your best three runs along the
@@ -1756,7 +1875,7 @@ impl PlayerView {
             );
             let r = txt(
                 &p,
-                "Scoring is off: no guitar input",
+                "Scoring is off: no input",
                 pos2(card.min.x + pad_x, card.min.y + pad_y + px(24.0)),
                 13.0,
                 th.caption,
@@ -1810,7 +1929,26 @@ impl PlayerView {
         let rc = pos2(lx + half(ring_d), card.min.y + pad_y + half(ring_d));
         let judged = c.judged();
         let acc = self.scorer.accuracy();
-        knobs::ring_gauge(&p, rc, 40.0, 8.0, if judged > 0 { acc as f32 } else { 0.0 }, None);
+        let lit = if judged > 0 { acc as f32 } else { 0.0 };
+        knobs::ring_gauge(&p, rc, 40.0, 8.0, lit, None);
+        // on a streak the lit arc comes alive and the STREAK count heats (P37.7; not in the classic look)
+        let streak = self.shot_streak.unwrap_or(self.scorer.streak);
+        let clock = crate::shotclock::shot_now().unwrap_or_else(|| ctx.input(|i| i.time));
+        if self.shot_streak.is_some() {
+            self.streak_fx.snap(streak);
+        }
+        let heat = if qrs_ui::theme::classic() {
+            0.0
+        } else {
+            self.streak_fx.update(clock, streak)
+        };
+        if heat > 0.0 {
+            let band = knobs::ring_band(ctx.pixels_per_point(), rc, 40.0, 8.0, lit);
+            let dark = qrs_ui::theme::is_dark();
+            qrs_ui::streak::draw(&p, &band, heat, clock, self.streak_fx.phase(), dark);
+            ctx.request_repaint();
+        }
+        let hot = |base| qrs_ui::streak::heat_color(heat, base, qrs_ui::theme::is_dark());
         txt(
             &p,
             &if judged > 0 {
@@ -1848,10 +1986,10 @@ impl PlayerView {
         if !practice {
             let sr = txt(
                 &p,
-                &self.scorer.streak.to_string(),
+                &streak.to_string(),
                 pos2(card.max.x - px(CLOSE_SLOT), ty + px(8.0)),
                 12.0,
-                th.text,
+                hot(th.text),
                 800,
                 Align2::RIGHT_CENTER,
                 None,
@@ -1861,7 +1999,7 @@ impl PlayerView {
                 "streak ",
                 pos2(sr.min.x, ty + px(8.0)),
                 12.0,
-                th.caption,
+                hot(th.caption),
                 500,
                 Align2::RIGHT_CENTER,
                 None,
@@ -1878,18 +2016,29 @@ impl PlayerView {
             Align2::LEFT_TOP,
             Some(rx - cx0),
         );
-        if self.scorer.multiplier() > 1 && !practice {
-            self.text_base(
-                &p,
-                &format!("×{}", self.scorer.multiplier()),
-                r.max.x + px(8.0),
-                ty + px(48.0),
-                16.0,
-                th.accent_ink,
-                800,
-                Align2::LEFT_TOP,
-                None,
+        // the multiplier (x2 at 10, x3 at 20, x4 at 30: the streak's first tiers, D113, D144), a small recessed badge
+        // beside the score in the streak's heat; a practice run has no score, so no multiplier
+        let mult = qrs_analysis::detect::multiplier(streak);
+        if mult > 1 && !practice {
+            let label = format!("×{mult}");
+            let tw = text::width(&ctx, &label, Style::new(13.0, 800, th.text));
+            let badge = Rect::from_min_size(
+                pos2(whole(r.max.x + px(8.0)), whole(ty + px(31.0))),
+                vec2(whole(tw + px(12.0)), px(20.0)),
             );
+            if badge.max.x <= rx {
+                paint::inset(&p, badge, Some(7.0), 2.0, Fill::Base);
+                txt(
+                    &p,
+                    &label,
+                    center(badge),
+                    13.0,
+                    hot(th.accent_ink),
+                    800,
+                    Align2::CENTER_CENTER,
+                    None,
+                );
+            }
         }
         let colw = (rx - cx0) / 3.0;
         let col_max = whole(colw) - px(4.0);
@@ -1970,11 +2119,14 @@ impl PlayerView {
             );
             return card.max.y;
         }
-        let slot = (end - bxx) / 3.0;
+        // the best runs, repeats folded (three "38,900" said no more than one), each after its place in small
+        // letters ("2nd", "3rd") so the row reads (P37.6d: "38,900 · 84%  38,900  38,900" had no labels)
+        let runs = super::runstats::collapse_runs(&top);
         let first = format!(
             "{}{}",
-            crate::home::group_digits(top[0].score as usize),
-            top[0]
+            crate::home::group_digits(runs[0].run.score as usize),
+            runs[0]
+                .run
                 .acc
                 .map(|a| format!("  ·  {}%", (a * 100.0).round_ties_even() as i64))
                 .unwrap_or_default()
@@ -1989,22 +2141,37 @@ impl PlayerView {
             Align2::LEFT_CENTER,
             Some(end - bxx),
         );
-        let mut xx = whole(fr.max.x + px(16.0)).max(whole(bxx + slot * 1.25));
-        for run in top.iter().skip(1) {
-            if ipx(xx) > ipx(bx.max.x - px(40.0)) {
+        let mut xx = whole(fr.max.x + px(14.0));
+        for (k, run) in runs.iter().enumerate().skip(1) {
+            let place = super::runstats::ordinal(k + 1);
+            let score = crate::home::group_digits(run.run.score as usize);
+            let need = text::width(&ctx, &place, Style::new(10.0, 600, th.caption))
+                + px(4.0)
+                + text::width(&ctx, &score, Style::new(12.0, 700, th.text_2));
+            if xx + need > end {
                 break;
             }
+            let pr = txt(
+                &p,
+                &place,
+                pos2(xx, bcy),
+                10.0,
+                th.caption,
+                600,
+                Align2::LEFT_CENTER,
+                None,
+            );
             let rr = txt(
                 &p,
-                &crate::home::group_digits(run.score as usize),
-                pos2(xx, bcy),
+                &score,
+                pos2(whole(pr.max.x + px(4.0)), bcy),
                 12.0,
                 th.text_2,
                 700,
                 Align2::LEFT_CENTER,
-                Some(end - xx),
+                None,
             );
-            xx = whole(rr.max.x + px(16.0));
+            xx = whole(rr.max.x + px(14.0));
         }
         card.max.y
     }
@@ -2193,6 +2360,61 @@ pub fn draw_chord_box(p: &egui::Painter, rect: Rect, sh: &HandShape, n_strings: 
                     None,
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(tiles: Value, collapsed: Value) -> Config {
+        let mut c = Config::default();
+        c.set("tiles", tiles);
+        c.set("tiles_collapsed", collapsed);
+        c
+    }
+
+    #[test]
+    fn a_tile_hidden_before_shows_folded() {
+        // (hidden with the old close key: off in "tiles")
+        let mut c = cfg(json!([["lyrics", false], ["note", true]]), json!([]));
+        assert!(on_in(&c, "lyrics"), "still in the column");
+        assert!(collapsed_in(&c, "lyrics"), "folded");
+        assert!(!collapsed_in(&c, "note"));
+        // opening it clears the old off for good
+        set_collapsed_in(&mut c, "lyrics", false);
+        assert!(!collapsed_in(&c, "lyrics"));
+        assert!(bit_in(&c, "lyrics"));
+        // folding it again is a fold, not an off
+        set_collapsed_in(&mut c, "lyrics", true);
+        assert!(collapsed_in(&c, "lyrics") && bit_in(&c, "lyrics"));
+    }
+
+    #[test]
+    fn the_tile_switch_folds_and_opens() {
+        let mut c = cfg(json!([["score", true]]), json!([]));
+        action_in(&mut c, "tile:score");
+        assert!(collapsed_in(&c, "score") && on_in(&c, "score"));
+        action_in(&mut c, "tile:score");
+        assert!(!collapsed_in(&c, "score") && on_in(&c, "score"));
+        // an old off opens with it
+        let mut c = cfg(json!([["tuner", false]]), json!([]));
+        action_in(&mut c, "tile:tuner");
+        assert!(!collapsed_in(&c, "tuner") && bit_in(&c, "tuner"));
+        // moving keeps each tile's bit
+        let mut c = cfg(json!([["tuner", false], ["score", true]]), json!([]));
+        action_in(&mut c, "tiledown:tuner");
+        let o = order_in(&c);
+        let i = o.iter().position(|x| x.0 == "tuner").unwrap();
+        assert!(!o[i].1 && o[i - 1].0 == "score");
+    }
+
+    #[test]
+    fn every_tile_is_in_the_column() {
+        let c = Config::default();
+        for (k, _) in TILES {
+            assert_eq!(on_in(&c, k), !DEVICE_TILES.contains(k), "{k}");
         }
     }
 }

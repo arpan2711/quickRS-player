@@ -1,4 +1,4 @@
-//! The owner's Rocksmith 2014 audio setup, read from the game's folder so quickRS starts on the same devices:
+//! The owner's RS2014 audio setup, read from the game's folder so quickRS starts on the same devices:
 //! `Rocksmith.ini` ([Audio]: ExclusiveMode, LatencyBuffer, EnableMicrophone, MonoToStereoChannel, ...) and
 //! RS_ASIO's `RS_ASIO.ini` ([Config], [Asio], [Asio.Output], [Asio.Input.0/1/Mic]).
 //! Found next to the configured library (the folder holding `dlc`) or in Steam's library folders.
@@ -6,10 +6,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use qrs_formats::game_names::{GAME_EXE, GAME_FOLDER, GAME_INI};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RocksmithSetup {
+pub struct RsSetup {
     pub folder: PathBuf,
     /// Rocksmith.ini [Audio]
     pub exclusive_mode: bool,
@@ -77,11 +78,11 @@ fn text(m: Option<&HashMap<String, String>>, k: &str) -> String {
     m.and_then(|s| s.get(k)).cloned().unwrap_or_default()
 }
 
-pub fn read_setup(folder: &Path) -> Option<RocksmithSetup> {
-    let ini = std::fs::read_to_string(folder.join("Rocksmith.ini")).ok()?;
+pub fn read_setup(folder: &Path) -> Option<RsSetup> {
+    let ini = std::fs::read_to_string(folder.join(GAME_INI)).ok()?;
     let r = parse_ini(&ini);
     let audio = r.get("audio");
-    let mut s = RocksmithSetup {
+    let mut s = RsSetup {
         folder: folder.to_path_buf(),
         exclusive_mode: flag(audio, "exclusivemode"),
         latency_buffer: num(audio, "latencybuffer").unwrap_or(4).clamp(1, 16) as u8,
@@ -152,14 +153,14 @@ fn steam_libraries() -> Vec<PathBuf> {
     out
 }
 
-/// Where Rocksmith 2014 might be installed: the parents of library folders named `dlc`, then Steam.
+/// Where RS2014 might be installed: the parents of library folders named `dlc`, then Steam.
 pub fn candidate_folders(library_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for d in library_dirs {
         let mut cur = Some(d.as_path());
         for _ in 0..3 {
             let Some(c) = cur else { break };
-            if c.join("Rocksmith2014.exe").is_file() || c.join("Rocksmith.ini").is_file() {
+            if c.join(GAME_EXE).is_file() || c.join(GAME_INI).is_file() {
                 out.push(c.to_path_buf());
                 break;
             }
@@ -167,7 +168,7 @@ pub fn candidate_folders(library_dirs: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     for lib in steam_libraries() {
-        let p = lib.join("steamapps").join("common").join("Rocksmith2014");
+        let p = lib.join("steamapps").join("common").join(GAME_FOLDER);
         if p.is_dir() {
             out.push(p);
         }
@@ -176,8 +177,8 @@ pub fn candidate_folders(library_dirs: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
-/// The first Rocksmith setup found.
-pub fn find_setup(library_dirs: &[PathBuf]) -> Option<RocksmithSetup> {
+/// The first RS setup found.
+pub fn find_setup(library_dirs: &[PathBuf]) -> Option<RsSetup> {
     candidate_folders(library_dirs).iter().find_map(|f| read_setup(f))
 }
 
@@ -186,13 +187,13 @@ mod tests {
     use super::*;
 
     const RS_ASIO_INI: &str = "# comment\n[Config]\nEnableWasapiOutputs=1\nEnableWasapiInputs=0\nEnableAsio=1\n\n[Asio]\n; modes\nBufferSizeMode=custom\nCustomBufferSize=64\n\n[Asio.Output]\nDriver=\nBaseChannel=0\n\n[Asio.Input.0]\nDriver=NUX Audio\nChannel=0\n\n[Asio.Input.1]\nDriver=\nChannel=1\n";
-    const ROCKSMITH_INI: &str = "[Audio]\nEnableMicrophone=0\nExclusiveMode=1\nLatencyBuffer=2\nRealToneCableOnly=0\nMonoToStereoChannel=0\nWin32UltraLowLatencyMode=1\n[Renderer.Win32]\nScreenWidth=1920\n";
+    const RS_INI: &str = "[Audio]\nEnableMicrophone=0\nExclusiveMode=1\nLatencyBuffer=2\nRealToneCableOnly=0\nMonoToStereoChannel=0\nWin32UltraLowLatencyMode=1\n[Renderer.Win32]\nScreenWidth=1920\n";
 
     #[test]
     fn owner_setup_parses() {
         let dir = std::env::temp_dir().join(format!("qrs-rs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("Rocksmith.ini"), ROCKSMITH_INI).unwrap();
+        std::fs::write(dir.join(GAME_INI), RS_INI).unwrap();
         std::fs::write(dir.join("RS_ASIO.ini"), RS_ASIO_INI).unwrap();
         std::fs::write(dir.join("RS_ASIO.dll"), b"x").unwrap();
         let s = read_setup(&dir).unwrap();
@@ -211,7 +212,7 @@ mod tests {
     fn finds_the_game_above_the_dlc_folder() {
         let dir = std::env::temp_dir().join(format!("qrs-rs2-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("dlc")).unwrap();
-        std::fs::write(dir.join("Rocksmith.ini"), ROCKSMITH_INI).unwrap();
+        std::fs::write(dir.join(GAME_INI), RS_INI).unwrap();
         let found = candidate_folders(&[dir.join("dlc")]);
         assert_eq!(found.first(), Some(&dir));
         std::fs::remove_dir_all(dir).ok();

@@ -196,24 +196,25 @@ pub(super) const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl S", "Save the loop as a lick"),
             ("E", "Review the run: spots to practise"),
             ("O", "Continuous loop: every pass scored"),
-            ("W", "Note for note"),
+            ("W", "Note by note"),
             ("Enter", "Skip the note it waits for"),
             ("H", "Ear mode (notes hidden)"),
             ("Ctrl R / B", "Loop take (scored), listen back"),
+            ("Shift C", "Count-in (3, 2, 1) on or off"),
         ],
     ),
     (
         "Sound",
         &[
-            ("M", "Hear your guitar, or mute it"),
+            ("M", "Hear your instrument, or mute it"),
             ("G", "Synth or real guitar in the song"),
             ("T", "Next tone"),
-            ("Shift T", "Your sounds (on the Pedalboard)"),
-            ("7 8", "Guitar quieter, louder"),
+            ("Shift T", "Your sounds (on the Rig)"),
+            ("7 8", "Your instrument quieter, louder"),
             ("9 0", "Song quieter, louder"),
             ("Shift ↑ ↓", "Transpose the song"),
             (", .", "Sync offset"),
-            ("Ctrl , .", "Guitar timing"),
+            ("Ctrl , .", "Your instrument's delay: shorter, longer"),
             ("R", "Record, pause, resume"),
             ("Shift R", "Stop and save the recording"),
         ],
@@ -226,9 +227,11 @@ pub(super) const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("V", "Tab or highway"),
             ("F", "Full-screen tab"),
             ("C", "Compact rows"),
-            ("I", "Invert the highway"),
+            ("K", "Chord names: charted or in key"),
+            ("I", "Highway: low E at the bottom"),
+            ("D", "Highway look: Live, Still, Plain"),
             ("N", "Rhythm notation"),
-            ("Y", "Lyrics tile"),
+            ("Y", "Lyrics tile: fold or open"),
             ("↑ ↓", "Zoom"),
             ("Alt ← →", "Bar width"),
             ("Alt ↑ ↓", "String spacing"),
@@ -237,7 +240,12 @@ pub(super) const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
     ),
     (
         "A selection (Ctrl-drag on the tab)",
-        &[("P", "Play it"), ("S", "Play it slowly"), ("Esc", "Clear it")],
+        &[
+            ("Space", "Loop it with the song"),
+            ("P", "Hear it alone"),
+            ("S", "Hear it slowly"),
+            ("Esc", "Clear it (and its loop)"),
+        ],
     ),
     ("This list", &[("F1 / ?", "Show or hide it")]),
 ];
@@ -348,69 +356,135 @@ pub(super) fn draw_shortcuts(p: &Painter, area: Rect) -> Rect {
 }
 
 impl super::PlayerView {
-    /// Lamps for the modes beside note-for-note's (which has its own, notebynote.rs): loop, ear and take, each with
-    /// its name before it, from `x` along the row at `y`. Lit ones glow and their names light up; a click switches one.
-    /// Returns where the row ends.
-    pub(super) fn draw_mode_lamps(
+    /// The lamps' row over the transport (P37.11, owner request): note-for-note, loop, ear, take, count-in,
+    /// synth / real, rec and review (and the recording's badge while R records), centred under the tab and kept
+    /// between the footer's left and the tab's right; names dropped (the lamps and keys alone, their tips saying
+    /// what they are) when the window is too narrow for them. Returns where the row ends.
+    pub(super) fn draw_lamps_row(
         &mut self,
         ui: &egui::Ui,
-        x: f32,
-        y: f32,
+        well: Rect,
+        cradle: Rect,
+        foot: Rect,
         rec: Option<crate::recording::Status>,
     ) -> f32 {
+        use super::footer_keys::{Item, row_layout};
+        let ctx = ui.ctx().clone();
+        let y = cradle.min.y - px(9.0);
+        let mut items = Item::ROW.to_vec();
+        if let Some(s) = rec {
+            let (short, whole) = crate::recording::badge_widths(ui, s);
+            items.push(Item::Badge(whole, short));
+        }
+        let (slots, compact) = row_layout(
+            &ctx,
+            &items,
+            well.center().x,
+            foot.min.x,
+            well.max.x.min(foot.max.x),
+        );
+        let mut end = foot.min.x;
+        for (item, (x, w)) in items.iter().zip(slots) {
+            match item {
+                Item::Nbn => self.draw_nbn_lamp(ui, x, w, y, compact, foot.min.x),
+                Item::Loop | Item::Ear | Item::Take | Item::Count => {
+                    self.draw_lamp(ui, *item, x, w, y, compact)
+                }
+                Item::Synth => self.draw_synth_key(ui, x, w, y, compact),
+                Item::Rec => self.draw_rec_key(ui, x, w, y, compact, rec),
+                Item::Review => self.draw_review_key(ui, x, w, y, compact),
+                Item::Badge(whole, _) => {
+                    if let Some(s) = rec
+                        && crate::recording::badge_sized(ui, pos2(x, y), s, w < *whole - 0.5).clicked()
+                    {
+                        self.acts.push("rec:stop".into());
+                    }
+                }
+            }
+            end = x + w;
+        }
+        end
+    }
+
+    /// One of the row's mode lamps (loop, ear, take, count-in) in its slot: its name, then a jewel lamp at the
+    /// slot's right; lit ones glow and their names light up; a click switches it.
+    fn draw_lamp(
+        &mut self,
+        ui: &egui::Ui,
+        item: super::footer_keys::Item,
+        x: f32,
+        w: f32,
+        y: f32,
+        compact: bool,
+    ) {
+        use super::footer_keys::{Item, ROW_HALF};
         let th = t();
         let p = ui.painter().clone();
-        let looping = self.loop_a.is_some() && self.loop_b.is_some();
+        let looping = self.range().is_some();
         let recording = self.take.as_ref().is_some_and(|s| s.recording());
-        let lamps: [(&str, bool, Lit, &str, &str, &str); 3] = [
-            (
+        let (label, on, lit, act, tip, key): (&str, bool, Lit, &str, String, &str) = match item {
+            Item::Loop => (
                 "loop",
                 looping,
                 Lit::Amber,
                 if looping { "clear_loop" } else { "loop_section" },
                 if looping {
-                    "Clear the loop"
+                    "Loop: clear it".into()
                 } else {
-                    "Loop this section"
+                    "Loop this section (or Ctrl-drag across the tab)".into()
                 },
                 if looping { "\\" } else { "L" },
             ),
-            (
+            Item::Ear => (
                 "ear",
                 self.ear,
                 Lit::Amber,
                 "ear",
-                "Ear mode: notes hidden until you play them",
+                "Ear mode: notes hidden until you play them".into(),
                 "H",
             ),
-            (
+            Item::Take => (
                 "take",
                 recording,
                 Lit::Red,
                 "take:record",
-                "Record a take of the loop (scored)",
+                "Take: record the loop once, scored".into(),
                 "Ctrl R",
             ),
-        ];
-        let name = Style::new(12.0, 500, th.caption);
-        let mut x = x;
-        for (label, on, lit, act, tip, key) in lamps {
-            let w = text::width(ui.ctx(), label, name);
-            let c = pos2(x + w + px(7.0) + px(8.0), y);
-            let hit = Rect::from_min_max(pos2(x - px(2.0), y - px(9.0)), pos2(c.x + px(10.0), y + px(9.0)));
-            let resp = qrs_ui::widgets::interact(ui, hit, ("mode-lamp", label), egui::Sense::click());
-            let hot = resp.hovered();
-            qrs_ui::keys::jewel_lamp(&p, c, 12.0, if on { 1.0 } else { 0.0 }, hot);
-            if on {
-                paint::glow(
-                    &p,
-                    Rect::from_center_size(c, vec2(px(12.0), px(12.0))),
-                    lit.color(),
-                    10.0,
-                    Some(0.6),
-                    None,
-                );
-            }
+            _ => (
+                "count-in",
+                self.countdown_on,
+                Lit::Amber,
+                "countdown",
+                if self.countdown_on {
+                    "Count-in on: 3, 2, 1 before the song, a loop, a review spot or a take  \u{b7}  click: off \
+                     everywhere"
+                        .into()
+                } else {
+                    "Count-in off: everything plays at once  \u{b7}  click: 3, 2, 1 everywhere again".into()
+                },
+                "Shift C",
+            ),
+        };
+        let c = pos2(x + w - px(8.0), y);
+        let hit = Rect::from_min_max(
+            pos2(x - px(2.0), y - px(ROW_HALF)),
+            pos2(x + w + px(2.0), y + px(ROW_HALF)),
+        );
+        let resp = qrs_ui::widgets::interact(ui, hit, ("mode-lamp", label), egui::Sense::click());
+        let hot = resp.hovered();
+        qrs_ui::keys::jewel_lamp(&p, c, 12.0, if on { 1.0 } else { 0.0 }, hot);
+        if on {
+            paint::glow(
+                &p,
+                Rect::from_center_size(c, vec2(px(12.0), px(12.0))),
+                lit.color(),
+                10.0,
+                Some(0.6),
+                None,
+            );
+        }
+        if !compact {
             let col = if on {
                 lit.color()
             } else if hot {
@@ -421,36 +495,29 @@ impl super::PlayerView {
             text::draw(
                 &p,
                 label,
-                pos2(x, y),
-                Align2::LEFT_CENTER,
+                pos2(c.x - px(8.0) - px(7.0), y),
+                Align2::RIGHT_CENTER,
                 Style {
                     color: col,
                     weight: if on { 800 } else { 500 },
-                    ..name
+                    ..Style::new(12.0, 500, th.caption)
                 },
                 None,
             );
-            if hot {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                self.tip = Some((
-                    tip.into(),
-                    key.into(),
-                    pos2(x, hit.min.y - px(4.0)),
-                    Align2::LEFT_BOTTOM,
-                ));
-            }
-            if resp.clicked() {
-                self.acts.push(act.into());
-            }
-            x = c.x + px(20.0);
         }
-        x = self.draw_synth_key(ui, x, y);
-        self.draw_rec_key(ui, x + px(20.0), y, rec)
+        if hot {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            self.tip = Some((tip, key.into(), pos2(x, hit.min.y - px(4.0)), Align2::LEFT_BOTTOM));
+        }
+        if resp.clicked() {
+            self.acts.push(act.into());
+        }
     }
 
-    /// The synth guitar's key (G, P23.11): "synth / real", the one playing lit, then an abalone key with the synth's
-    /// sine (on) or the song's waveform (off). Returns where it ends.
-    fn draw_synth_key(&mut self, ui: &egui::Ui, x: f32, y: f32) -> f32 {
+    /// The synth guitar's key (G, P23.11) in its slot: "synth / real", the one playing lit, then an abalone key
+    /// with the synth's sine (on) or the song's waveform (off).
+    fn draw_synth_key(&mut self, ui: &egui::Ui, x: f32, w: f32, y: f32, compact: bool) {
+        use super::footer_keys::ROW_HALF;
         use super::songsynth::{How, Status};
         let th = t();
         let p = ui.painter().clone();
@@ -487,27 +554,30 @@ impl super::PlayerView {
             }
         };
         let ctx = ui.ctx().clone();
-        let w1 = text::width(&ctx, "synth", synth_st);
-        let ws = text::width(&ctx, " / ", name);
-        let w2 = text::width(&ctx, "real", real_st);
         let d = px(20.0);
-        let key = Rect::from_center_size(pos2(x + w1 + ws + w2 + px(7.0) + d / 2.0, y), vec2(d, d));
+        let key = Rect::from_center_size(pos2(x + w - d / 2.0, y), vec2(d, d));
         let hit = Rect::from_min_max(
-            pos2(x - px(2.0), y - px(10.0)),
-            pos2(key.max.x + px(2.0), y + px(10.0)),
+            pos2(x - px(2.0), y - px(ROW_HALF)),
+            pos2(x + w + px(2.0), y + px(ROW_HALF)),
         );
         let resp = qrs_ui::widgets::interact(ui, hit, "song-synth", egui::Sense::click());
         let hot = resp.hovered();
-        text::draw(&p, "synth", pos2(x, y), Align2::LEFT_CENTER, synth_st, None);
-        text::draw(&p, " / ", pos2(x + w1, y), Align2::LEFT_CENTER, name, None);
-        text::draw(
-            &p,
-            "real",
-            pos2(x + w1 + ws, y),
-            Align2::LEFT_CENTER,
-            real_st,
-            None,
-        );
+        if !compact {
+            let w1 = text::width(&ctx, "synth", synth_st);
+            let ws = text::width(&ctx, " / ", name);
+            let w2 = text::width(&ctx, "real", real_st);
+            let x0 = key.min.x - px(7.0) - (w1 + ws + w2);
+            text::draw(&p, "synth", pos2(x0, y), Align2::LEFT_CENTER, synth_st, None);
+            text::draw(&p, " / ", pos2(x0 + w1, y), Align2::LEFT_CENTER, name, None);
+            text::draw(
+                &p,
+                "real",
+                pos2(x0 + w1 + ws, y),
+                Align2::LEFT_CENTER,
+                real_st,
+                None,
+            );
+        }
         if on {
             paint::glow(&p, key, Lit::Amber.color(), 10.0, Some(0.45), Some(d / 2.0));
         }
@@ -548,12 +618,20 @@ impl super::PlayerView {
         if resp.clicked() {
             self.acts.push("song_synth".into());
         }
-        key.max.x
     }
 
-    /// The rec key (P23.11): "rec" and a garnet key that does what R does (record what you hear, pause, resume); a
-    /// ruby lit while recording. Returns where it ends.
-    fn draw_rec_key(&mut self, ui: &egui::Ui, x: f32, y: f32, rec: Option<crate::recording::Status>) -> f32 {
+    /// The rec key (P23.11) in its slot: "rec" and a garnet key that does what R does (record what you hear,
+    /// pause, resume); a ruby lit while recording.
+    fn draw_rec_key(
+        &mut self,
+        ui: &egui::Ui,
+        x: f32,
+        w: f32,
+        y: f32,
+        compact: bool,
+        rec: Option<crate::recording::Status>,
+    ) {
+        use super::footer_keys::ROW_HALF;
         let th = t();
         let p = ui.painter().clone();
         let recording = rec.is_some_and(|s| !s.paused);
@@ -574,12 +652,11 @@ impl super::PlayerView {
         } else {
             name
         };
-        let w = text::width(ui.ctx(), "rec", st);
         let d = px(18.0);
-        let key = Rect::from_center_size(pos2(x + w + px(7.0) + d / 2.0, y), vec2(d, d));
+        let key = Rect::from_center_size(pos2(x + w - d / 2.0, y), vec2(d, d));
         let hit = Rect::from_min_max(
-            pos2(x - px(2.0), y - px(10.0)),
-            pos2(key.max.x + px(2.0), y + px(10.0)),
+            pos2(x - px(2.0), y - px(ROW_HALF)),
+            pos2(x + w + px(2.0), y + px(ROW_HALF)),
         );
         let resp = qrs_ui::widgets::interact(ui, hit, "rec-key", egui::Sense::click());
         let hot = resp.hovered();
@@ -588,7 +665,16 @@ impl super::PlayerView {
         } else {
             st
         };
-        text::draw(&p, "rec", pos2(x, y), Align2::LEFT_CENTER, st, None);
+        if !compact {
+            text::draw(
+                &p,
+                "rec",
+                pos2(key.min.x - px(7.0), y),
+                Align2::RIGHT_CENTER,
+                st,
+                None,
+            );
+        }
         if recording {
             paint::glow(&p, key, Lit::Red.color(), 10.0, Some(0.6), Some(d / 2.0));
         }
@@ -606,7 +692,7 @@ impl super::PlayerView {
             } else if paused {
                 "Resume the recording  \u{b7}  Shift R stops and saves it"
             } else {
-                "Record what you hear (the song and your guitar) to a WAV"
+                "Record what you hear (the song and you) to a WAV"
             };
             self.tip = Some((
                 tip.into(),
@@ -618,7 +704,6 @@ impl super::PlayerView {
         if resp.clicked() {
             self.acts.push(REC_ACT.into());
         }
-        key.max.x
     }
 
     /// A keycap flash for a key whose action said nothing itself (the rest make their own toast, which flashes).

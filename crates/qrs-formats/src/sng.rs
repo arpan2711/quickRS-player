@@ -1,4 +1,4 @@
-//! SNG note chart decryption and parsing (Rocksmith 2014). Port of rsplay/sng.py plus the extra records of
+//! SNG note chart decryption and parsing (RS2014). Port of rsplay/sng.py plus the extra records of
 //! rsfeedpak/sngfull.py (every level, bend curves, tones, vocal pitches) and its PC/Mac key handling.
 //!
 //! Packed file:   u32 LE magic 0x4A, u32 LE flags, 16-byte IV, then AES-256-CTR data
@@ -279,7 +279,7 @@ pub fn decrypt_sng(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Encrypt a plain SNG the way Rocksmith packs it: magic, flags 3, IV, AES-CTR(len + zlib), 56 unused bytes.
+/// Encrypt a plain SNG the way RS packs it: magic, flags 3, IV, AES-CTR(len + zlib), 56 unused bytes.
 pub fn pack_sng(plain: &[u8], key: &[u8; 32], iv: &[u8; 16]) -> Vec<u8> {
     let mut payload = (plain.len() as u32).to_le_bytes().to_vec();
     payload.extend(crate::psarc::deflate(plain));
@@ -712,7 +712,7 @@ impl Sng {
         best
     }
 
-    /// (level, lo, hi) for each phrase iteration at a mastery between 0 and 1: like Rocksmith, each phrase uses
+    /// (level, lo, hi) for each phrase iteration at a mastery between 0 and 1: like RS, each phrase uses
     /// the level that is that fraction of its own maximum difficulty (so hard phrases lose the most).
     pub fn phrase_levels(&self, mastery: f64) -> Vec<(&SngLevel, f64, f64)> {
         let pis = &self.phrase_iterations;

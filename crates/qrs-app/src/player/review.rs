@@ -22,6 +22,7 @@ use qrs_ui::theme::{fmt_time, t};
 use qrs_ui::units::{pixels, px, to_px};
 use qrs_ui::widgets::{ButtonStyle, button, interact};
 
+use super::rules::RangeFrom;
 use super::{LOOP_LEAD_IN, PlayerView, button_w, ipos, ipx, mid, mid_y, snap};
 use crate::library::{caps, txt};
 
@@ -472,6 +473,32 @@ impl Review {
         let lost: f64 = self.list.iter().map(|&i| self.parts[i].loss).sum();
         ((self.hit as f64 + 0.5 * self.half() as f64 + lost) / self.judged as f64).min(1.0)
     }
+
+    /// In short, for Home (P34.6): the parts listed, the worst ("Breakdown riff, bars 41–44", or for one that
+    /// repeats "Main riff, plays 6×"), the potential.
+    pub fn gist(&self) -> super::history::Gist {
+        let worst = self
+            .list
+            .iter()
+            .max_by(|&&a, &&b| self.parts[a].loss.total_cmp(&self.parts[b].loss).then(b.cmp(&a)))
+            .map(|&w| {
+                let p = &self.parts[w];
+                let bars = &p.place().bars;
+                if p.repeats() {
+                    format!("{}, plays {}×", p.name, p.places.len())
+                } else if p.name.contains(bars.as_str()) {
+                    p.name.clone()
+                } else {
+                    format!("{}, {bars}", p.name)
+                }
+            })
+            .unwrap_or_default();
+        super::history::Gist {
+            spots: self.list.len(),
+            worst,
+            potential: self.potential(),
+        }
+    }
 }
 
 /// A few lines on the run (experimental, owner request): how it went, what cost the most, how the repeats went,
@@ -689,7 +716,7 @@ impl PlayerView {
     }
 
     /// The key of this song's part in reviews.json.
-    fn history_key(&self) -> String {
+    pub(super) fn history_key(&self) -> String {
         format!("{}|{}", self.sid, self.part_name)
     }
 
@@ -705,28 +732,27 @@ impl PlayerView {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64());
         let got: f64 = notes.iter().map(|(_, j)| j.points() as f64 / 100.0).sum();
+        self.review = self.review_from(&notes);
         let run = super::history::SavedRun {
             at,
             acc: got / notes.len() as f64,
-            notes: notes.clone(),
+            notes,
+            gist: self.review.as_ref().map(Review::gist),
         };
         match super::history::save(&self.reviews_path, &self.history_key(), run) {
             Ok(runs) => {
                 self.runs = runs;
-                self.review = self.review_from(&notes);
+                self.runs_for = self.history_key();
                 if let Some(r) = self.review.as_mut() {
                     r.which = Some(0);
                 }
             }
-            Err(e) => {
-                crate::applog::write(&format!("review: couldn't save the run: {e}"));
-                self.review = self.review_from(&notes);
-            }
+            Err(e) => crate::applog::write(&format!("review: couldn't save the run: {e}")),
         }
     }
 
     /// The saved run `k` (newest first) as the review, the page up.
-    fn pick_run(&mut self, k: usize) {
+    pub(super) fn pick_run(&mut self, k: usize) {
         let Some(run) = self.runs.get(k).cloned() else {
             return;
         };
@@ -879,8 +905,10 @@ impl PlayerView {
                         at: now - ago,
                         acc,
                         notes: notes.clone(),
+                        gist: None,
                     })
                     .to_vec();
+                self.runs_for = self.history_key();
                 if let Some(r) = self.review.as_mut() {
                     r.which = Some(0);
                     r.menu = true;
@@ -908,13 +936,17 @@ impl PlayerView {
     }
 
     /// E (or the results card's Review): the page, made from what was played if there's no review yet.
-    pub(super) fn show_review(&mut self) {
+    pub(crate) fn show_review(&mut self) {
+        if !self.review_may_open() {
+            return;
+        }
         if self.review.as_ref().is_some_and(|r| r.part_key != self.part_key) {
             self.review = None; // (another part: its own notes)
         }
         if self.review.is_none() {
             // the newest saved run first; without any, what's been played
             self.runs = super::history::load(&self.reviews_path, &self.history_key());
+            self.runs_for = self.history_key();
             if self.runs.is_empty() {
                 self.make_review();
             } else {
@@ -935,12 +967,17 @@ impl PlayerView {
         {
             r.key = k;
         }
+        self.review_opening();
         self.hold();
     }
 
     /// Practise part `i` (in `parts`) at its place `place` (or the one it's at): those bars looped, from a little
     /// before.
     pub(super) fn practise_part(&mut self, i: usize, place: Option<usize>) {
+        if self.review.as_ref().is_none_or(|r| r.parts.get(i).is_none()) {
+            return;
+        }
+        self.spot_entering();
         let Some(r) = self.review.as_mut() else { return };
         let Some(s) = r.parts.get_mut(i) else { return };
         if let Some(k) = place {
@@ -964,32 +1001,34 @@ impl PlayerView {
         }
         self.summary_dismissed = true; // (back on the song: the results card stays closed)
         self.backdrop.clear();
-        self.tab.sel = None;
-        self.loop_a = Some(a);
-        self.loop_b = Some(b);
-        self.loop_passes = 0;
-        self.loop_acc = None;
+        self.set_range(a, b, RangeFrom::Spot);
         let playing = self.transport.playing();
         self.seek((a - LOOP_LEAD_IN).max(0.0));
         if !playing {
             // (stopped: a count-in; playing, the song just jumps there and plays on)
-            self.countdown_until =
-                Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(super::COUNTDOWN));
+            self.count_in();
         }
         self.say_for(head, title, 2.5);
     }
 
-    /// Leave the part: the loop off, the review kept.
+    /// The page's "Play the whole song": no range, from the top, counted in.
+    pub(super) fn whole_song(&mut self) {
+        self.review_return = None;
+        self.close_review();
+        self.clear_range();
+        self.summary_dismissed = true;
+        self.seek(0.0);
+        self.count_in();
+    }
+
+    /// Leave the part: your range back (or none), the review kept.
     fn leave_spot(&mut self) {
-        if let Some(r) = self.review.as_mut() {
-            r.current = None;
+        self.spot_left();
+        if self.range().is_some() {
+            self.say("Back to your loop", "");
+        } else {
+            self.say("Loop cleared", "");
         }
-        self.loop_a = None;
-        self.loop_b = None;
-        self.loop_passes = 0;
-        self.loop_acc = None;
-        self.continuous = false;
-        self.say("Loop cleared", "");
     }
 
     /// A loop pass ended: the part's practice so far.
@@ -1022,6 +1061,7 @@ impl PlayerView {
                 }
             }
             "review:close" => self.close_review(),
+            "review:whole" => self.whole_song(),
             "review:menu" => {
                 if let Some(r) = self.review.as_mut() {
                     r.menu = !r.menu;
@@ -1045,7 +1085,9 @@ impl PlayerView {
                 self.practise_part(i, None);
             }
             _ => {
-                if let Some(k) = name
+                if let Some(k) = super::footer_keys::parse_recent(name) {
+                    self.open_recent(k);
+                } else if let Some(k) = name
                     .strip_prefix("review:run:")
                     .and_then(|s| s.parse::<usize>().ok())
                 {
@@ -1071,11 +1113,15 @@ impl PlayerView {
     }
 
     fn close_review(&mut self) {
+        let was_open = self.review_open();
         if let Some(r) = self.review.as_mut() {
             r.open = false;
         }
         if !self.summary_up() {
             self.backdrop.clear();
+        }
+        if was_open {
+            self.review_closed(); // (back where the song was, playing again if it was)
         }
     }
 
@@ -1088,6 +1134,11 @@ impl PlayerView {
             return false;
         };
         let n = r.list.len();
+        if let Event::Key { key, modifiers, .. } = ev
+            && (matches!(key, Key::Equals | Key::Plus) || (*key == Key::C && modifiers.shift))
+        {
+            return false; // (the speed keys and the count-in key work over the page: D120)
+        }
         match ev {
             Event::MouseWheel { unit, delta, .. } => {
                 let notches = crate::library::wheel_notches(*unit, delta.y);
@@ -1783,17 +1834,7 @@ impl PlayerView {
         }
         for a in acts {
             if a == "review:whole" {
-                self.close_review();
-                self.loop_a = None;
-                self.loop_b = None;
-                self.continuous = false;
-                if let Some(r) = self.review.as_mut() {
-                    r.current = None;
-                }
-                self.summary_dismissed = true;
-                self.seek(0.0);
-                self.countdown_until =
-                    Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(super::COUNTDOWN));
+                self.whole_song();
             } else {
                 self.review_act(&a);
             }
@@ -1909,24 +1950,41 @@ impl PlayerView {
                 ipos(bx0 + k as f32 * (btn + px(6.0)), cy - btn / 2.0),
                 Vec2::splat(btn),
             );
-            let resp = button(
-                ui,
-                r,
-                ("review-strip", k),
-                "",
-                "",
-                ButtonStyle {
-                    icon: Some(icon),
-                    primary: act == "continuous" && self.continuous,
-                    size: 13.0,
-                    r: Some(11.0),
-                    ..Default::default()
-                },
-            );
+            // (P38.1, D151: continuous is the practice mode, so its key is amber glass, breathing until it's on)
+            let resp = if act == "continuous" {
+                let t_now = ctx.input(|i| i.time);
+                super::footer_keys::continuous_key(ui, r, ("review-strip", k), self.continuous, t_now)
+            } else {
+                button(
+                    ui,
+                    r,
+                    ("review-strip", k),
+                    "",
+                    "",
+                    ButtonStyle {
+                        icon: Some(icon),
+                        size: 13.0,
+                        r: Some(11.0),
+                        ..Default::default()
+                    },
+                )
+            };
             if resp.hovered() {
+                let (label, key) = match (act, self.continuous) {
+                    ("continuous", false) => (
+                        "Continuous practice: the loop plays on without stopping, every pass scored"
+                            .to_string(),
+                        "O".to_string(),
+                    ),
+                    ("continuous", true) => (
+                        "Continuous practice is on, every pass scored: click to stop".to_string(),
+                        "O".to_string(),
+                    ),
+                    _ => (tip.to_string(), String::new()),
+                };
                 self.tip = Some((
-                    tip.to_string(),
-                    String::new(),
+                    label,
+                    key,
                     pos2(r.center().x, r.min.y - px(8.0)),
                     Align2::CENTER_BOTTOM,
                 ));
@@ -2066,6 +2124,25 @@ mod tests {
         assert!(r.write_up.contains("Main riff costs the most"), "{}", r.write_up);
         assert!(r.write_up.contains("plays 4 times"));
         assert!(r.write_up.ends_with("you'd be at 100%."));
+    }
+
+    #[test]
+    fn the_gist_names_the_worst_part() {
+        let per = [OK, OK, BAD, BAD, OK, OK, OK, OK];
+        let r = Review::new("lead", &run(&per), &bars(8), &[idea(2, &[0, 2, 4, 6])], &[]);
+        let g = r.gist();
+        assert_eq!((g.spots, g.worst.as_str()), (1, "Main riff, plays 4×"));
+        assert!((g.potential - 1.0).abs() < 1e-9);
+        // a part that plays once: its name and bars; one named by its bars isn't said twice
+        let ideas = [idea(2, &[0]), idea(2, &[2])];
+        let per = [OK, OK, BAD, ONE];
+        let solo = [(4.0, 8.0, "Solo".to_string())];
+        let r = Review::new("lead", &run(&per), &bars(4), &ideas, &solo);
+        assert_eq!(r.gist().worst, "Solo, bars 3–4");
+        let r = Review::new("lead", &run(&per), &bars(4), &ideas, &[]);
+        assert_eq!(r.gist().worst, "bars 3–4");
+        let r = Review::new("lead", &run(&[OK; 4]), &bars(4), &ideas, &[]);
+        assert_eq!((r.gist().spots, r.gist().worst.as_str()), (0, ""));
     }
 
     #[test]

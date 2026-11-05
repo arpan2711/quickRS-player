@@ -3,7 +3,7 @@
 //!
 //! Hardware ids: every endpoint's property store holds its PnP instance path as "{1}.<path>" under
 //! {b3f8fa53-0004-438e-9003-51a46e139bfc},2 (e.g. "{1}.USB\VID_291A&PID_3369&MI_02\..."). That is the field
-//! Rocksmith checks for the Real Tone Cable (VID_12BA&PID_00FF), and the one RS_ASIO fakes for ASIO inputs.
+//! RS checks for the Real Tone Cable (VID_12BA&PID_00FF), and the one RS_ASIO fakes for ASIO inputs.
 //!
 //! Streams: each runs on its own thread with MMCSS "Pro Audio" priority, event-driven. The thread sets the
 //! client up, reports the format back, receives the real-time side built for that format, then runs. Shared

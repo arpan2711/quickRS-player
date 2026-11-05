@@ -9,11 +9,16 @@
 //! Top, Tangerine Dist, Rodent) have a `diodes` choice inside the box (D45): the pedal's own pair by default, or
 //! silicon, asymmetric, LED or germanium, as a modder would swap them.
 //!
+//! Every drive and fuzz has a Blend and a "Clean low" (P37.2, for bass): how much of the effect, the rest the dry
+//! input, and a crossover under which only the dry plays (`dsp::Blend`). At 100% and Off the path is exactly the old
+//! one. The bass voices: the B7K-style grinder (Grunt and Attack shelves before the clipper, a 4-band EQ after) and
+//! the Bass Big Muff (the Muff with its lows kept and a Bass Boost).
+//!
 //! Levels: the input is a guitar at about -12 dBFS peaks; a diode's knee sits near 0.37 of full scale.
 
 use super::dsp::{
-    Biquad, Curve, DcBlock, Filter, OnePole, Oversample2, Shaper, Smooth, audio_taper, db_to_gain, sweep,
-    unit10,
+    Biquad, Blend, Curve, DcBlock, Filter, OnePole, Oversample2, Shaper, Smooth, audio_taper, db_to_gain,
+    sweep, unit10,
 };
 use super::{MAX_KNOBS, Pedal};
 
@@ -46,6 +51,47 @@ enum Voice {
     BigPi,
     Bender,
     OctaveFuzz,
+    BassGrind,
+    BassMuff,
+}
+
+/// How much louder the dry input is made for the Blend, dB: the effect path runs this much over its input before the
+/// Level knob (measured at each voice's defaults on a guitar-and-bass test signal, P37.2), so Blend 50% is half and
+/// half at a matched level, as a pedal's internal gain staging does it, rather than the effect drowning the dry.
+fn dry_gain_db(v: Voice) -> f32 {
+    match v {
+        Voice::Green => 12.5,
+        Voice::Blues => 20.5,
+        Voice::Gold => 6.5,
+        Voice::Germanium => 16.0,
+        Voice::Treble => 8.0,
+        Voice::Orange => 19.5,
+        Voice::Rodent => 17.0,
+        Voice::Metal => 18.5,
+        Voice::RoundFuzz => 24.5,
+        Voice::BigPi => 20.5,
+        Voice::Bender => 23.0,
+        Voice::OctaveFuzz => 14.5,
+        Voice::BassGrind => 22.5,
+        Voice::BassMuff => 23.0,
+        // (the Bass Driver's own blend, by its circuit, is unchanged)
+        Voice::BassDrive => 0.0,
+    }
+}
+
+/// Where a voice's Blend and Clean low knobs are (they follow its front knobs, before any diodes).
+fn blend_at(v: Voice) -> (usize, usize) {
+    match v {
+        Voice::Green | Voice::Blues | Voice::Gold | Voice::Germanium | Voice::Orange | Voice::Rodent => {
+            (3, 4)
+        }
+        Voice::Treble | Voice::RoundFuzz | Voice::Bender | Voice::OctaveFuzz => (2, 3),
+        Voice::Metal => (5, 6),
+        Voice::BigPi => (3, 4),
+        Voice::BassDrive => (1, 4),
+        Voice::BassGrind => (1, 11),
+        Voice::BassMuff => (3, 5),
+    }
 }
 
 /// The shared engine; `set` configures it for its voice.
@@ -92,6 +138,8 @@ struct Drive {
     clean: Smooth,
     drive_mix: Smooth,
     level: Smooth,
+    blend: Blend,
+    dry_g: f32,
 }
 
 fn new(voice: Voice, rate: f32) -> Box<dyn Pedal> {
@@ -131,6 +179,8 @@ fn new(voice: Voice, rate: f32) -> Box<dyn Pedal> {
         clean: Smooth::new(rate, 25.0, 0.0),
         drive_mix: Smooth::new(rate, 25.0, 1.0),
         level: Smooth::new(rate, 25.0, 1.0),
+        blend: Blend::new(rate),
+        dry_g: db_to_gain(dry_gain_db(voice)),
     })
 }
 
@@ -172,6 +222,12 @@ pub fn bender(rate: f32) -> Box<dyn Pedal> {
 }
 pub fn octave_fuzz(rate: f32) -> Box<dyn Pedal> {
     new(Voice::OctaveFuzz, rate)
+}
+pub fn bass_grind(rate: f32) -> Box<dyn Pedal> {
+    new(Voice::BassGrind, rate)
+}
+pub fn bass_muff(rate: f32) -> Box<dyn Pedal> {
+    new(Voice::BassMuff, rate)
 }
 
 impl Drive {
@@ -229,8 +285,11 @@ impl Pedal for Drive {
             clean,
             drive_mix,
             level,
+            blend,
+            dry_g,
             ..
         } = self;
+        let dry_g = *dry_g;
         let voice = *voice;
         for v in x.iter_mut() {
             let input = *v;
@@ -281,7 +340,13 @@ impl Pedal for Drive {
             }
             let c = clean.tick();
             let m = drive_mix.tick();
-            *v = (out * m + input * c) * level.tick();
+            let wet = out * m + input * c;
+            let y = if blend.active() {
+                blend.tick(wet, input * dry_g)
+            } else {
+                wet
+            };
+            *v = y * level.tick();
         }
     }
 
@@ -457,7 +522,11 @@ impl Pedal for Drive {
                 self.post(&[
                     Filter::LowShelf { f: 120.0, db: v[1] },
                     Filter::Peak {
-                        f: 900.0,
+                        f: if v[7] > 0.0 {
+                            v[7].clamp(200.0, 5000.0)
+                        } else {
+                            900.0
+                        },
                         q: 0.8,
                         db: v[2],
                     },
@@ -477,7 +546,8 @@ impl Pedal for Drive {
                 self.lp_drive.set(rate, 9000.0);
                 self.curves(Curve::Asym(0.7), Curve::Tanh);
                 self.clip1 = 0.5;
-                self.pre(&[Filter::HighPass { f: 40.0, q: 0.6 }]);
+                // (P37.2: 40 Hz to 18, so a 5-string's low B keeps its fundamental)
+                self.pre(&[Filter::HighPass { f: 18.0, q: 0.6 }]);
                 self.post(&[
                     Filter::LowPass { f: 3200.0, q: 0.8 },
                     Filter::LowShelf { f: 90.0, db: 4.0 },
@@ -490,9 +560,87 @@ impl Pedal for Drive {
                         db: (tone - 0.5) * 12.0,
                     },
                 ]);
-                self.clean.target = 1.0 - blend;
-                self.drive_mix.target = blend * 0.8;
+                if v[4] >= 0.5 {
+                    // Clean low: the blend moves to the crossover
+                    self.clean.target = 0.0;
+                    self.drive_mix.target = 0.8;
+                    self.blend.set(blend, v[4]);
+                } else {
+                    self.clean.target = 1.0 - blend;
+                    self.drive_mix.target = blend * 0.8;
+                    self.blend.set(1.0, 0.0);
+                }
                 self.level.target = 0.2 + 1.8 * audio_taper(lvl);
+            }
+            Voice::BassGrind => {
+                let (drive, lvl) = (unit10(v[0]), unit10(v[2]));
+                let grunt = [6.0, 0.0, -5.0][(v[7].round().clamp(0.0, 2.0)) as usize];
+                let attack = [-6.0, 0.0, 6.0][(v[8].round().clamp(0.0, 2.0)) as usize];
+                let lo_f = [250.0, 500.0, 1000.0][(v[9].round().clamp(0.0, 2.0)) as usize];
+                let hi_f = [750.0, 1500.0, 3000.0][(v[10].round().clamp(0.0, 2.0)) as usize];
+                // the Microtubes' CMOS stages: a lot of gain, hard tops, the bass shaped before the clipper
+                self.gain.target = 3.0 + 160.0 * audio_taper(drive);
+                self.lp_drive.set(rate, 6500.0);
+                self.curves(Curve::Tanh, Curve::Hard);
+                self.clip1 = 0.45;
+                self.clip2 = 0.6;
+                self.two_stage = true;
+                self.gain2 = 2.0 + 4.0 * drive;
+                self.inter_lp.set(r2, 5000.0);
+                self.inter_hp.set(r2, 35.0);
+                self.pre(&[
+                    Filter::HighPass { f: 25.0, q: 0.6 },
+                    Filter::LowShelf { f: 160.0, db: grunt },
+                    Filter::HighShelf {
+                        f: 2000.0,
+                        db: attack,
+                    },
+                ]);
+                self.post(&[
+                    Filter::LowShelf { f: 100.0, db: v[3] },
+                    Filter::Peak {
+                        f: lo_f,
+                        q: 0.8,
+                        db: v[4],
+                    },
+                    Filter::Peak {
+                        f: hi_f,
+                        q: 0.8,
+                        db: v[5],
+                    },
+                    Filter::HighShelf {
+                        f: 5000.0,
+                        db: v[6] - 4.0,
+                    },
+                ]);
+                self.level.target = 0.025 + 0.36 * audio_taper(lvl);
+            }
+            Voice::BassMuff => {
+                let (sustain, tone, vol) = (unit10(v[0]), unit10(v[1]), unit10(v[2]));
+                let boost = v[4] >= 0.5;
+                self.gain.target = 3.0 + 70.0 * audio_taper(sustain);
+                self.lp_drive.set(rate, 7000.0);
+                self.curves(Curve::Tanh, Curve::Tanh);
+                self.clip1 = DIODE;
+                self.clip2 = DIODE;
+                self.two_stage = true;
+                self.gain2 = 30.0;
+                self.inter_lp.set(r2, 4500.0);
+                // the bass version's coupling caps: the lows go through the clippers
+                self.inter_hp.set(r2, 35.0);
+                self.pre(&[Filter::HighPass { f: 25.0, q: 0.6 }]);
+                self.post(&[
+                    Filter::LowPass { f: 5000.0, q: 0.6 },
+                    Filter::LowShelf {
+                        f: 100.0,
+                        db: if boost { 6.0 } else { 0.0 },
+                    },
+                ]);
+                self.stack = true;
+                self.stack_lp.set(rate, 300.0);
+                self.stack_hp.set(rate, 1100.0);
+                self.stack_t = tone;
+                self.level.target = 0.04 + 0.74 * audio_taper(vol);
             }
             // (the fuzzes' levels: 2-4 dB over the drives at noon, as squashed as they are; they were 7-10 over)
             Voice::RoundFuzz => {
@@ -578,7 +726,12 @@ impl Pedal for Drive {
                 self.level.target = 0.045 + 0.68 * audio_taper(vol);
             }
         }
-        // the clipping diodes inside (`catalog::DIODES`; knob 3): (index, the pedal's own pair)
+        // the Blend and Clean low (the Bass Driver set its own above)
+        let (bi, ci) = blend_at(self.voice);
+        if self.voice != Voice::BassDrive {
+            self.blend.set((v[bi] / 100.0).clamp(0.0, 1.0), v[ci]);
+        }
+        // the clipping diodes inside (`catalog::DIODES`; after the front knobs): (index, the pedal's own pair)
         let diodes = match self.voice {
             Voice::Green | Voice::Orange | Voice::Rodent => Some(0),
             Voice::Blues => Some(1),
@@ -586,7 +739,7 @@ impl Pedal for Drive {
             _ => None,
         };
         if let Some(stock) = diodes {
-            let d = v[3].round().clamp(0.0, 3.0) as usize;
+            let d = v[ci + 1].round().clamp(0.0, 3.0) as usize;
             if d != stock {
                 let (curve, clip) = diode(d);
                 // the same loudness for a swap, except LEDs: they clip later and come out louder, as the real mod does
@@ -622,5 +775,6 @@ impl Pedal for Drive {
         self.clean.snap();
         self.drive_mix.snap();
         self.level.snap();
+        self.blend.reset();
     }
 }

@@ -9,11 +9,17 @@
 //! - Rotary: a 800 Hz crossover; the horn and the drum each spin with their own inertia (chorale and tremolo
 //!   speeds as Leslie's), each giving Doppler (a modulated delay) and amplitude modulation.
 //! - Octaver: the OC-2's trick: a flip-flop on the zero crossings of the low-passed input halves its frequency and
-//!   flips the sign of the input with it (the octave down); full-wave rectifying gives the octave up.
+//!   flips the sign of the input with it (the octave down); full-wave rectifying gives the octave up. A second
+//!   flip-flop on the first gives the OC-2's "Oct 2" (two octaves down). P37.2: the tracker's low-pass follows the
+//!   note it finds (a 4-pole at 0.8 of it), so a bass note whose 2nd harmonic is louder than its fundamental is
+//!   still tracked at the fundamental; its high-pass is 22 Hz (was 50, which took 8 dB off a low B), and the sub
+//!   fades out under a tracking floor instead of sputtering on the decay.
+//! - Chorus: a Low cut (P37.2, the Boss CEB-3's) keeps everything under it dry, for bass.
 
 use std::f32::consts::{PI, TAU};
 
-use super::dsp::{Biquad, Filter, Lfo, Line, OnePole, Smooth, coef_ms, flush, sweep, unit10};
+use super::catalog::LOW_CUT_HZ;
+use super::dsp::{Biquad, Filter, Lfo, Line, Lr4, OnePole, Smooth, coef_ms, flush, sweep, unit10};
 use super::{MAX_KNOBS, Pedal};
 
 // -- Chorus ---------------------------------------------------------------------------------------------------------
@@ -26,6 +32,10 @@ struct Chorus {
     mix: Smooth,
     wet_lp: Biquad,
     centre: f32,
+    /// The low cut: the band under it passes dry (0: off, the whole signal is chorused as before).
+    cut: f32,
+    lo: Lr4,
+    hi: Lr4,
 }
 
 pub fn chorus(rate: f32) -> Box<dyn Pedal> {
@@ -37,12 +47,22 @@ pub fn chorus(rate: f32) -> Box<dyn Pedal> {
         mix: Smooth::new(rate, 30.0, 0.5),
         wet_lp: Biquad::new(rate, Filter::LowPass { f: 7000.0, q: 0.7 }),
         centre: 0.0075 * rate,
+        cut: 0.0,
+        lo: Lr4::default(),
+        hi: Lr4::default(),
     })
 }
 
 impl Pedal for Chorus {
     fn process(&mut self, x: &mut [f32]) {
         for v in x.iter_mut() {
+            let low = if self.cut > 0.0 {
+                let l = self.lo.tick(*v);
+                *v = self.hi.tick(*v);
+                l
+            } else {
+                0.0
+            };
             self.line.push(*v);
             let p = self.lfo.step();
             // a rounded triangle, like the CE-2's
@@ -52,16 +72,29 @@ impl Pedal for Chorus {
             let wet = self.wet_lp.tick(self.line.cubic(d));
             let m = self.mix.tick();
             *v = *v * (1.0 - 0.5 * m) + wet * m;
+            if self.cut > 0.0 {
+                *v += low;
+            }
         }
     }
     fn set(&mut self, v: &[f32; MAX_KNOBS]) {
         self.lfo.set(self.rate, sweep(0.12, 6.0, unit10(v[0])));
         self.depth.target = unit10(v[1]) * 0.0038 * self.rate;
         self.mix.target = (v[2] / 100.0).clamp(0.0, 1.0);
+        let cut = LOW_CUT_HZ[(v[3].round().max(0.0) as usize).min(LOW_CUT_HZ.len() - 1)];
+        if cut != self.cut {
+            self.cut = cut;
+            if cut > 0.0 {
+                self.lo.set_low(self.rate, cut);
+                self.hi.set_high(self.rate, cut);
+            }
+        }
     }
     fn reset(&mut self) {
         self.line.clear();
         self.wet_lp.reset();
+        self.lo.reset();
+        self.hi.reset();
         self.depth.snap();
         self.mix.snap();
     }
@@ -74,6 +107,8 @@ struct Flanger {
     line: Line,
     lfo: Lfo,
     depth: Smooth,
+    /// Manual: the sweep's shortest delay, samples.
+    base: Smooth,
     fb: f32,
     mix: Smooth,
     last: f32,
@@ -86,6 +121,7 @@ pub fn flanger(rate: f32) -> Box<dyn Pedal> {
         line: Line::new((rate * 0.012) as usize),
         lfo: Lfo::default(),
         depth: Smooth::new(rate, 50.0, 0.0),
+        base: Smooth::new(rate, 50.0, 0.00025 * rate),
         fb: 0.5,
         mix: Smooth::new(rate, 30.0, 0.5),
         last: 0.0,
@@ -99,7 +135,7 @@ impl Pedal for Flanger {
             self.line.push(*v + self.fb * self.last);
             let p = self.lfo.step();
             let w = 0.5 + 0.5 * Lfo::tri(p);
-            let d = 0.00025 * self.rate + self.depth.tick() * w * w;
+            let d = self.base.tick() + self.depth.tick() * w * w;
             let wet = self.damp.lp(self.line.cubic(d));
             self.last = flush(wet);
             let m = self.mix.tick();
@@ -111,12 +147,20 @@ impl Pedal for Flanger {
         self.depth.target = unit10(v[1]) * 0.0045 * self.rate;
         self.fb = 0.9 * unit10(v[2]);
         self.mix.target = (v[3] / 100.0).clamp(0.0, 1.0);
+        // (0.25 ms, the Manual it always had, unless set)
+        let manual = if v[4] > 0.0 { v[4].clamp(0.1, 4.0) } else { 0.25 };
+        self.base.target = if (manual - 0.25).abs() < 1e-6 {
+            0.00025 * self.rate
+        } else {
+            manual * 1e-3 * self.rate
+        };
     }
     fn reset(&mut self) {
         self.line.clear();
         self.last = 0.0;
         self.damp.reset();
         self.depth.snap();
+        self.base.snap();
         self.mix.snap();
     }
 }
@@ -412,74 +456,156 @@ impl Pedal for Rotary {
 
 // -- Octaver --------------------------------------------------------------------------------------------------------
 
+/// The tracker's low-pass with no note found yet, and its range.
+const TRACK_OPEN: f32 = 320.0;
+const TRACK_MIN: f32 = 25.0;
+/// Under this the tracked signal is noise or a dying note: the sub fades out.
+const TRACK_FLOOR: f32 = 0.0015;
+
 struct Octaver {
+    rate: f32,
+    hp: Biquad,
     track: [Biquad; 2],
+    /// The tracker's low-pass now (follows the note found: 0.8 of it).
+    fc: f32,
+    /// Samples since the last rising crossing.
+    since: u32,
     sub_lp: [Biquad; 2],
+    sub2_lp: [Biquad; 2],
     up_hp: OnePole,
     env: f32,
     env_c: f32,
     flip: f32,
+    flip2: f32,
     armed: bool,
+    gate: f32,
+    gate_c: f32,
     sub: Smooth,
     up: Smooth,
     dry: Smooth,
+    sub2: Smooth,
 }
 
 pub fn octaver(rate: f32) -> Box<dyn Pedal> {
-    Box::new(Octaver {
-        track: [
-            Biquad::new(rate, Filter::LowPass { f: 320.0, q: 0.7 }),
-            Biquad::new(rate, Filter::HighPass { f: 50.0, q: 0.7 }),
-        ],
+    let mut o = Octaver {
+        rate,
+        hp: Biquad::new(rate, Filter::HighPass { f: 22.0, q: 0.7 }),
+        track: [Biquad::default(); 2],
+        fc: 0.0,
+        since: 0,
         sub_lp: [Biquad::new(rate, Filter::LowPass { f: 700.0, q: 0.7 }); 2],
+        sub2_lp: [Biquad::new(rate, Filter::LowPass { f: 400.0, q: 0.7 }); 2],
         up_hp: OnePole::new(rate, 120.0),
         env: 0.0,
         env_c: coef_ms(rate, 20.0),
         flip: 1.0,
+        flip2: 1.0,
         armed: true,
+        gate: 0.0,
+        gate_c: coef_ms(rate, 8.0),
         sub: Smooth::new(rate, 30.0, 0.6),
         up: Smooth::new(rate, 30.0, 0.0),
         dry: Smooth::new(rate, 30.0, 0.7),
-    })
+        sub2: Smooth::new(rate, 30.0, 0.0),
+    };
+    o.track_at(TRACK_OPEN);
+    Box::new(o)
+}
+
+impl Octaver {
+    fn track_at(&mut self, f: f32) {
+        self.fc = f;
+        for b in &mut self.track {
+            b.set(
+                self.rate,
+                Filter::LowPass {
+                    f,
+                    q: std::f32::consts::FRAC_1_SQRT_2,
+                },
+            );
+        }
+    }
 }
 
 impl Pedal for Octaver {
     fn process(&mut self, x: &mut [f32]) {
+        let (shortest, longest) = ((self.rate / 450.0) as u32, (self.rate / 22.0) as u32);
         for v in x.iter_mut() {
             let t = {
-                let t0 = self.track[0].tick(*v);
-                self.track[1].tick(t0)
+                let t0 = self.hp.tick(*v);
+                let t1 = self.track[0].tick(t0);
+                self.track[1].tick(t1)
             };
             self.env = flush(self.env + (t.abs() - self.env) * self.env_c);
+            self.since = self.since.saturating_add(1);
             // a flip-flop on the rising zero crossings, with hysteresis against noise
             let h = 0.08 * self.env;
             if self.armed && t > h {
                 self.flip = -self.flip;
+                if self.flip > 0.0 {
+                    self.flip2 = -self.flip2;
+                }
                 self.armed = false;
+                // the period found: the tracker's low-pass moves to just under it, which leaves the fundamental
+                // on top however strong the 2nd harmonic was
+                if (shortest..=longest).contains(&self.since) {
+                    let f = (0.8 * self.rate / self.since as f32).clamp(TRACK_MIN, TRACK_OPEN);
+                    if (f / self.fc - 1.0).abs() > 0.04 {
+                        self.track_at(f);
+                    }
+                }
+                self.since = 0;
             } else if t < -h {
                 self.armed = true;
             }
+            // nothing tracked for a while (a rest): open up for the next note
+            if self.since > (self.rate * 0.15) as u32 && self.fc != TRACK_OPEN {
+                self.track_at(TRACK_OPEN);
+            }
+            let open = if self.env > TRACK_FLOOR { 1.0 } else { 0.0 };
+            self.gate = flush(self.gate + (open - self.gate) * self.gate_c);
+            // (the tracker's low-pass takes the level down as it closes in: the octave's level follows the input's)
+            let lift = (TRACK_OPEN / self.fc).sqrt().min(4.0);
             let sub = {
                 let t0 = self.sub_lp[0].tick(t * self.flip);
                 self.sub_lp[1].tick(t0)
-            } * 1.6;
+            } * 1.6
+                * lift
+                * self.gate;
+            let sub2 = {
+                let t0 = self.sub2_lp[0].tick(t * self.flip2);
+                self.sub2_lp[1].tick(t0)
+            } * 1.6
+                * lift
+                * self.gate;
             let up = self.up_hp.hp(v.abs() * 1.2);
-            *v = *v * self.dry.tick() + sub * self.sub.tick() + up * self.up.tick();
+            *v = *v * self.dry.tick() + sub * self.sub.tick() + up * self.up.tick() + sub2 * self.sub2.tick();
         }
     }
     fn set(&mut self, v: &[f32; MAX_KNOBS]) {
         self.sub.target = unit10(v[0]);
         self.up.target = unit10(v[1]);
         self.dry.target = unit10(v[2]);
+        self.sub2.target = unit10(v[3]);
     }
     fn reset(&mut self) {
-        for b in self.track.iter_mut().chain(self.sub_lp.iter_mut()) {
+        for b in self
+            .track
+            .iter_mut()
+            .chain(self.sub_lp.iter_mut())
+            .chain(self.sub2_lp.iter_mut())
+        {
             b.reset();
         }
+        self.hp.reset();
+        self.track_at(TRACK_OPEN);
+        self.since = 0;
         self.up_hp.reset();
         self.env = 0.0;
+        self.gate = 0.0;
         self.sub.snap();
         self.up.snap();
         self.dry.snap();
+        self.sub2.snap();
     }
 }

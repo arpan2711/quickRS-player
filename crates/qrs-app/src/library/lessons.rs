@@ -255,7 +255,7 @@ impl LibView {
         let e = st.song(g);
         if e.needs_keys {
             st.say(format!(
-                "{} needs Rocksmith's keys: add them in Settings > Directories",
+                "{} needs RS's keys: add them in Settings > Directories",
                 r.title
             ));
             return;

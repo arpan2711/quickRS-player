@@ -10,7 +10,7 @@ use std::hash::{Hash, Hasher};
 use eframe::egui;
 use egui::epaint::Shadow;
 use egui::{Align2, Color32, FontFamily, FontId, Painter, Pos2, Rect, Stroke, pos2, vec2};
-use qrs_audio::board::{Block, Face, Kind, KnobDef, Unit};
+use qrs_audio::board::{Block, Face, Kind, KnobDef, Unit, catalog};
 use qrs_ui::knobs::{self, KnobStyle, Scale};
 use qrs_ui::paint::{self, Store};
 use qrs_ui::raster::{self, Image};
@@ -306,6 +306,7 @@ mod amps;
 mod cabs;
 mod pedals;
 mod racks;
+pub mod silver;
 
 // -- families -------------------------------------------------------------------------------------------------------
 
@@ -319,34 +320,276 @@ pub(crate) enum Family {
     Pedal,
     /// Rack units and graphic EQs.
     Rack,
+    /// The generic brushed-silver unit (`silver`): file blocks whose skin doesn't map every control (D101).
+    Silver,
 }
 
 pub(crate) fn family(def: &qrs_audio::board::ModelDef) -> Family {
+    if def.file {
+        return Family::Silver;
+    }
     match def.face {
         Face::Amp => Family::Amp,
         Face::Cab => Family::Cab,
+        // (a pedal with switches and no drawn face of its own is the silver unit: the old generic face piled its rows
+        // of switches on its knobs, P37.13)
+        Face::Pedal
+            if !pedals::has_spec(def.id)
+                && def.knobs[..def.front_len()]
+                    .iter()
+                    .any(|k| matches!(k.unit, Unit::Choice(_))) =>
+        {
+            Family::Silver
+        }
         Face::Pedal => Family::Pedal,
         Face::Rack | Face::Graphic => Family::Rack,
     }
 }
 
-/// Where everything on a block's face goes, in `r`.
+/// How a skin's front controls map onto a file block's real ones (D101): skin Gain (drive, distortion...) is the
+/// capture's Input, Master / Volume / Level its Output, a tone knob the block's knob of that name (a post-capture
+/// EQ, when it has one). For each skin front control, the file block's knob it turns. None unless every skin control
+/// maps AND every front knob of the file block is reached: a face shows only controls that turn something, and
+/// every real control is on it.
+pub fn skin_map(skin: &qrs_audio::board::ModelDef, own: &qrs_audio::board::ModelDef) -> Option<Vec<usize>> {
+    let find = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| own.front_knobs().iter().position(|x| x.key == *k))
+    };
+    let mut out: Vec<usize> = Vec::new();
+    for kd in skin.front_knobs() {
+        let j = match kd.key {
+            "gain" | "drive" | "dist" | "fuzz" | "sustain" => find(&["input"]),
+            "master" | "volume" | "level" | "output" => find(&["output", "level"]),
+            "middle" => find(&["mid"]),
+            k => find(&[k]),
+        }?;
+        if out.contains(&j) {
+            return None;
+        }
+        out.push(j);
+    }
+    (out.len() == own.front_len()).then_some(out)
+}
+
+/// A NAM capture or IR drawn as the model of ours it stands in for (P33.3, its library item's `skin`), only where
+/// every control of the skin maps to a real one (`skin_map`), its knobs at the block's values; None for the rest
+/// (drawn as the brushed-silver unit, D101).
+pub fn skinned(b: &Block) -> Option<Block> {
+    if !b.def().file {
+        return None;
+    }
+    let skin = crate::captures::with(|l| l.get(b.asset).map(|i| i.skin.clone()))?;
+    let mut s = Block::of(skin.as_deref()?)?;
+    if s.def().file {
+        return None;
+    }
+    let map = skin_map(s.def(), b.def())?;
+    s.on = b.on;
+    s.uid = b.uid;
+    let (sd, od) = (s.def(), b.def());
+    for (i, &j) in map.iter().enumerate() {
+        s.v[i] = sd.knobs[i].from_u(od.knobs[j].to_u(b.v[j]));
+    }
+    Some(s)
+}
+
+/// The face a block is drawn with (a skinned capture's: its skin's).
+pub fn face_of(b: &Block) -> Face {
+    skinned(b).map_or(b.def().face, |s| s.def().face)
+}
+
+/// Whether a block is drawn as another (its skin's controls stand for its own; `layout` gives its own indices).
+#[cfg(test)]
+pub fn is_skinned(b: &Block) -> bool {
+    skinned(b).is_some()
+}
+
+/// Where everything on a block's face goes, in `r`. A skinned block's indices are its own (the skin's mapped through
+/// `skin_map`), so every caller turns real knobs.
 pub fn layout(b: &Block, r: Rect, detail: Detail) -> Layout {
+    let s = skinned(b);
+    let Some(sk) = s.as_ref() else {
+        let l = family_layout(b, r, detail);
+        let missing = unplaced(b, &l);
+        if missing.is_empty() || detail != Detail::Full {
+            return l;
+        }
+        // (its other real knobs beside the face when the rect has the width, else on a strip under it: P37.13)
+        let (face, area) = extra_split(b, r, missing.len());
+        let mut l = family_layout(b, face, detail);
+        for (&k, (c, d, _)) in missing.iter().zip(extra_cells(area, missing.len())) {
+            l.extra.push((k, c, d));
+        }
+        l.extra_area = area;
+        return l;
+    };
+    let mut l = family_layout(sk, r, detail);
+    if let Some(map) = skin_map(sk.def(), b.def()) {
+        let to = |i: usize| map.get(i).copied().unwrap_or(i);
+        for k in &mut l.knobs {
+            k.0 = to(k.0);
+        }
+        for k in &mut l.faders {
+            k.0 = to(k.0);
+        }
+        for k in &mut l.choices {
+            k.0 = to(k.0);
+        }
+    }
+    l
+}
+
+/// Front knobs a layout doesn't place.
+fn unplaced(b: &Block, l: &Layout) -> Vec<usize> {
+    (0..b.def().front_len())
+        .filter(|i| {
+            !l.knobs.iter().any(|k| k.0 == *i)
+                && !l.faders.iter().any(|k| k.0 == *i)
+                && !l.choices.iter().any(|k| k.0 == *i)
+        })
+        .collect()
+}
+
+/// The extras' cell at a face's own size (P37.13): a knob with its name under it.
+pub const EXTRA_W: f32 = 76.0;
+pub const EXTRA_H: f32 = 64.0;
+
+/// How many columns `n` extras take beside a face `h` high (at its own size, 190 points for a pedal).
+fn extra_cols(n: usize, rows_fit: usize) -> usize {
+    n.div_ceil(rows_fit.max(1)).max(1)
+}
+
+/// A face with extra knobs, split: the face and the extras' area. Beside the face (a column at the right) when `r`
+/// is as wide as the face and that column at its height; else a strip under the face.
+pub fn extra_split(b: &Block, r: Rect, n: usize) -> (Rect, Rect) {
+    let bs = board_size(b);
+    let k = r.height() / bs.y;
+    let rows_fit = ((bs.y / EXTRA_H).floor() as usize).max(1);
+    let col_w = extra_cols(n, rows_fit) as f32 * EXTRA_W * k;
+    if r.width() >= (bs.x * k + col_w) * 0.97 {
+        let x = r.max.x - col_w;
+        (
+            Rect::from_min_max(r.min, pos2(x, r.max.y)),
+            Rect::from_min_max(pos2(x, r.min.y), r.max),
+        )
+    } else {
+        let sh = (r.height() * EXTRA_H / (bs.y + EXTRA_H)).max(30.0);
+        (
+            Rect::from_min_max(r.min, pos2(r.max.x, r.max.y - sh)),
+            Rect::from_min_max(pos2(r.min.x, r.max.y - sh), r.max),
+        )
+    }
+}
+
+/// The extras' plate in their area and each one's (centre, diameter, cell width): a grid, one row in a strip, as many
+/// rows as fit in a column.
+fn extra_cells(area: Rect, n: usize) -> Vec<(Pos2, f32, f32)> {
+    let plate = extra_plate(area, n);
+    let tall = area.height() > area.width();
+    let (cols, rows) = if tall {
+        let rows_fit = ((plate.height() / (EXTRA_H * 0.9)).floor() as usize).clamp(1, n.max(1));
+        let cols = extra_cols(n, rows_fit);
+        (cols, n.div_ceil(cols))
+    } else {
+        (n.max(1), 1)
+    };
+    let cw = plate.width() / cols as f32;
+    let ch = (plate.height() / rows as f32).min(EXTRA_H * 1.4 * plate.width() / (cols as f32 * EXTRA_W));
+    // (room at the top for the plate's "ADDED" caption, P37.6c)
+    let top = plate.center().y - ch * rows as f32 / 2.0 + ch * 0.08;
+    let d = (ch * 0.5).min(cw * 0.42).max(10.0);
+    (0..n)
+        .map(|j| {
+            let (cx, cy) = (j % cols, j / cols);
+            let x = plate.min.x + cw * (cx as f32 + 0.5);
+            let y = top + ch * cy as f32 + ch * 0.1 + d * 0.5;
+            (pos2(x, y), d, cw)
+        })
+        .collect()
+}
+
+/// The extras' dark plate in their area: as big as their grid needs, centred.
+fn extra_plate(area: Rect, n: usize) -> Rect {
+    let m = (area.width().min(area.height()) * 0.06).clamp(2.0, 8.0);
+    let a = area.shrink(m);
+    if a.height() > a.width() {
+        a
+    } else {
+        let k = a.height() / EXTRA_H;
+        Rect::from_center_size(
+            a.center(),
+            vec2((n as f32 * EXTRA_W * k).min(a.width()), a.height()),
+        )
+    }
+}
+
+/// A pedal without a designed face, at the size its controls need in Full (two rows of knobs past four, each choice
+/// a row with its name beside it).
+fn legacy_pedal_size(b: &Block) -> egui::Vec2 {
+    let def = b.def();
+    let n = (0..def.front_len())
+        .filter(|&i| !matches!(def.knobs[i].unit, Unit::Choice(_)))
+        .count()
+        .max(1);
+    let c = def.front_len() - n.min(def.front_len());
+    let per = if n > 4 { n.div_ceil(2) } else { n };
+    let rows = if n > 4 { 2.0 } else { 1.0 };
+    let w = (per as f32 * 40.0 + 24.0)
+        .max(if c > 0 { 230.0 } else { 130.0 })
+        .max(130.0);
+    let d = ((w - 16.0) / per as f32 * 0.72).min(40.0);
+    let h = 20.0 + rows * (d + 16.0) + c as f32 * 22.0 + 110.0;
+    vec2(w, h.max(190.0))
+}
+
+/// The open unit's face size (P37.13; Full detail, points): what every control and label needs, so a panel sized
+/// from it never piles knobs or labels on each other. A cab is wider for its engineer's strip, a face with extra knobs
+/// (a drive's Blend and Clean low) wider for their column.
+pub fn unit_size(b: &Block) -> egui::Vec2 {
+    let s = skinned(b);
+    let drawn = s.as_ref().unwrap_or(b);
+    let mut sz = match family(drawn.def()) {
+        Family::Cab => cabs::unit_size(drawn),
+        Family::Pedal if drawn.def().face == Face::Pedal && !pedals::designed(drawn) => {
+            legacy_pedal_size(drawn)
+        }
+        _ => board_size(drawn),
+    };
+    if s.is_none() {
+        let l = family_layout(b, Rect::from_min_size(Pos2::ZERO, sz), Detail::Full);
+        let n = unplaced(b, &l).len();
+        if n > 0 {
+            let rows_fit = ((sz.y / EXTRA_H).floor() as usize).max(1);
+            sz.x += extra_cols(n, rows_fit) as f32 * EXTRA_W;
+        }
+    }
+    sz
+}
+
+/// The layout in the drawn block's own terms (a skin's indices for a skin).
+fn family_layout(b: &Block, r: Rect, detail: Detail) -> Layout {
     match family(b.def()) {
-        Family::Amp => amps::layout(b, r, detail),
+        Family::Amp if amps::designed(b.def().id) => amps::layout(b, r, detail),
+        Family::Amp => legacy_layout(b, r, detail),
         Family::Cab => cabs::layout(b, r, detail),
         Family::Pedal => pedals::layout(b, r, detail),
         Family::Rack => racks::layout(b, r, detail),
+        Family::Silver => silver::layout(b, r, detail),
     }
 }
 
 /// A block's size standing on the big view's board (points, before the board scales them all to fit).
 pub fn board_size(b: &Block) -> egui::Vec2 {
+    let s = skinned(b);
+    let b = s.as_ref().unwrap_or(b);
     match family(b.def()) {
-        Family::Amp => amps::board_size(b),
+        Family::Amp if amps::designed(b.def().id) => amps::board_size(b),
+        Family::Amp => legacy_board_size(b),
         Family::Cab => cabs::board_size(b),
         Family::Pedal => pedals::board_size(b),
         Family::Rack => racks::board_size(b),
+        Family::Silver => silver::board_size(b),
     }
 }
 
@@ -381,6 +624,11 @@ pub struct Layout {
     /// A cab's speaker the mic points at: (centre, radius).
     pub cone: Option<(Pos2, f32)>,
     pub radius: f32,
+    /// Front knobs the designed face has no place for (a drive's Blend and Clean low, P37.2): (knob, centre,
+    /// diameter) on a strip under the face, so every real control turns on it (D101). Empty on most faces.
+    pub extra: Vec<(usize, Pos2, f32)>,
+    /// Where the extras sit (beside the face or under it); nothing without extras.
+    pub extra_area: Rect,
 }
 
 impl Default for Layout {
@@ -395,6 +643,8 @@ impl Default for Layout {
             panel: Rect::NOTHING,
             cone: None,
             radius: 8.0,
+            extra: Vec::new(),
+            extra_area: Rect::NOTHING,
         }
     }
 }
@@ -433,7 +683,7 @@ pub(super) fn legacy_layout(b: &Block, r: Rect, detail: Detail) -> Layout {
     match def.face {
         Face::Pedal => {
             let n = dials.len().max(1);
-            let rows = if n > 4 && detail == Detail::Board { 2 } else { 1 };
+            let rows = if n > 4 { 2 } else { 1 };
             let per = n.div_ceil(rows);
             let d = ((w - 16.0) / per as f32 * 0.72)
                 .min(h * if rows == 2 { 0.17 } else { 0.27 })
@@ -450,12 +700,18 @@ pub(super) fn legacy_layout(b: &Block, r: Rect, detail: Detail) -> Layout {
             }
             let below = top + (rows as f32 - 1.0) * (d + 16.0) + d * 0.5 + 14.0;
             let mut y = below;
+            // (each choice a row, its name in a column at its left inside the face, P37.13)
+            let lab_w = if detail == Detail::Full {
+                (w * 0.3).min(64.0)
+            } else {
+                0.0
+            };
             for &c in &choices {
-                let cw = (w * 0.62).min(170.0);
-                l.choices.push((
-                    c,
-                    Rect::from_center_size(pos2(r.center().x, y + 8.0), vec2(cw, 16.0)),
-                ));
+                let cw = (w - 16.0 - lab_w).min(170.0);
+                let cx = r.max.x - 8.0 - cw * 0.5;
+                let cx = if lab_w > 0.0 { cx } else { r.center().x };
+                l.choices
+                    .push((c, Rect::from_center_size(pos2(cx, y + 8.0), vec2(cw, 16.0))));
                 y += 22.0;
             }
             let sw = (w * 0.2).clamp(18.0, 36.0);
@@ -636,6 +892,9 @@ fn amp_panel(id: &str) -> (&'static str, [u8; 3]) {
         "amp_chime" => ("vox", [150, 52, 46]),
         "amp_crunch" | "amp_lead" => ("gold", [214, 180, 96]),
         "amp_modern" => ("plate", [176, 182, 190]),
+        "amp_cali" | "amp_surrey" => ("black", [30, 30, 32]),
+        "amp_snake" => ("chrome", [200, 204, 208]),
+        "amp_tangerine" => ("cream", [236, 228, 208]),
         _ => ("silver", [190, 198, 208]),
     }
 }
@@ -1076,9 +1335,35 @@ pub struct Hot {
 
 /// Draw a block's face in `r` (points) with the layout `l` (from `layout`).
 pub fn draw(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Detail, hot: Hot) {
+    let neural = b.def().file;
+    let s = skinned(b);
+    // (a skin is drawn with its own layout and indices; the caller's are the block's own)
+    let skin_l;
+    let mut hot = hot;
+    let l = match &s {
+        Some(sk) => {
+            skin_l = family_layout(sk, r, detail);
+            if let Some(map) = skin_map(sk.def(), b.def()) {
+                let back = |o: Option<usize>| o.and_then(|j| map.iter().position(|&x| x == j));
+                hot.hover = back(hot.hover);
+                hot.active = back(hot.active);
+            }
+            &skin_l
+        }
+        None => l,
+    };
+    let b = s.as_ref().unwrap_or(b);
     let def = b.def();
     let th = t();
     let ppp = p.pixels_per_point();
+    // (extra knobs: the face, their plate beside or under it)
+    let r = if l.extra.is_empty() {
+        r
+    } else {
+        let (f, _) = extra_split(b, r, l.extra.len());
+        extra_strip(p, l.extra_area, b, l, hot);
+        f
+    };
     // the shadow it casts on the screen
     let sh = Shadow {
         offset: [0, 5],
@@ -1100,10 +1385,12 @@ pub fn draw(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Detail, hot: Ho
         detail == Detail::Board,
     ));
     let (tex, _) = paint::texture(p.ctx(), Store::Face, k, || match family(def) {
-        Family::Amp => amps::body(b, r, l, ppp),
+        Family::Amp if amps::designed(def.id) => amps::body(b, r, l, ppp),
+        Family::Amp => legacy_body(b, r, l, ppp),
         Family::Cab => cabs::body(b, r, l, ppp),
         Family::Pedal => pedals::body(b, r, l, ppp),
         Family::Rack => racks::body(b, r, l, ppp),
+        Family::Silver => silver::body(b, r, l, ppp),
     });
     p.image(
         tex,
@@ -1112,21 +1399,231 @@ pub fn draw(p: &Painter, r: Rect, b: &Block, l: &Layout, detail: Detail, hot: Ho
         Color32::WHITE,
     );
     match family(def) {
-        Family::Amp => amps::controls(p, r, b, l, detail, hot),
+        Family::Amp if amps::designed(def.id) => amps::controls(p, r, b, l, detail, hot),
+        Family::Amp => legacy_controls(p, r, b, l, detail, hot),
         Family::Cab => cabs::controls(p, r, b, l, detail, hot),
         Family::Pedal => pedals::controls(p, r, b, l, detail, hot),
         Family::Rack => racks::controls(p, r, b, l, detail, hot),
+        Family::Silver => silver::controls(p, r, b, l, detail, hot),
+    }
+    if detail == Detail::Full && family(def) == Family::Pedal && s.is_none() {
+        added_marks(p, b, l);
+    }
+    // (the silver unit carries its own stamp)
+    if neural && family(def) != Family::Silver {
+        neural_sticker(p, r);
     }
 }
 
-/// A block's face as a miniature (the chain strips, P21.4): its body as drawn on the board, with its knobs as plain
-/// caps and its LED, but no print (the family painters' labels don't shrink that far). Above `full_h` points tall
-/// the whole face is drawn.
+/// The plate of a face's extra knobs: dark, each knob in its cell with its name under it (its value while hovered
+/// or turned).
+fn extra_strip(p: &Painter, area: Rect, b: &Block, l: &Layout, hot: Hot) {
+    let plate = extra_plate(area, l.extra.len());
+    p.rect_filled(plate, 6.0, Color32::from_rgb(0x1c, 0x1e, 0x22));
+    p.rect_stroke(
+        plate,
+        6.0,
+        Stroke::new(1.0, Color32::from_white_alpha(24)),
+        egui::StrokeKind::Inside,
+    );
+    let def = b.def();
+    // (P37.6c, D140: our additions say so: "ADDED" over the plate when they all are, else on each one)
+    let all_added = l
+        .extra
+        .iter()
+        .all(|e| catalog::is_added(def.id, def.knobs[e.0].key));
+    if all_added {
+        let rows_top = l.extra.iter().map(|e| e.1.y - e.2 * 0.5).fold(f32::MAX, f32::min);
+        text::caps(
+            p,
+            "ADDED",
+            pos2(plate.center().x, (rows_top - 2.0).max(plate.min.y + 5.0)),
+            6.5,
+            Color32::from_rgb(0x9a, 0xa0, 0xa8),
+            Align2::CENTER_BOTTOM,
+            Some(plate.width() - 6.0),
+        );
+    }
+    for (&(k, c, d), (_, _, cw)) in l.extra.iter().zip(extra_cells(area, l.extra.len())) {
+        let kd = def.knobs[k];
+        knobs::knob(
+            p,
+            c,
+            d,
+            kd.to_u(b.v[k]),
+            Scale {
+                ticks: false,
+                ..Default::default()
+            },
+            Some(KnobStyle::Chrome),
+        );
+        let shown = hot.active == Some(k) || hot.hover == Some(k);
+        let y = c.y + d * 0.5 + 8.0;
+        let ink = Color32::from_rgb(0xd8, 0xdb, 0xe0);
+        if shown {
+            text::draw(
+                p,
+                &kd.text(b.v[k]),
+                pos2(c.x, y),
+                Align2::CENTER_CENTER,
+                Style::new(9.5, 800, ink),
+                Some(cw - 6.0),
+            );
+        } else if !all_added && catalog::is_added(def.id, kd.key) {
+            label(
+                p,
+                &format!("{} (added)", kd.label),
+                pos2(c.x, y),
+                7.5,
+                ink,
+                cw - 6.0,
+            );
+        } else {
+            label(p, kd.label, pos2(c.x, y), 7.5, ink, cw - 6.0);
+        }
+    }
+}
+
+/// A small "+" tab on a face's knob that the real unit doesn't have (P37.6c, D140), where the face draws it itself
+/// (a designed pedal: its Range, Attack, Depth or Mix).
+fn added_marks(p: &Painter, b: &Block, l: &Layout) {
+    let def = b.def();
+    for &(i, c, d) in &l.knobs {
+        if !catalog::is_added(def.id, def.knobs[i].key) {
+            continue;
+        }
+        let at = c + vec2(d * 0.5, -d * 0.5);
+        let r = (d * 0.16).clamp(4.0, 7.0);
+        p.circle_filled(at, r, Color32::from_rgb(0x1c, 0x1e, 0x22));
+        p.circle_stroke(at, r, Stroke::new(1.0, Color32::from_rgb(0xd8, 0xdb, 0xe0)));
+        let s = r * 0.55;
+        let st = Stroke::new(1.2, Color32::from_rgb(0xd8, 0xdb, 0xe0));
+        p.line_segment([at - vec2(s, 0.0), at + vec2(s, 0.0)], st);
+        p.line_segment([at - vec2(0.0, s), at + vec2(0.0, s)], st);
+    }
+}
+
+/// The mark on every NAM capture and IR (owner request, replacing the neuron sticker): a rubber-stamped "NAM" at the
+/// top left, a double border round heavy capitals, tilted a little, on a cream label so it reads on any face.
+pub fn neural_sticker(p: &Painter, r: Rect) {
+    let h = (r.width().min(r.height()) * 0.13).clamp(8.0, 22.0);
+    let ink = Color32::from_rgb(0xb8, 0x2e, 0x26);
+    let galley = p.layout_no_wrap(
+        "NAM".into(),
+        egui::FontId::new(h * 0.72, qrs_ui::text::family(800)),
+        ink,
+    );
+    let w = galley.size().x + h * 0.9;
+    let angle = -0.1f32;
+    let c = r.min + vec2(w * 0.5 + h * 0.35, h * 0.5 + h * 0.35);
+    let (sa, ca) = angle.sin_cos();
+    let rot = |v: egui::Vec2| c + vec2(v.x * ca - v.y * sa, v.x * sa + v.y * ca);
+    let corners = |hw: f32, hh: f32| {
+        vec![
+            rot(vec2(-hw, -hh)),
+            rot(vec2(hw, -hh)),
+            rot(vec2(hw, hh)),
+            rot(vec2(-hw, hh)),
+        ]
+    };
+    // the label it's stamped on (a soft shadow, cream), then the two borders
+    p.add(egui::Shape::convex_polygon(
+        corners(w / 2.0, h / 2.0)
+            .into_iter()
+            .map(|q| q + vec2(0.0, h * 0.08))
+            .collect(),
+        Color32::from_black_alpha(70),
+        Stroke::NONE,
+    ));
+    p.add(egui::Shape::convex_polygon(
+        corners(w / 2.0, h / 2.0),
+        Color32::from_rgb(0xf1, 0xec, 0xe0),
+        Stroke::NONE,
+    ));
+    p.add(egui::Shape::closed_line(
+        corners(w / 2.0 - h * 0.1, h / 2.0 - h * 0.1),
+        Stroke::new((h * 0.07).max(0.8), ink),
+    ));
+    p.add(egui::Shape::closed_line(
+        corners(w / 2.0 - h * 0.2, h / 2.0 - h * 0.2),
+        Stroke::new((h * 0.035).max(0.5), ink),
+    ));
+    // the letters, turned with the label (a text shape turns about its top left)
+    let gs = galley.size();
+    let tl = rot(vec2(-gs.x / 2.0, -gs.y / 2.0));
+    p.add(egui::epaint::TextShape::new(tl, galley, ink).with_angle(angle));
+}
+
+/// Faces this tall or smaller are always miniatures, whatever the caller asks (P37.12): their knobs would be under
+/// about 8 points across, where the baked knob art, its ticks and its glow turn into a cluster of noise.
+pub const MINI_H: f32 = 64.0;
+
+thread_local! {
+    /// Set while a cab or the silver unit is drawn as a miniature through `draw` (their faces aren't one cached body):
+    /// knobs as dots, no print.
+    static MINI: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the face being drawn is a miniature (see `MINI`).
+pub(super) fn mini_now() -> bool {
+    MINI.with(|m| m.get())
+}
+
+/// Whether a face `r` tall is drawn as a miniature (knobs as dots) rather than whole: under the caller's `full_h`,
+/// or `MINI_H` and under in any case.
+pub fn is_mini(r: Rect, full_h: f32) -> bool {
+    r.height() < full_h || r.height() <= MINI_H
+}
+
+/// Knobs smaller than this (points across) are drawn as dots on a face drawn small (P37.12).
+pub const KNOB_MIN_D: f32 = 13.0;
+
+/// Whether a face's knobs, as laid out, are too small to draw as knobs: one under `KNOB_MIN_D` across, or two
+/// overlapping (a layout that clamps its knobs' size, like the silver unit's, crowds them when it's small).
+pub fn knobs_cramped(l: &Layout) -> bool {
+    l.knobs.iter().any(|k| k.2 < KNOB_MIN_D)
+        || l.knobs.iter().enumerate().any(|(i, a)| {
+            l.knobs[i + 1..]
+                .iter()
+                .any(|b| a.1.distance(b.1) < (a.2 + b.2) * 0.5 * 0.95)
+        })
+}
+
+/// A knob's dot on a miniature: its radius for a face `h` tall, and its colour (a little metal on an amp's panel, dark
+/// on the rest). Small and plain on purpose: no cap, ticks, pointer, glow or reflection (P37.12).
+pub fn knob_dot(face: Face, h: f32) -> (f32, Color32) {
+    let r = (h * 0.025).clamp(0.9, 1.8);
+    let c = match face {
+        Face::Amp => Color32::from_rgba_unmultiplied(196, 198, 202, 190),
+        Face::Rack | Face::Graphic => Color32::from_rgba_unmultiplied(34, 36, 40, 170),
+        Face::Cab | Face::Pedal => Color32::from_rgba_unmultiplied(22, 22, 24, 215),
+    };
+    (r, c)
+}
+
+/// A block's face as a miniature (the chain strips, P21.4; the shelf, the sounds): its body as drawn on the board,
+/// each knob a tiny dot (P37.12), its LED, but no print (the family painters' labels don't shrink that far). Above
+/// `full_h` points tall (and above `MINI_H`, with room for its knobs: `knobs_cramped`) the whole face is drawn. Every
+/// small face goes through here (the chain rows, the shelf's cells, the Sounds drawer, the save card), so they all
+/// get the dots.
 pub fn miniature(p: &Painter, r: Rect, b: &Block, full_h: f32) {
+    // (a capture drawn as its skin, with its sticker after)
+    if let Some(s) = skinned(b) {
+        miniature(p, r, &s, full_h);
+        neural_sticker(p, r);
+        return;
+    }
     let l = layout(b, r, Detail::Board);
-    // (a cab's cabinet is drawn with its controls, not in its body: always the whole face)
-    if r.height() >= full_h || family(b.def()) == Family::Cab {
+    if !is_mini(r, full_h) && !knobs_cramped(&l) {
         draw(p, r, b, &l, Detail::Board, Hot::default());
+        return;
+    }
+    // (a cab's cabinet is drawn with its controls, not in its body, and the silver unit's plate and stamp are live:
+    // those two go through `draw`, told it's a miniature)
+    if matches!(family(b.def()), Family::Cab | Family::Silver) {
+        MINI.with(|m| m.set(true));
+        draw(p, r, b, &l, Detail::Board, Hot::default());
+        MINI.with(|m| m.set(false));
         return;
     }
     let def = b.def();
@@ -1139,17 +1636,18 @@ pub fn miniature(p: &Painter, r: Rect, b: &Block, full_h: f32) {
     };
     p.add(sh.as_shape(r, l.radius));
     let k = key((
-        "face",
+        "face-mini",
         def.id,
         (r.width() * ppp) as i32,
         (r.height() * ppp) as i32,
-        true,
     ));
     let (tex, _) = paint::texture(p.ctx(), Store::Face, k, || match family(def) {
-        Family::Amp => amps::body(b, r, &l, ppp),
+        Family::Amp if amps::designed(def.id) => amps::body(b, r, &l, ppp),
+        Family::Amp => legacy_body(b, r, &l, ppp),
         Family::Cab => cabs::body(b, r, &l, ppp),
-        Family::Pedal => pedals::body(b, r, &l, ppp),
+        Family::Pedal => pedals::mini_body(b, r, &l, ppp),
         Family::Rack => racks::body(b, r, &l, ppp),
+        Family::Silver => silver::body(b, r, &l, ppp),
     });
     p.image(
         tex,
@@ -1157,21 +1655,19 @@ pub fn miniature(p: &Painter, r: Rect, b: &Block, full_h: f32) {
         Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
         Color32::WHITE,
     );
-    let cap = if def.face == Face::Amp {
-        Color32::from_rgb(214, 216, 220)
-    } else {
-        Color32::from_rgb(28, 28, 30)
-    };
-    for &(_, c, d) in &l.knobs {
-        let d = d.min(r.width() * 0.3);
-        p.circle_filled(c, d * 0.5, cap);
-        p.circle_stroke(c, d * 0.5, Stroke::new(0.6, Color32::from_black_alpha(140)));
+    let (dr, dc) = knob_dot(def.face, r.height());
+    for &(_, c, _) in &l.knobs {
+        p.circle_filled(c, dr, dc);
     }
     for &(_, tr) in &l.faders {
-        p.rect_filled(tr, 1.0, Color32::from_black_alpha(120));
+        p.rect_filled(
+            Rect::from_center_size(tr.center(), vec2(dr * 0.8, tr.height())),
+            0.0,
+            Color32::from_black_alpha(70),
+        );
     }
     if def.face != Face::Cab && l.led != Pos2::ZERO && r.contains(l.led) {
-        led_at(p, l.led, b.on, (r.width() * 0.09).clamp(2.5, 5.0));
+        led_at(p, l.led, b.on, (r.width() * 0.09).clamp(2.5, 4.0));
     }
 }
 
@@ -1218,8 +1714,10 @@ pub(super) fn legacy_controls(p: &Painter, _r: Rect, b: &Block, l: &Layout, deta
             Face::Amp => None,
         };
         let on_screen = def.face == Face::Cab;
+        // (the dark themes' baked knobs show hover and a hold)
+        let state = qrs_ui::glass::State::of(hot.hover == Some(i), hot.active == Some(i));
         if on_screen {
-            knobs::knob(
+            knobs::knob_in(
                 p,
                 c,
                 d,
@@ -1229,10 +1727,11 @@ pub(super) fn legacy_controls(p: &Painter, _r: Rect, b: &Block, l: &Layout, deta
                     ..Default::default()
                 },
                 style,
+                state,
             );
         } else {
             ticks(p, c, d, u, kd, ink_c);
-            knobs::knob(
+            knobs::knob_in(
                 p,
                 c,
                 d,
@@ -1242,6 +1741,7 @@ pub(super) fn legacy_controls(p: &Painter, _r: Rect, b: &Block, l: &Layout, deta
                     ..Default::default()
                 },
                 style,
+                state,
             );
         }
         let lab_y = c.y + d * 0.5 + if on_screen { 12.0 } else { 7.0 };
@@ -1766,4 +2266,167 @@ fn fader(p: &Painter, track: Rect, kd: &KnobDef, v: f32, face: Face, ink_c: Colo
 /// A kind's swatch colour.
 pub fn kind_colour(k: Kind) -> Color32 {
     rgb(k.colour())
+}
+
+#[cfg(test)]
+mod fit_tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use super::*;
+    use qrs_audio::board::MODELS;
+
+    /// Every front knob of every block is a control on its face (a designed face or the silver unit), at the size the
+    /// editor and the tile draw it (B3, P37.1).
+    #[test]
+    fn every_front_knob_of_every_block_is_on_its_face() {
+        for (m, def) in MODELS.iter().enumerate() {
+            let b = Block::new(m);
+            let sz = board_size(&b);
+            let k = (900.0 / sz.x).min(420.0 / sz.y);
+            let r = Rect::from_min_size(pos2(10.0, 10.0), sz * k);
+            let l = layout(&b, r, Detail::Full);
+            let mut on: Vec<usize> = l.knobs.iter().chain(&l.extra).map(|x| x.0).collect();
+            on.extend(l.faders.iter().map(|x| x.0));
+            on.extend(l.choices.iter().map(|x| x.0));
+            for i in 0..def.front_len() {
+                assert!(
+                    on.contains(&i),
+                    "{}: front knob {} ({}) isn't on its face",
+                    def.id,
+                    i,
+                    def.knobs[i].key
+                );
+            }
+            assert!(
+                on.iter().all(|&i| i < def.front_len()),
+                "{}: a control that isn't a front knob",
+                def.id
+            );
+            // (file blocks without a library item are the silver unit)
+            if def.file {
+                assert_eq!(family(def), Family::Silver);
+                assert!(!is_skinned(&b));
+            }
+        }
+    }
+
+    /// A skin is used only where each of its controls turns a real knob and every real knob is on it.
+    #[test]
+    fn a_skin_maps_every_control_or_is_not_used() {
+        let find = |id: &str| &MODELS[qrs_audio::board::catalog::find(id).unwrap()];
+        let (amp, cab) = (find("amp_nam"), find("cab_ir"));
+        for skin in MODELS.iter().filter(|m| !m.file) {
+            for own in [amp, cab, find("pedal_nam")] {
+                if let Some(map) = skin_map(skin, own) {
+                    assert_eq!(map.len(), skin.front_len(), "{} on {}", skin.id, own.id);
+                    let mut seen = map.clone();
+                    seen.sort_unstable();
+                    seen.dedup();
+                    assert_eq!(seen.len(), own.front_len(), "{} on {}", skin.id, own.id);
+                }
+            }
+        }
+        // the Perspex 100's Presence has no real control on a capture: never its skin
+        assert!(skin_map(find("amp_crunch"), amp).is_none());
+        // a cab skin's mic and distance aren't an IR's: never its skin
+        assert!(skin_map(find("cab_4x12"), cab).is_none());
+    }
+}
+
+#[cfg(test)]
+mod mini_tests {
+    use super::*;
+    use qrs_audio::board::MODELS;
+
+    /// Under the caller's size or `MINI_H` a face is a miniature (knobs as dots); big enough, it is drawn whole.
+    #[test]
+    fn small_faces_are_miniatures_and_big_ones_whole() {
+        let r = |h: f32| Rect::from_min_size(Pos2::ZERO, vec2(h * 2.0, h));
+        // the chain strips (asked for a miniature under 90)
+        assert!(is_mini(r(40.0), 90.0));
+        assert!(is_mini(r(85.0), 90.0));
+        assert!(!is_mini(r(200.0), 90.0));
+        // callers asking for the whole face (0.0) still get dots at thumbnail size, the face above it
+        assert!(is_mini(r(MINI_H), 0.0));
+        assert!(is_mini(r(30.0), 0.0));
+        assert!(!is_mini(r(MINI_H + 1.0), 0.0));
+        assert!(!is_mini(r(420.0), 0.0));
+        // knobs too small or overlapping are dots whatever the face's height
+        let mut l = Layout {
+            knobs: vec![(0, pos2(0.0, 0.0), 30.0), (1, pos2(40.0, 0.0), 30.0)],
+            ..Default::default()
+        };
+        assert!(!knobs_cramped(&l));
+        l.knobs[1].1 = pos2(20.0, 0.0);
+        assert!(knobs_cramped(&l));
+        l.knobs = vec![(0, pos2(0.0, 0.0), 10.0)];
+        assert!(knobs_cramped(&l));
+        // the dot is tiny at every miniature size
+        for h in [20.0, 40.0, 64.0, 89.0] {
+            let (d, _) = knob_dot(Face::Amp, h);
+            assert!((0.9..=2.2).contains(&d), "{h}: {d}");
+        }
+    }
+
+    /// Every model's miniature draws each knob as one plain dot: at a knob's centre nothing but the dot (no cap,
+    /// ticks, pointer, glow or baked knob image), and no knob art anywhere (P37.12).
+    #[test]
+    fn every_models_miniature_has_dots_not_knob_art() {
+        let ctx = egui::Context::default();
+        qrs_ui::text::install(&ctx);
+        // (the chain rows ask for a miniature under 90; the shelf and the Sounds drawer ask for the whole face, 0.0)
+        for (h, full_h) in [(40.0, 90.0), (60.0, 90.0), (44.0, 0.0), (64.0, 0.0)] {
+            for (m, def) in MODELS.iter().enumerate() {
+                let b = Block::new(m);
+                let sz = board_size(&b);
+                let r = Rect::from_min_size(pos2(10.0, 10.0), sz * (h / sz.y));
+                let l = layout(&b, r, Detail::Board);
+                let (dr, _) = knob_dot(def.face, h);
+                ctx.begin_pass(Default::default());
+                let p = ctx.layer_painter(egui::LayerId::background());
+                miniature(&p, r, &b, full_h);
+                let mut out = ctx.end_pass();
+                out.textures_delta.clear();
+                let big = |s: &egui::Shape| {
+                    let v = s.visual_bounding_rect();
+                    v.width() * v.height() >= r.area() * 0.2
+                };
+                let mut dots = 0;
+                for cs in &out.shapes {
+                    let s = &cs.shape;
+                    if let egui::Shape::Circle(c) = s
+                        && (c.radius - dr).abs() < 1e-3
+                    {
+                        dots += 1;
+                        continue;
+                    }
+                    // (the body, its shadow, the cab's art: whole-face shapes)
+                    if big(s) {
+                        continue;
+                    }
+                    let v = s.visual_bounding_rect();
+                    // (the LED and its glow)
+                    if l.led != Pos2::ZERO && v.contains(l.led) {
+                        continue;
+                    }
+                    for &(i, c, _) in &l.knobs {
+                        assert!(
+                            !v.contains(c),
+                            "{} at {h}: something besides the dot on knob {} ({:?})",
+                            def.id,
+                            def.knobs[i].key,
+                            v
+                        );
+                    }
+                }
+                assert!(
+                    dots >= l.knobs.len(),
+                    "{} at {h}: {dots} dots for {} knobs",
+                    def.id,
+                    l.knobs.len()
+                );
+            }
+        }
+    }
 }

@@ -14,7 +14,7 @@ Updating replaces the program and leaves them alone.
 ### From 0.1.0
 
 0.1.0 can't update itself, so download the 0.3.0 zip by hand, this once.
-After that, quickRS updates itself: Settings > *Updates*.
+After that, quickRS updates itself: Settings > *About*.
 
 1. Close quickRS.
 2. Download `quickRS-0.3.0-windows-x64.zip` from the
@@ -104,7 +104,7 @@ Settings (`F2`) > *Updates* has the rest:
 * *Report a bug* and *Show the log file*: see
   [TROUBLESHOOTING](TROUBLESHOOTING.md#reporting-a-bug).
 
-![Settings > Updates, labelled](../screenshots/updates-labelled.png)
+![Settings > About, labelled](../screenshots/updates-labelled.png)
 
 The check asks GitHub's public API for the latest release, and the request
 says which version of quickRS is asking. Nothing about you or your songs is

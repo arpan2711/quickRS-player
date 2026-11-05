@@ -1,4 +1,4 @@
-//! A song package, whatever its format: a Rocksmith `.psarc` (PC or Mac, single song or a multi-song pack like
+//! A song package, whatever its format: an RS `.psarc` (PC or Mac, single song or a multi-song pack like
 //! songs.psarc) or a `.feedpak` / `.sloppak` (zip or folder). Port of rsplay/song_loader.py with
 //! rsfeedpak/platform.py and the `open_package` helper of rsfeedpak/feedpak.py.
 //!
@@ -86,13 +86,13 @@ pub struct ArrangementInfo {
     pub year: i32,
     pub artist_sort: String,
     pub title_sort: String,
-    /// Rocksmith tone names by slot ("Tone_A"..), from the manifest.
+    /// RS tone names by slot ("Tone_A"..), from the manifest.
     pub tone_names: Vec<(String, String)>,
     /// Each tone's rig, from the manifest's `Tones`.
     pub rig: Vec<crate::rig::RigTone>,
     /// feedpak converted from a psarc: the source chart's path in that psarc (`rocksmith.chart`).
     pub source_chart: String,
-    /// Rocksmith's DynamicVisualDensity per level (manifest), easiest first; empty if not given.
+    /// RS's DynamicVisualDensity per level (manifest), easiest first; empty if not given.
     pub visual_density: Vec<f32>,
 }
 

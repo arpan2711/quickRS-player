@@ -12,7 +12,7 @@ use qrs_ui::units::px;
 use qrs_ui::widgets::interact;
 
 use super::draw::{self, KeyLook};
-use super::rigs::{self, COLOURS, SCENE_NAMES};
+use super::rigs::{self, COLOURS};
 use super::save::tag_colour;
 use super::{RoomView, Typing};
 use crate::ampbutton::{rgb, rgba};
@@ -57,6 +57,8 @@ pub struct Sounds {
     rows: Vec<(usize, Rect)>,
     /// Delete was clicked once on this sound (a second click deletes it).
     confirm: Option<String>,
+    /// The first visit (P41.3, D171): the starters come first, as big cards over the list and first in it.
+    pub starters_first: bool,
 }
 
 impl Default for Sounds {
@@ -74,6 +76,7 @@ impl Default for Sounds {
             list: Rect::NOTHING,
             rows: Vec::new(),
             confirm: None,
+            starters_first: false,
         }
     }
 }
@@ -107,6 +110,12 @@ impl Sounds {
     pub fn moved(&mut self) {
         self.built = None;
         self.scroll = 0.0;
+    }
+
+    /// The list's first sound (tests).
+    #[cfg(test)]
+    pub fn first_item(&self) -> Option<&Item> {
+        self.items.first()
     }
 
     pub fn previewing(&self) -> bool {
@@ -184,13 +193,18 @@ impl Sounds {
             .collect();
         self.counts = (songs.len(), mine.len(), start.len());
         self.items.clear();
+        // (the first visit, or no sounds of your own: the starting rigs first, P41.3)
+        let start_first = self.starters_first || room_saved.is_empty();
+        if start_first && matches!(self.filter, Filter::All | Filter::Start) {
+            self.items.extend(start.iter().copied().map(Item::Start));
+        }
         if matches!(self.filter, Filter::All | Filter::Songs) {
             self.items.extend(songs.into_iter().map(Item::Song));
         }
         if matches!(self.filter, Filter::All | Filter::Mine) {
             self.items.extend(mine.into_iter().map(Item::Mine));
         }
-        if matches!(self.filter, Filter::All | Filter::Start) {
+        if !start_first && matches!(self.filter, Filter::All | Filter::Start) {
             self.items.extend(start.into_iter().map(Item::Start));
         }
         if self.sel.is_some_and(|s| s >= self.items.len()) {
@@ -205,13 +219,7 @@ fn about(room: &RoomView, it: &Item) -> (String, Board, String) {
         Item::Song(s) => (
             format!("{} \u{b7} {}", s.title, s.part),
             s.board.clone(),
-            format!(
-                "{} \u{b7} the song's Rocksmith tone ({}), mapped to {} block{}",
-                s.artist,
-                s.label,
-                s.board.blocks.len(),
-                if s.board.blocks.len() == 1 { "" } else { "s" }
-            ),
+            format!("{} \u{b7} the song's own tone from RS ({})", s.artist, s.label),
         ),
         Item::Mine(i) => {
             let r = &room.saved[*i];
@@ -227,7 +235,140 @@ fn about(room: &RoomView, it: &Item) -> (String, Board, String) {
         }
         Item::Start(i) => {
             let (n, b) = board::presets().swap_remove(*i);
-            (n.to_string(), b, "a starting rig: a good place to begin".into())
+            (
+                n.to_string(),
+                b,
+                format!(
+                    "a starting rig: {}",
+                    starter_line(n).unwrap_or("a good place to begin")
+                ),
+            )
+        }
+    }
+}
+
+/// A starter's one line, for a newcomer (P41.3).
+pub fn starter_line(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Clean" => "bright and clean, for chords and picking",
+        "Crunch" => "a classic rock crunch, for riffs",
+        "Lead" => "smooth and singing, for solos",
+        "Bass" => "warm and round, under the band",
+        "Metal" => "tight and heavy, for chugging riffs",
+        "Blues" => "warm, a little hairy, for bends",
+        "Ambient" => "clean with long echoes, for swells",
+        _ => return None,
+    })
+}
+
+/// The starters as cards (Clean, Crunch, Lead, Bass; Bass first on a bass): the name, its line, Hear. A click on one
+/// previews it as a row of the list does (Enter loads it).
+fn starter_cards(room: &mut RoomView, ui: &Ui, st: &AppState, x0: f32, x1: f32, y: f32) {
+    let p = ui.painter().clone();
+    let th = t();
+    draw::caps(
+        &p,
+        "START HERE",
+        pos2(x0, y),
+        10.5,
+        th.caption,
+        Align2::LEFT_CENTER,
+    );
+    draw::label(
+        &p,
+        "four sounds to begin with \u{b7} Hear one, then Load (Enter)",
+        pos2(x0 + px(96.0), y),
+        11.0,
+        600,
+        th.caption,
+        Align2::LEFT_CENTER,
+    );
+    let mut names = ["Clean", "Crunch", "Lead", "Bass"];
+    if st.instrument().is_bass() {
+        names.rotate_right(1);
+    }
+    let presets = board::presets();
+    let y = y + px(14.0);
+    let sw = (x1 - x0 - px(3.0) * px(10.0)) / 4.0;
+    for (n, name) in names.iter().enumerate() {
+        let Some(k) = presets.iter().position(|(x, _)| x == name) else {
+            continue;
+        };
+        let cr = Rect::from_min_size(pos2(x0 + n as f32 * (sw + px(10.0)), y), vec2(sw, px(58.0)));
+        let at = room
+            .sounds
+            .items
+            .iter()
+            .position(|it| matches!(it, Item::Start(j) if *j == k));
+        let hearing = room.sounds.preview.as_ref().is_some_and(|pv| pv.0 == *name);
+        let resp = interact(ui, cr, ("room-starter", n), Sense::click());
+        let col = tag_colour(name);
+        p.rect_filled(cr, px(14.0), col.gamma_multiply(if hearing { 0.2 } else { 0.1 }));
+        p.rect_stroke(
+            cr,
+            px(14.0),
+            Stroke::new(
+                if hearing { 2.0 } else { 1.0 },
+                if hearing {
+                    th.accent
+                } else {
+                    col.gamma_multiply(0.6)
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        draw::label_w(
+            &p,
+            name,
+            pos2(cr.min.x + px(14.0), cr.min.y + px(17.0)),
+            15.0,
+            800,
+            th.text,
+            Align2::LEFT_CENTER,
+            cr.width() - px(70.0),
+        );
+        draw::label_w(
+            &p,
+            starter_line(name).unwrap_or(""),
+            pos2(cr.min.x + px(14.0), cr.min.y + px(40.0)),
+            11.0,
+            600,
+            th.text_2,
+            Align2::LEFT_CENTER,
+            cr.width() - px(22.0),
+        );
+        draw::label(
+            &p,
+            if hearing { "Hearing" } else { "Hear \u{203a}" },
+            pos2(cr.max.x - px(12.0), cr.min.y + px(17.0)),
+            11.5,
+            800,
+            if hearing || resp.hovered() {
+                th.accent_ink
+            } else {
+                th.caption
+            },
+            Align2::RIGHT_CENTER,
+        );
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            match at {
+                Some(i) => select(room, st, i),
+                None => {
+                    // (a search or a filter has it off the list: heard all the same)
+                    let b = presets[k].1.clone();
+                    room.rack.board.audition = Some(b.renewed());
+                    room.rack.board_send(st);
+                    room.sounds.sel = None;
+                    room.sounds.preview = Some((
+                        name.to_string(),
+                        b,
+                        format!("a starting rig: {}", starter_line(name).unwrap_or("")),
+                    ));
+                }
+            }
         }
     }
 }
@@ -287,7 +428,7 @@ pub fn load_into_scene(room: &mut RoomView, st: &mut AppState, n: usize) {
     room.state.save(&mut st.config);
     st.save_config();
     room.say(
-        format!("{name} in scene {} {}", n + 1, SCENE_NAMES[n]),
+        format!("{name} in {}", rigs::scene_label(&room.state.names, n)),
         "  \u{b7}  save to keep it with the sound",
     );
 }
@@ -467,131 +608,136 @@ fn list_panel(room: &mut RoomView, ui: &Ui, st: &mut AppState, r: Rect) {
             room.sounds.moved();
         }
     }
-    // the favourite slots
+    // the favourite slots; with none set yet, the four starters as big cards (P41.3, D171)
     let mut y = fy + px(44.0);
-    draw::caps(
-        &p,
-        "FAVOURITE SLOTS",
-        pos2(x0, y),
-        10.5,
-        th.caption,
-        Align2::LEFT_CENTER,
-    );
-    draw::label(
-        &p,
-        "your four go-to sounds \u{b7} set one when you save",
-        pos2(x0 + px(124.0), y),
-        11.0,
-        600,
-        th.caption,
-        Align2::LEFT_CENTER,
-    );
-    y += px(14.0);
-    let sw = (x1 - x0 - px(3.0) * px(10.0)) / 4.0;
-    for slot in 1..=4u8 {
-        let cr = Rect::from_min_size(
-            pos2(x0 + (slot - 1) as f32 * (sw + px(10.0)), y),
-            vec2(sw, px(58.0)),
+    if !room.saved.iter().any(|r| r.slot > 0) {
+        starter_cards(room, ui, st, x0, x1, y);
+        y += px(14.0);
+    } else {
+        draw::caps(
+            &p,
+            "FAVOURITE SLOTS",
+            pos2(x0, y),
+            10.5,
+            th.caption,
+            Align2::LEFT_CENTER,
         );
-        let rig = room.saved.iter().position(|r| r.slot == slot);
-        let resp = interact(ui, cr, ("room-slot", slot), Sense::click());
-        match rig {
-            Some(i) => {
-                let rg = &room.saved[i];
-                let col = rgb(COLOURS[rg.color.min(COLOURS.len() - 1)]);
-                let current = room
-                    .state
-                    .rig
-                    .as_ref()
-                    .is_some_and(|n| n.eq_ignore_ascii_case(&rg.name));
-                p.rect_filled(cr, px(14.0), col.gamma_multiply(0.12));
-                p.rect_stroke(
-                    cr,
-                    px(14.0),
-                    Stroke::new(
-                        if current { 2.0 } else { 1.0 },
-                        if current {
-                            th.accent
-                        } else {
-                            col.gamma_multiply(0.6)
-                        },
-                    ),
-                    egui::StrokeKind::Inside,
-                );
-                p.rect_filled(
-                    Rect::from_min_size(
-                        pos2(cr.min.x + px(3.0), cr.min.y + px(12.0)),
-                        vec2(px(3.0), px(34.0)),
-                    ),
-                    px(1.5),
-                    col,
-                );
-                draw::label_w(
-                    &p,
-                    &rg.name,
-                    pos2(cr.min.x + px(16.0), cr.min.y + px(17.0)),
-                    13.0,
-                    800,
-                    th.text,
-                    Align2::LEFT_CENTER,
-                    cr.width() - px(40.0),
-                );
-                draw::label(
-                    &p,
-                    &slot.to_string(),
-                    pos2(cr.max.x - px(12.0), cr.min.y + px(14.0)),
-                    11.0,
-                    800,
-                    col,
-                    Align2::RIGHT_CENTER,
-                );
-                draw::chain_icons(
-                    &p,
-                    &rg.board,
-                    cr.min.x + px(16.0),
-                    cr.min.y + px(40.0),
-                    px(18.0),
-                    8,
-                );
-                if current {
-                    text::caps(
-                        &p,
-                        "CURRENT",
-                        pos2(cr.max.x - px(10.0), cr.max.y - px(12.0)),
-                        8.5,
-                        th.accent_ink,
-                        Align2::RIGHT_CENTER,
-                        None,
+        draw::label(
+            &p,
+            "your four go-to sounds \u{b7} set one when you save",
+            pos2(x0 + px(124.0), y),
+            11.0,
+            600,
+            th.caption,
+            Align2::LEFT_CENTER,
+        );
+        y += px(14.0);
+        let sw = (x1 - x0 - px(3.0) * px(10.0)) / 4.0;
+        for slot in 1..=4u8 {
+            let cr = Rect::from_min_size(
+                pos2(x0 + (slot - 1) as f32 * (sw + px(10.0)), y),
+                vec2(sw, px(58.0)),
+            );
+            let rig = room.saved.iter().position(|r| r.slot == slot);
+            let resp = interact(ui, cr, ("room-slot", slot), Sense::click());
+            match rig {
+                Some(i) => {
+                    let rg = &room.saved[i];
+                    let col = rgb(COLOURS[rg.color.min(COLOURS.len() - 1)]);
+                    let current = room
+                        .state
+                        .rig
+                        .as_ref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(&rg.name));
+                    p.rect_filled(cr, px(14.0), col.gamma_multiply(0.12));
+                    p.rect_stroke(
+                        cr,
+                        px(14.0),
+                        Stroke::new(
+                            if current { 2.0 } else { 1.0 },
+                            if current {
+                                th.accent
+                            } else {
+                                col.gamma_multiply(0.6)
+                            },
+                        ),
+                        egui::StrokeKind::Inside,
                     );
-                }
-                if resp.hovered() {
-                    ctx.set_cursor_icon(CursorIcon::PointingHand);
-                }
-                if resp.clicked() {
-                    if let Some(j) = room
-                        .sounds
-                        .items
-                        .iter()
-                        .position(|it| matches!(it, Item::Mine(k) if *k == i))
-                    {
-                        select(room, st, j);
-                    } else {
-                        let r = room.saved[i].clone();
-                        room.load_saved(st, &r);
+                    p.rect_filled(
+                        Rect::from_min_size(
+                            pos2(cr.min.x + px(3.0), cr.min.y + px(12.0)),
+                            vec2(px(3.0), px(34.0)),
+                        ),
+                        px(1.5),
+                        col,
+                    );
+                    draw::label_w(
+                        &p,
+                        &rg.name,
+                        pos2(cr.min.x + px(16.0), cr.min.y + px(17.0)),
+                        13.0,
+                        800,
+                        th.text,
+                        Align2::LEFT_CENTER,
+                        cr.width() - px(40.0),
+                    );
+                    draw::label(
+                        &p,
+                        &slot.to_string(),
+                        pos2(cr.max.x - px(12.0), cr.min.y + px(14.0)),
+                        11.0,
+                        800,
+                        col,
+                        Align2::RIGHT_CENTER,
+                    );
+                    draw::chain_icons(
+                        &p,
+                        &rg.board,
+                        cr.min.x + px(16.0),
+                        cr.min.y + px(40.0),
+                        px(18.0),
+                        8,
+                    );
+                    if current {
+                        text::caps(
+                            &p,
+                            "CURRENT",
+                            pos2(cr.max.x - px(10.0), cr.max.y - px(12.0)),
+                            8.5,
+                            th.accent_ink,
+                            Align2::RIGHT_CENTER,
+                            None,
+                        );
+                    }
+                    if resp.hovered() {
+                        ctx.set_cursor_icon(CursorIcon::PointingHand);
+                    }
+                    if resp.clicked() {
+                        if let Some(j) = room
+                            .sounds
+                            .items
+                            .iter()
+                            .position(|it| matches!(it, Item::Mine(k) if *k == i))
+                        {
+                            select(room, st, j);
+                        } else {
+                            let r = room.saved[i].clone();
+                            room.load_saved(st, &r);
+                        }
                     }
                 }
-            }
-            None => {
-                paint::inset(&p, cr, Some(px(14.0)), 1.5, Fill::Base);
-                draw::label(
-                    &p,
-                    &format!("{slot}  \u{b7}  empty"),
-                    cr.center(),
-                    12.0,
-                    700,
-                    th.caption,
-                    Align2::CENTER_CENTER,
-                );
+                None => {
+                    paint::inset(&p, cr, Some(px(14.0)), 1.5, Fill::Base);
+                    draw::label(
+                        &p,
+                        &format!("{slot}  \u{b7}  empty"),
+                        cr.center(),
+                        12.0,
+                        700,
+                        th.caption,
+                        Align2::CENTER_CENTER,
+                    );
+                }
             }
         }
     }
@@ -636,7 +782,7 @@ fn list_panel(room: &mut RoomView, ui: &Ui, st: &mut AppState, r: Rect) {
             let (head, note, n) = match sec {
                 0 => (
                     "FROM YOUR SONGS",
-                    "each song's own Rocksmith tone, mapped onto the board",
+                    "each song's own tone from RS, on our amps",
                     room.sounds.counts.0,
                 ),
                 1 => (
@@ -720,7 +866,7 @@ fn list_panel(room: &mut RoomView, ui: &Ui, st: &mut AppState, r: Rect) {
                 );
                 (
                     format!("{} - {} \u{b7} {}", s.title, s.artist, s.part),
-                    format!("{} \u{b7} {} blocks", s.label, s.board.blocks.len()),
+                    format!("{} \u{b7} {}", s.label, super::plain::chain_words(&s.board)),
                     chars_of(&s.label),
                     s.board.clone(),
                 )
@@ -761,7 +907,7 @@ fn list_panel(room: &mut RoomView, ui: &Ui, st: &mut AppState, r: Rect) {
                 );
                 (
                     n.to_string(),
-                    format!("built in \u{b7} {}", rigs::chain_text(&b)),
+                    starter_line(n).map_or_else(|| super::plain::chain_words(&b), str::to_string),
                     chars_of(n),
                     b,
                 )
@@ -968,7 +1114,7 @@ fn preview_panel(room: &mut RoomView, ui: &Ui, st: &mut AppState, r: Rect) {
         rgb([0x1b, 0x1c, 0x20]),
         rgb([0x0e, 0x0f, 0x11]),
     );
-    text::caps(
+    let lv = text::caps(
         &p,
         "LIVE",
         pos2(pic.min.x + px(18.0), pic.min.y + px(22.0)),
@@ -976,6 +1122,15 @@ fn preview_panel(room: &mut RoomView, ui: &Ui, st: &mut AppState, r: Rect) {
         green,
         Align2::LEFT_CENTER,
         None,
+    );
+    // (P41.3: the rig in plain words over its picture)
+    text::draw(
+        &p,
+        &super::plain::chain_words(&b),
+        pos2(lv.max.x + px(12.0), lv.center().y),
+        Align2::LEFT_CENTER,
+        Style::new(11.5, 700, Color32::from_rgb(0xd8, 0xd6, 0xd0)),
+        Some(pic.max.x - lv.max.x - px(30.0)),
     );
     let sizes: Vec<egui::Vec2> = b.blocks.iter().map(faces::board_size).collect();
     let tw: f32 = sizes.iter().map(|s| s.x).sum::<f32>() + px(14.0) * sizes.len() as f32;
@@ -1003,36 +1158,51 @@ fn preview_panel(room: &mut RoomView, ui: &Ui, st: &mut AppState, r: Rect) {
             px(2.0),
             faces::kind_colour(def.kind),
         );
-        draw::label_w(
+        // (a capture by its own name, and the gear it stands in for: B20)
+        let name = match crate::player::board::Rack::file_name(blk) {
+            Some(n) if def.file => super::rig::short_capture_name(&n),
+            _ => def.name.to_string(),
+        };
+        let skin = def
+            .file
+            .then(|| crate::player::board::captures::skin_of(blk.asset))
+            .flatten();
+        // (P41.3: what it is in plain words, then its name; the knobs are the rig's once it's loaded)
+        let what = super::plain::unit_words(blk);
+        let what = {
+            let mut c = what.chars();
+            c.next()
+                .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                .unwrap_or_default()
+        };
+        let wr = draw::label_w(
             &p,
-            def.name,
+            &what,
             pos2(x0 + px(18.0), y),
             13.0,
             800,
             if blk.on { th.text } else { th.caption },
             Align2::LEFT_CENTER,
-            px(120.0),
+            (x1 - x0) * 0.5,
         );
-        let knobs: Vec<String> = def
-            .front_knobs()
-            .iter()
-            .enumerate()
-            .take(6)
-            .map(|(i, kd)| format!("{} {}", kd.label, kd.text(blk.v[i])))
-            .collect();
+        let like = skin
+            .as_deref()
+            .and_then(qrs_audio::board::catalog::find)
+            .map(|m| format!(" \u{b7} sounds like our {}", qrs_audio::board::MODELS[m].name))
+            .unwrap_or_default();
         draw::label_w(
             &p,
             &if blk.on {
-                knobs.join(" \u{b7} ")
+                format!("{name}{like}")
             } else {
-                "off".into()
+                format!("{name} \u{b7} off")
             },
-            pos2(x0 + px(150.0), y),
+            pos2(wr.max.x + px(12.0), y),
             12.0,
             600,
             th.text_2,
             Align2::LEFT_CENTER,
-            x1 - x0 - px(150.0),
+            (x1 - wr.max.x - px(12.0)).max(px(20.0)),
         );
         p.line_segment(
             [pos2(x0, y + px(16.0)), pos2(x1, y + px(16.0))],

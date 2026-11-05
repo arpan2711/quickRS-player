@@ -15,8 +15,14 @@ use qrs_library::{Config, UserData};
 use serde_json::{Map, Value, json};
 
 pub const SCENES: usize = 4;
-/// Scene names and colours as they start (the mockup's).
-pub const SCENE_NAMES: [&str; SCENES] = ["Clean", "Crunch", "Lead", "Ambient"];
+/// A scene's name when the user hasn't named it (B9: fixed "Clean / Crunch / Lead / Ambient" promised sounds that
+/// weren't there).
+pub fn scene_label(names: &[String; SCENES], i: usize) -> String {
+    match names.get(i).map(|s| s.trim()) {
+        Some(n) if !n.is_empty() => n.to_string(),
+        _ => format!("Scene {}", i + 1),
+    }
+}
 pub const SCENE_COLOURS: [[u8; 3]; SCENES] =
     [[74, 139, 224], [62, 196, 109], [240, 100, 90], [138, 107, 224]];
 /// A sound's colour choices (the save sheet's swatches).
@@ -229,6 +235,7 @@ pub fn state_for(r: &Rig) -> RoomState {
         based_on: r.based_on.clone(),
         scene: 0,
         scenes: r.scenes.clone(),
+        names: Default::default(),
     }
 }
 
@@ -258,6 +265,8 @@ pub struct RoomState {
     /// The scene playing (0-3).
     pub scene: usize,
     pub scenes: [Option<Board>; SCENES],
+    /// The scenes' names as the user gave them ("" = not named: "Scene 2").
+    pub names: [String; SCENES],
 }
 
 impl RoomState {
@@ -282,6 +291,15 @@ impl RoomState {
                 .map(|s| (s as usize).min(SCENES - 1))
                 .unwrap_or(0),
             scenes: scenes_from(v.get("scenes")),
+            names: {
+                let mut n: [String; SCENES] = Default::default();
+                if let Some(a) = v.get("scene_names").and_then(Value::as_array) {
+                    for (i, x) in a.iter().take(SCENES).enumerate() {
+                        n[i] = x.as_str().unwrap_or("").chars().take(24).collect();
+                    }
+                }
+                n
+            },
         }
     }
 
@@ -291,13 +309,19 @@ impl RoomState {
         m.insert("based_on".into(), json!(self.based_on));
         m.insert("scene".into(), json!(self.scene));
         m.insert("scenes".into(), scenes_json(&self.scenes));
+        m.insert("scene_names".into(), json!(self.names.to_vec()));
         cfg.set("room", Value::Object(m));
     }
 }
 
-/// The same models in the same order (a scene of this chain: switching to it is in place).
+/// The same models with the same captures in the same order (a scene of this chain: switching to it is in place). A
+/// different capture on a block is another chain: the engine crossfades to it (B9).
 pub fn same_chain(a: &Board, b: &Board) -> bool {
-    a.blocks.len() == b.blocks.len() && a.blocks.iter().zip(&b.blocks).all(|(x, y)| x.model == y.model)
+    a.blocks.len() == b.blocks.len()
+        && a.blocks
+            .iter()
+            .zip(&b.blocks)
+            .all(|(x, y)| x.model == y.model && x.asset == y.asset)
 }
 
 /// What playing scene `scene` makes of the rig `rig`: the same chain, its settings put on in place (the rig's
@@ -318,10 +342,11 @@ pub fn apply_scene(rig: &Board, scene: &Board) -> Board {
     let mut out = rig.clone();
     let mut used = vec![false; scene.blocks.len()];
     for (i, b) in out.blocks.iter_mut().enumerate() {
-        let at = if scene.blocks.get(i).is_some_and(|s| s.model == b.model) && !used[i] {
+        let same = |s: &board::Block| s.model == b.model && s.asset == b.asset;
+        let at = if scene.blocks.get(i).is_some_and(same) && !used[i] {
             Some(i)
         } else {
-            (0..scene.blocks.len()).find(|&j| !used[j] && scene.blocks[j].model == b.model)
+            (0..scene.blocks.len()).find(|&j| !used[j] && same(&scene.blocks[j]))
         };
         if let Some(j) = at {
             used[j] = true;
@@ -446,12 +471,34 @@ pub fn shuffle_name(b: &Board) -> String {
 
 /// The models on the shelf for a kind (the catalogue's order).
 pub fn shelf(kind: Kind) -> Vec<usize> {
-    (0..MODELS.len()).filter(|&i| MODELS[i].kind == kind).collect()
+    (0..MODELS.len())
+        .filter(|&i| MODELS[i].family() == kind && (!MODELS[i].file || crate::captures::ON))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scene_with_another_capture_is_another_chain() {
+        let mut a = Board::new(vec![
+            board::Block::of("amp_nam").unwrap(),
+            board::Block::of("cab_ir").unwrap(),
+        ]);
+        a.blocks[0].asset = 1;
+        let mut b = a.clone();
+        assert!(same_chain(&a, &b));
+        b.blocks[0].asset = 2;
+        // (B9: capture B in a scene used to play capture A)
+        assert!(!same_chain(&a, &b));
+        let out = scene_board(&a, &b);
+        assert_eq!(out.blocks[0].asset, 2);
+        assert_eq!(scene_label(&Default::default(), 1), "Scene 2");
+        let mut names: [String; SCENES] = Default::default();
+        names[0] = "Verse".into();
+        assert_eq!(scene_label(&names, 0), "Verse");
+    }
 
     fn ud() -> UserData {
         let dir = std::env::temp_dir().join(format!("qrs-room-{}", board::new_uid()));

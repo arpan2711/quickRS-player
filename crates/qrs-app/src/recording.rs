@@ -616,6 +616,11 @@ pub fn open_dir(dir: &Path) {
 /// The badge while recording, from `left` (its left edge, vertically centred there): the red lamp, REC and the
 /// time (PAUSED in amber), then the keys: "R pause · Shift R stop and save". A click on it stops and saves.
 pub fn badge(ui: &Ui, left: Pos2, s: Status) -> Response {
+    badge_sized(ui, left, s, false)
+}
+
+/// `badge`, or (`short`) its lamp, word and time alone, where the row has no room for the keys (P37.4b).
+pub fn badge_sized(ui: &Ui, left: Pos2, s: Status, short: bool) -> Response {
     let th = t();
     let p = ui.painter();
     let ctx = ui.ctx();
@@ -629,7 +634,8 @@ pub fn badge(ui: &Ui, left: Pos2, s: Status) -> Response {
     let lamp_d = 12.0;
     let second = if s.paused { "resume" } else { "pause" };
     let hints: [(&[&str], &str); 2] = [(&["R"], second), (&["Shift", "R"], "stop and save")];
-    let (main_w, w) = widths(ctx, s);
+    let (main_w, whole) = widths(ctx, s);
+    let w = if short { main_w } else { whole };
     let r = Rect::from_min_size(pos2(left.x, left.y - h / 2.0), vec2(w, h));
     let resp = widgets::interact(
         ui,
@@ -671,6 +677,12 @@ pub fn badge(ui: &Ui, left: Pos2, s: Status) -> Response {
     text::draw(p, word, pos2(x, cy), Align2::LEFT_CENTER, label, None);
     x += ww + px(7.0);
     text::draw(p, &clock(s.seconds), pos2(x, cy), Align2::LEFT_CENTER, time, None);
+    if short {
+        if !s.paused {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        return resp;
+    }
     // the divider, then the keys
     let dx = r.min.x + main_w;
     p.line_segment(
@@ -701,6 +713,11 @@ pub fn badge(ui: &Ui, left: Pos2, s: Status) -> Response {
 /// The badge's width (to place it from the right or centre it).
 pub fn badge_width(ui: &Ui, s: Status) -> f32 {
     widths(ui.ctx(), s).1
+}
+
+/// The badge's widths: short (lamp, word, time) and whole.
+pub fn badge_widths(ui: &Ui, s: Status) -> (f32, f32) {
+    widths(ui.ctx(), s)
 }
 
 /// The badge's clickable part (lamp, word, time) and its whole width.

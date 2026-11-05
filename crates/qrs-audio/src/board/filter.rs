@@ -81,9 +81,15 @@ impl Pedal for Wah {
 
 // -- Envelope filter --------------------------------------------------------------------------------------------------
 
+/// P37.2: Range (Hi: 220 Hz-3.5 kHz as before; Lo: 120 Hz-1.5 kHz, a bass's), Direction (Up: opens as you pick
+/// harder; Down: closes), Mix (the dry blended back) and Boost (the Q-Tron's output lift).
 struct Envelope {
     rate: f32,
     svf: Svf,
+    lo_hi: (f32, f32),
+    down: bool,
+    mix: Smooth,
+    boost: f32,
     env: f32,
     att: f32,
     rel: f32,
@@ -97,6 +103,10 @@ pub fn envelope(rate: f32) -> Box<dyn Pedal> {
     Box::new(Envelope {
         rate,
         svf: Svf::new(rate, 300.0, 3.0),
+        lo_hi: (220.0, 3500.0),
+        down: false,
+        mix: Smooth::new(rate, 30.0, 1.0),
+        boost: 1.0,
         env: 0.0,
         att: coef_ms(rate, 8.0),
         rel: coef_ms(rate, 120.0),
@@ -114,15 +124,23 @@ impl Pedal for Envelope {
             self.env = flush(self.env + (a - self.env) * if a > self.env { self.att } else { self.rel });
             if self.count == 0 {
                 let u = (self.env * sweep(3.0, 60.0, self.sens)).clamp(0.0, 1.0);
-                self.svf.set(self.rate, sweep(220.0, 3500.0, u), self.q);
+                let u = if self.down { 1.0 - u } else { u };
+                self.svf
+                    .set(self.rate, sweep(self.lo_hi.0, self.lo_hi.1, u), self.q);
                 self.count = STEP;
             }
             self.count -= 1;
             let o = self.svf.tick(*v);
-            *v = if self.bandpass {
+            let y = if self.bandpass {
                 o.bp / self.q * 3.5 + o.lp * 0.45
             } else {
                 o.lp * 1.8 / self.q.sqrt()
+            } * self.boost;
+            *v = if self.mix.target < 1.0 || self.mix.value < 1.0 {
+                let m = self.mix.tick();
+                *v * (1.0 - m) + y * m
+            } else {
+                y
             };
         }
     }
@@ -132,10 +150,19 @@ impl Pedal for Envelope {
         self.att = coef_ms(self.rate, sweep(1.0, 60.0, unit10(v[2])));
         self.rel = coef_ms(self.rate, sweep(30.0, 600.0, unit10(v[3])));
         self.bandpass = v[4] > 0.5;
+        self.lo_hi = if v[5] >= 0.5 {
+            (120.0, 1500.0)
+        } else {
+            (220.0, 3500.0)
+        };
+        self.down = v[6] >= 0.5;
+        self.mix.target = (v[7] / 100.0).clamp(0.0, 1.0);
+        self.boost = db_to_gain(v[8]);
     }
     fn reset(&mut self) {
         self.svf.reset();
         self.env = 0.0;
+        self.mix.snap();
     }
 }
 
@@ -278,7 +305,7 @@ pub fn acoustic(rate: f32) -> Box<dyn Pedal> {
         body: Line::new(ms(5.0) + 4),
         taps: [(ms(0.83), 0.22), (ms(1.9), -0.15), (ms(3.1), 0.1)],
         level: Smooth::new(rate, 30.0, 1.0),
-        hp: OnePole::new(rate, 60.0),
+        hp: OnePole::new(rate, 80.0),
     })
 }
 
@@ -301,38 +328,45 @@ impl Pedal for Acoustic {
     fn set(&mut self, v: &[f32; MAX_KNOBS]) {
         let (body, top, lvl) = (unit10(v[0]), unit10(v[1]), v[2]);
         let r = self.rate;
+        // (P41.2, D168, the guitar tech's #9: it was +9 dB at 115 Hz and -4 at 1.3 kHz, boomy and dull, darker
+        // than the electric guitars through cabs. A miked acoustic is the other way round: a small body
+        // resonance, the low mids taken out, the 2-5 kHz pick and string detail and the air lifted.)
         let fs = [
+            // the box's air resonance: small
             Filter::Peak {
                 f: 115.0,
-                q: 1.3,
-                db: 9.0 * body,
-            },
-            Filter::Peak {
-                f: 220.0,
-                q: 1.0,
+                q: 1.4,
                 db: 2.0 * body,
             },
-            // the magnetic pickup's mud and its resonance, taken out
+            // the low mids where a magnetic pickup's mud and boom sit, cut (less as Body goes up)
             Filter::Peak {
-                f: 420.0,
+                f: 250.0,
                 q: 0.9,
-                db: -5.0,
+                db: -7.0 + 2.0 * body,
             },
             Filter::Peak {
-                f: 1300.0,
-                q: 1.4,
-                db: -4.0,
+                f: 450.0,
+                q: 1.0,
+                db: -3.0,
             },
+            // the pick and the strings' detail
+            Filter::Peak {
+                f: 3200.0,
+                q: 0.7,
+                db: 4.0 + 3.0 * top,
+            },
+            // the air
             Filter::HighShelf {
-                f: 3800.0,
-                db: 2.0 + 9.0 * top,
+                f: 7000.0,
+                db: 1.0 + 6.0 * top,
             },
-            Filter::LowPass { f: 15000.0, q: 0.7 },
+            Filter::LowPass { f: 16000.0, q: 0.7 },
         ];
         for (b, f) in self.f.iter_mut().zip(fs) {
             b.set(r, f);
         }
-        self.level.target = db_to_gain((lvl - 5.0) * 2.4 - 2.0);
+        // (P41.2: +4 dB for the body boost it no longer has)
+        self.level.target = db_to_gain((lvl - 5.0) * 2.4 + 2.0);
     }
     fn reset(&mut self) {
         for b in &mut self.f {

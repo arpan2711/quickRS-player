@@ -94,7 +94,7 @@ impl PlayerView {
             self.say("Continuous off: ", "the loop goes back to its lead-in");
             return;
         }
-        let Some((a, _)) = self.loop_a.zip(self.loop_b) else {
+        let Some((a, _)) = self.range() else {
             self.say_for(
                 "Continuous needs a loop: ",
                 "a review spot (E), L for this section, or [ and ]",
@@ -106,8 +106,7 @@ impl PlayerView {
         self.say_for("Continuous: ", "the loop plays on, every pass scored", 2.5);
         if !self.transport.playing() && self.countdown_until.is_none() {
             self.seek((a - LOOP_LEAD_IN).max(0.0));
-            self.countdown_until =
-                Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(super::COUNTDOWN));
+            self.count_in();
         }
     }
 

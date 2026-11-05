@@ -2527,6 +2527,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nam-rs"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cedc1ae256d0510dd48463bbd6df12a743bba06aa5a27270496c3d1d5b3bf886"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "ndk"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3351,7 +3362,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qrs-analysis"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "qrs-formats",
  "realfft",
@@ -3360,11 +3371,12 @@ dependencies = [
 
 [[package]]
 name = "qrs-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",
  "eframe",
+ "getrandom 0.3.4",
  "image",
  "qrs-analysis",
  "qrs-audio",
@@ -3385,12 +3397,13 @@ dependencies = [
 
 [[package]]
 name = "qrs-audio"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cpal",
  "crossbeam-channel",
  "lewton",
  "log",
+ "nam-rs",
  "parking_lot",
  "qrs-analysis",
  "qrs-formats",
@@ -3407,7 +3420,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3424,7 +3437,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-convert"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "eframe",
  "image",
@@ -3437,7 +3450,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-formats"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes",
  "flate2",
@@ -3452,7 +3465,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-library"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "directories",
@@ -3465,10 +3478,11 @@ dependencies = [
 
 [[package]]
 name = "qrs-ui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "egui",
  "harfrust",
+ "image",
  "serde_json",
  "skrifa",
  "tiny-skia 0.12.0",
@@ -4144,7 +4158,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

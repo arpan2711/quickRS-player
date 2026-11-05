@@ -151,6 +151,10 @@ impl Drop for Py {
     }
 }
 
+/// Chart fields quickRS has and the Python app doesn't (P19's repeat chords, from the SNG / XML / feedpak): not a
+/// difference when only ours has them (P37.4: a sweep of 60 songs found 45 "mismatches", all this).
+const OURS_ONLY: [&str; 1] = ["high_density"];
+
 /// The first place two JSON values differ, as "path: a != b".
 pub fn first_diff(a: &Value, b: &Value, path: &str) -> Option<String> {
     match (a, b) {
@@ -162,6 +166,7 @@ pub fn first_diff(a: &Value, b: &Value, path: &str) -> Option<String> {
                             return Some(d);
                         }
                     }
+                    None if OURS_ONLY.contains(&k.as_str()) => {}
                     None => return Some(format!("{path}.{k}: only in ours")),
                 }
             }
@@ -571,5 +576,21 @@ fn check_audio(pkg: &mut Package, twin: Option<&mut Package>, label: &str, t: &m
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_diff;
+    use serde_json::json;
+
+    #[test]
+    fn our_own_chart_fields_are_not_differences() {
+        let ours = json!({"chords": [{"time": 1.0, "high_density": true}]});
+        let theirs = json!({"chords": [{"time": 1.0}]});
+        assert_eq!(first_diff(&ours, &theirs, ""), None);
+        // any other field only we have still is
+        let ours = json!({"chords": [{"time": 1.0, "made_up": 1}]});
+        assert!(first_diff(&ours, &theirs, "").is_some_and(|d| d.contains("only in ours")));
     }
 }

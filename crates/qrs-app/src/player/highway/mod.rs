@@ -1,9 +1,9 @@
-//! The 3D highway (owner request, D32; rebuilt as Rocksmith 2014's in P30, D78): a true 3D world in string-gap
+//! The 3D highway (owner request, D32; rebuilt as RS2014's in P30, D78): a true 3D world in string-gap
 //! units seen through one pinhole camera (`view`), notes travelling on their own strings straight to their frets,
 //! chords as upright glass boxes over the hand's window, the anchor zones scrolling in on the floor, strings in three
-//! states with additive halos, hits flashing the fret wires. Measured from Rocksmith footage and the game's own object
+//! states with additive halos, hits flashing the fret wires. Measured from RS footage and the game's own object
 //! data (research folder `research/spec/00..05`); our own drawing code, colours as numbers (D35). "Invert strings"
-//! puts the low E at the bottom (Rocksmith's own option). Notes take the scorer's judgements (the tab's glyph
+//! puts the low E at the bottom (RS's own option). Notes take the scorer's judgements (the tab's glyph
 //! groups). The camera follows the hand (`qrs_analysis::hwcamera::RsCamera`), or the planned "Steady" one (D32).
 
 use std::sync::OnceLock;
@@ -19,7 +19,9 @@ fn clock() -> f64 {
 use eframe::egui;
 use egui::{Align2, CursorIcon, Pos2, Rect, Sense, Ui, Vec2, pos2, vec2};
 use qrs_analysis::Judgement;
+use qrs_analysis::chordname;
 use qrs_analysis::hwcamera::{self, CamOpts, CamPlan, RsCamera};
+use qrs_analysis::keyguess::Key;
 use qrs_formats::Techs;
 use qrs_ui::icons::{self, Icon};
 use qrs_ui::paint::{self, Fill};
@@ -28,10 +30,12 @@ use qrs_ui::text::{self, Style};
 mod gfx;
 mod notes;
 mod scene;
+mod skin;
 mod view;
 use qrs_ui::theme::t;
 use qrs_ui::units::px;
 use qrs_ui::widgets::interact;
+pub use skin::Backdrop;
 
 use super::{Chart, ipos, mid, mid_y, snap};
 use crate::library::txt;
@@ -40,10 +44,51 @@ use crate::library::txt;
 pub const SPEEDS: [f32; 7] = [0.4, 0.5, 0.65, 0.8, 1.0, 1.25, 1.6];
 pub const SPEED_DEFAULT: usize = 3;
 /// The camera's temper: how long it holds a view before moving.
-/// The camera: Rocksmith's own (a slow spring after the hand's windows, fitted to the owner's video), or the planned
+/// The camera: RS's own (a slow spring after the hand's windows, fitted to the owner's video), or the planned
 /// one (holds still, moves only in gaps; D32).
-pub const CAMERAS: [&str; 2] = ["Rocksmith", "Steady"];
+pub const CAMERAS: [&str; 2] = ["RS", "Steady"];
 pub const CAMERA_DEFAULT: usize = 0;
+/// Note sizes: how much closer the camera comes than RS's (P37.6d, D143); `SIZE_DEFAULT` (1) is RS's.
+/// Config "hw_size" holds the percentage (100).
+pub const SIZES: [f32; 5] = [0.85, 1.0, 1.25, 1.5, 1.8];
+pub const SIZE_DEFAULT: usize = 1;
+
+/// The note size step in config ("hw_size": its percentage, a number or a string; any other: the nearest step).
+pub fn size_from(cfg: &qrs_library::Config) -> usize {
+    let pct = match cfg.get("hw_size") {
+        Some(serde_json::Value::Number(n)) => n.as_f64(),
+        Some(serde_json::Value::String(s)) => s.trim().trim_end_matches('%').parse().ok(),
+        _ => None,
+    };
+    let Some(pct) = pct else {
+        return SIZE_DEFAULT;
+    };
+    let off = |i: usize| (SIZES[i] as f64 * 100.0 - pct).abs();
+    (0..SIZES.len())
+        .min_by(|&a, &b| off(a).total_cmp(&off(b)))
+        .unwrap_or(SIZE_DEFAULT)
+}
+
+/// A note size as the toolbar and Settings show it.
+pub fn size_label(i: usize) -> String {
+    format!("{}%", (SIZES[i.min(SIZES.len() - 1)] * 100.0).round() as i64)
+}
+
+/// A note size's percentage (for config).
+pub fn size_pct(i: usize) -> i64 {
+    (SIZES[i.min(SIZES.len() - 1)] * 100.0).round() as i64
+}
+
+/// The streak readout at the highway's top left (P37.6d, D144): the multiplier and the streak, in the score tile's
+/// heat, fading out with it when the streak breaks. Set by the player each frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Hud {
+    pub streak: u32,
+    /// x1..x4; 0 when there's no score (a practice run): the streak shows alone.
+    pub mult: u32,
+    /// The score tile's streak level (0 below 10 notes, 1..=7 by tier; fractional while it climbs or cools).
+    pub heat: f32,
+}
 
 /// What the player should do after a frame of the highway: actions, and a tooltip to show.
 pub struct HwOut {
@@ -73,7 +118,7 @@ struct HwChord {
     lo: i32,
     hi: i32,
     name: String,
-    /// The same chord again in the same hand shape: Rocksmith draws it as an empty frame.
+    /// The same chord again in the same hand shape: RS draws it as an empty frame.
     repeat: bool,
     /// Fingers and frets per string (-1 none).
     fingers: Vec<i32>,
@@ -85,8 +130,10 @@ struct HwChord {
 struct Cache {
     id: u64,
     camera: usize,
+    /// The key the chord names were numbered in (None: as charted).
+    numerals: Option<Key>,
     plan: CamPlan,
-    /// Rocksmith's camera over the part.
+    /// RS's camera over the part.
     rs: RsCamera,
     /// Sorted by time; chord notes flattened.
     notes: Vec<HwNote>,
@@ -105,23 +152,38 @@ struct Cache {
     /// When the neck's window switches to each anchor: midway between the old anchor's last note and the new one's
     /// first (05 §1.4).
     switch: Vec<f64>,
-    /// The song's note speed at this difficulty (Rocksmith's DynamicVisualDensity; 1.3 at full difficulty by default,
+    /// The song's note speed at this difficulty (RS's DynamicVisualDensity; 1.3 at full difficulty by default,
     /// lower = faster).
     density: f32,
+    /// The song's look (skin.rs): its note material, stages and heat.
+    look: skin::Look,
 }
 
 pub struct Highway {
-    /// Low E at the bottom (Rocksmith's "invert strings"); off = low E on top as in Rocksmith.
+    /// Low E at the bottom (RS's "invert strings"); off = low E on top as in RS.
     pub invert: bool,
     /// Index in `SPEEDS`.
     pub speed: usize,
     /// Index in `CAMERAS`.
     pub camera: usize,
+    /// Index in `SIZES` (the note size: the camera's distance).
+    pub size: usize,
+    /// The player's full screen (the toolbar's key shows it; the player owns it).
+    pub full: bool,
+    /// Chord names as numbers in this key (the player's chord-names key); None: as charted.
+    pub numerals: Option<Key>,
+    /// The background: Live, Still or Plain (config "hw_backdrop", the toolbar's eye key, D).
+    pub backdrop: Backdrop,
+    /// The streak readout (the player sets it each frame).
+    pub hud: Hud,
     cache: Option<Cache>,
     /// When each scorer group was judged (for the burst / cross), cleared when its judgement goes (a seek back).
     judged: Vec<Option<(Judgement, f64)>>,
     /// The toolbar's last hover or change (it's see-through at rest, solid while in use).
     tools_used: Option<Instant>,
+    /// The skin's images (loaded on the first frame) and the last frame's clock (for the look's crossfades).
+    tex: Option<skin::Tex>,
+    last_frame: Option<f64>,
 }
 
 /// The planned camera's options (the "Steady" camera).
@@ -136,15 +198,28 @@ fn cam_opts() -> CamOpts {
 }
 
 impl Highway {
-    pub fn new(invert: bool, speed: usize, camera: usize) -> Highway {
+    pub fn new(invert: bool, speed: usize, camera: usize, backdrop: Backdrop) -> Highway {
         Highway {
             invert,
             speed: speed.min(SPEEDS.len() - 1),
             camera: camera.min(CAMERAS.len() - 1),
+            size: SIZE_DEFAULT,
+            full: false,
+            numerals: None,
+            backdrop,
+            hud: Hud::default(),
             cache: None,
             judged: Vec::new(),
             tools_used: None,
+            tex: None,
+            last_frame: None,
         }
+    }
+
+    /// The note size (an index in `SIZES`).
+    pub fn with_size(mut self, size: usize) -> Highway {
+        self.size = size.min(SIZES.len() - 1);
+        self
     }
 
     /// One step faster (+1) or slower (-1); false at the end of the range.
@@ -161,6 +236,20 @@ impl Highway {
         std::mem::replace(&mut self.camera, n) != n
     }
 
+    /// One step bigger (+1, the camera closer) or smaller (-1); false at the end of the range.
+    pub fn step_size(&mut self, d: i32) -> bool {
+        let n = (self.size as i32 + d).clamp(0, SIZES.len() as i32 - 1) as usize;
+        self.tools_used = Some(Instant::now());
+        std::mem::replace(&mut self.size, n) != n
+    }
+
+    /// The next background (Live, Still, Plain, Live...).
+    pub fn cycle_backdrop(&mut self) -> Backdrop {
+        self.tools_used = Some(Instant::now());
+        self.backdrop = self.backdrop.next();
+        self.backdrop
+    }
+
     /// Back to the default speed or camera.
     pub fn reset(&mut self, camera: bool) {
         self.tools_used = Some(Instant::now());
@@ -169,6 +258,12 @@ impl Highway {
         } else {
             self.speed = SPEED_DEFAULT;
         }
+    }
+
+    /// Back to the default note size (RS's camera distance).
+    pub fn reset_size(&mut self) {
+        self.tools_used = Some(Instant::now());
+        self.size = SIZE_DEFAULT;
     }
 
     /// The note speed as a percentage of the default.
@@ -180,8 +275,13 @@ impl Highway {
         if self
             .cache
             .as_ref()
-            .is_none_or(|c| c.id != chart.id || c.camera != self.camera)
+            .is_none_or(|c| c.id != chart.id || c.camera != self.camera || c.numerals != self.numerals)
         {
+            let numerals = self.numerals;
+            let name_of = |name: &str| match numerals {
+                Some(key) if !name.trim().is_empty() => chordname::name_in_key(name.trim(), key),
+                _ => name.to_string(),
+            };
             let shape_at = |t: f64| {
                 let i = chart.shape_starts.partition_point(|&s| s <= t + 1e-3);
                 (i > 0).then(|| &chart.shapes[i - 1]).filter(|s| t < s.end - 1e-3)
@@ -190,7 +290,7 @@ impl Highway {
             let mut chords: Vec<HwChord> = Vec::with_capacity(chart.chords.len());
             for (i, ch) in chart.chords.iter().enumerate() {
                 let fretted = ch.notes.iter().map(|n| n.fret).filter(|&f| f > 0);
-                // the chart's own flag (Rocksmith's high density); charts without any flags: the same chord again in the
+                // the chart's own flag (RS's high density); charts without any flags: the same chord again in the
                 // same hand shape
                 let repeat = if any_hd {
                     ch.high_density
@@ -205,7 +305,7 @@ impl Highway {
                     t: ch.time,
                     lo: fretted.clone().min().unwrap_or(0),
                     hi: fretted.max().unwrap_or(0),
-                    name: ch.name.clone(),
+                    name: name_of(&ch.name),
                     repeat,
                     fingers: ch.fingers.clone(),
                     frets: ch.frets.clone(),
@@ -223,7 +323,7 @@ impl Highway {
                         t: s.start,
                         lo: fretted.clone().min().unwrap_or(0),
                         hi: fretted.max().unwrap_or(0),
-                        name: s.name.clone(),
+                        name: name_of(&s.name),
                         repeat: false,
                         fingers: s.fingers.clone(),
                         frets: s.frets.clone(),
@@ -330,6 +430,7 @@ impl Highway {
             self.cache = Some(Cache {
                 id: chart.id,
                 camera: self.camera,
+                numerals,
                 plan,
                 rs,
                 notes,
@@ -341,6 +442,7 @@ impl Highway {
                 phrase_masks,
                 switch,
                 density: chart.arr.visual_density_at(chart.arr.mastery),
+                look: skin::Look::new(&chart.arr),
                 group_t: chart.glyphs.iter().fold(Vec::new(), |mut v, g| {
                     if let Some(k) = g.group {
                         if v.len() <= k {
@@ -412,10 +514,50 @@ impl Highway {
             .iter()
             .map(|j| j.map(|(k, at)| (k, (clock() - at).max(0.0) as f32)))
             .collect();
+        // the look: the streak so far (notes judged in a row, up to now) heats the stage (only a Live one)
+        let live = self.backdrop == Backdrop::Live;
+        let streak = if !live {
+            0
+        } else {
+            let c = self.cache.as_ref().expect("cached");
+            let mut order: Vec<usize> = (0..states.len().min(c.group_t.len()))
+                .filter(|&i| c.group_t[i] <= now && !c.group_t[i].is_nan())
+                .collect();
+            order.sort_by(|a, b| c.group_t[*a].total_cmp(&c.group_t[*b]));
+            order
+                .iter()
+                .rev()
+                .skip_while(|&&i| states[i].is_none())
+                .take_while(|&&i| states[i].is_some_and(|j| j != Judgement::Miss))
+                .count()
+        };
+        let t_clock = clock();
+        let dt = self.last_frame.map_or(10.0, |l| (t_clock - l).clamp(0.0, 10.0)) as f32;
+        self.last_frame = Some(t_clock);
+        if self.tex.is_none() {
+            self.tex = Some(skin::Tex::load(ui.ctx()));
+        }
+        if let Some(c) = self.cache.as_mut() {
+            c.look.step(now, streak, dt, self.backdrop);
+        }
+        // the amp breathes with the playing: a pulse on each hit (Live only: Still's amp stays as it is)
+        let pulse = if !live {
+            0.0
+        } else {
+            marks
+                .iter()
+                .flatten()
+                .filter(|(j, _)| *j != Judgement::Miss)
+                .map(|(_, age)| (1.0 - age / 0.35).max(0.0))
+                .fold(0.0f32, f32::max)
+        };
+        let backdrop = self.backdrop;
         let invert = self.invert;
         let speed = SPEEDS[self.speed] / SPEEDS[SPEED_DEFAULT];
         let n_str = chart.n_strings.clamp(4, 6);
         let camera = self.camera;
+        let zoom = SIZES[self.size.min(SIZES.len() - 1)];
+        let tex = self.tex.take().expect("loaded");
         let c = self.cache(chart);
         let p = ui.painter().with_clip_rect(well);
         // the camera as (fret wire at the screen's middle, frets across)
@@ -430,16 +572,109 @@ impl Highway {
         // c: seconds from the strike plane to the camera plane, from the song's DynamicVisualDensity (spec 01);
         // the speed setting divides it (a faster speed spreads notes further apart), the far end stays 4.87 D
         let c_secs = view::C_PER_DVD * c.density.max(0.3) as f64 / speed.max(0.1) as f64;
-        let v = view::View::new(well, cam, now, c_secs, n_str, invert);
-        scene::draw(&p, &v, c, &marks);
+        let mut v = view::View::new(well, cam, zoom, now, c_secs, n_str, invert);
+        v.keep_numbers(cam, zoom);
+        let glow = (0.35 + 0.45 * c.look.heat + 0.6 * pulse) * c.look.dim();
+        scene::draw(
+            &p,
+            &v,
+            c,
+            &marks,
+            &scene::Skin {
+                tex: &tex,
+                glow,
+                clock: t_clock,
+                backdrop,
+            },
+        );
+        self.tex = Some(tex);
+        self.draw_hud(ui, well);
         let out = self.tools(ui, well);
         ui.ctx().request_repaint();
         out
     }
 
-    /// The highway's toolbar, floating at its top right like the tab's: note speed and the camera's temper as sunken
-    /// pills (− amount +), then invert strings as a round key (the RS Highway key, back to the tab, is the player's). See-through at
-    /// rest, solid while the pointer is on it or just after a change.
+    /// The streak readout: a small plate at the well's top left, level with the toolbar, over the stage's sky (the
+    /// highway runs to the right of the middle, so no note passes there). "×3" in the heat's colour, then the count
+    /// and "streak"; it appears with the first tier (10 notes, x2) and fades as the arc cools when the streak breaks.
+    fn draw_hud(&self, ui: &mut Ui, well: Rect) {
+        let Hud { streak, mult, heat } = self.hud;
+        let show = heat.clamp(0.0, 1.0);
+        if show <= 0.01 {
+            return;
+        }
+        let ctx = ui.ctx().clone();
+        let th = t();
+        let dark = qrs_ui::theme::is_dark();
+        let hot = |base| qrs_ui::streak::heat_color(heat, base, dark);
+        let pad = px(10.0);
+        let h = snap(px(26.0) + 2.0 * px(5.0));
+        let mult_s = (mult > 1).then(|| format!("×{mult}"));
+        let mult_st = Style::new(17.0, 800, th.text);
+        let num_st = Style::new(15.0, 800, th.text);
+        let cap_st = Style::new(11.0, 600, th.caption);
+        let num = streak.to_string();
+        let mw = mult_s.as_ref().map_or(0.0, |m| {
+            text::width(&ctx, m, mult_st).ceil() + px(9.0) + px(1.0) + px(9.0)
+        });
+        let w = snap(
+            2.0 * pad
+                + mw
+                + text::width(&ctx, &num, num_st).ceil()
+                + px(5.0)
+                + text::width(&ctx, "streak", cap_st).ceil(),
+        );
+        let plate = Rect::from_min_size(ipos(well.min.x + px(16.0), well.min.y + px(12.0)), vec2(w, h));
+        let mut hu = ui.new_child(egui::UiBuilder::new().max_rect(plate));
+        hu.multiply_opacity(show);
+        let p = hu.painter().clone();
+        paint::floating(&p, plate, Some(12.0));
+        let cy = mid_y(plate);
+        let mut x = plate.min.x + pad;
+        if let Some(m) = &mult_s {
+            let r = txt(
+                &p,
+                m,
+                ipos(x, cy),
+                17.0,
+                hot(th.accent_ink),
+                800,
+                Align2::LEFT_CENTER,
+                None,
+            );
+            x = snap(r.max.x + px(9.0));
+            p.rect_filled(
+                Rect::from_min_size(ipos(x, plate.min.y + px(8.0)), vec2(px(1.0), snap(h - px(16.0)))),
+                0.0,
+                th.line,
+            );
+            x = snap(x + px(1.0) + px(9.0));
+        }
+        let r = txt(
+            &p,
+            &num,
+            ipos(x, cy),
+            15.0,
+            hot(th.text),
+            800,
+            Align2::LEFT_CENTER,
+            None,
+        );
+        txt(
+            &p,
+            "streak",
+            ipos(r.max.x + px(5.0), cy),
+            11.0,
+            hot(th.caption),
+            600,
+            Align2::LEFT_CENTER,
+            None,
+        );
+    }
+
+    /// The highway's toolbar, floating at its top right like the tab's: note speed, note size (the camera's distance)
+    /// and the camera's temper as sunken pills (− amount +), then invert strings, chord names (as charted or numbers in the key), the background (an
+    /// eye: Live, Still, Plain) and full screen as round keys (the RS Highway key, back to the tab, is the player's). See-through at rest, solid while the pointer is on it or just after a change.
     fn tools(&mut self, ui: &mut Ui, well: Rect) -> HwOut {
         let ctx = ui.ctx().clone();
         let th = t();
@@ -447,15 +682,39 @@ impl Highway {
             acts: Vec::new(),
             tip: None,
         };
-        let (key, pill, gap, pad, div_gap) = (px(26.0), px(112.0), px(6.0), px(5.0), px(8.0));
-        let label_w: f32 = ["Speed", "Camera"]
-            .iter()
-            .map(|l| text::width(&ctx, l, Style::new(11.0, 600, th.caption)).ceil() + px(7.0))
-            .sum();
+        let (key, gap, pad, div_gap) = (px(26.0), px(6.0), px(5.0), px(8.0));
+        const LABELS: [&str; 3] = ["Speed", "Size", "Camera"];
         let rs_w = super::PlayerView::rs_highway_w(&ctx);
-        let w = snap(
-            2.0 * pad + rs_w + div_gap + label_w + 2.0 * pill + gap + 2.0 * div_gap + px(1.0) + key + px(4.0),
-        );
+        // (the pills' widths: Speed and Size hold a percentage, Camera its name; a narrow well drops the labels and
+        // narrows the pills, the tips still say what each sets)
+        let width = |labels: bool, pills: [f32; 3]| {
+            let label_w: f32 = if labels {
+                LABELS
+                    .iter()
+                    .map(|l| text::width(&ctx, l, Style::new(11.0, 600, th.caption)).ceil() + px(7.0))
+                    .sum()
+            } else {
+                0.0
+            };
+            snap(
+                2.0 * pad
+                    + rs_w
+                    + div_gap
+                    + label_w
+                    + pills.iter().sum::<f32>()
+                    + 2.0 * gap
+                    + 2.0 * div_gap
+                    + px(1.0)
+                    + 4.0 * (key + px(4.0)),
+            )
+        };
+        let roomy = [px(96.0), px(96.0), px(112.0)];
+        let (labels, pills) = if width(true, roomy) <= well.width() - px(32.0) {
+            (true, roomy)
+        } else {
+            (false, [px(84.0), px(84.0), px(104.0)])
+        };
+        let w = width(labels, pills);
         let h = snap(key + 2.0 * pad);
         let plate = Rect::from_min_size(ipos(well.max.x - px(16.0) - w, well.min.y + px(12.0)), vec2(w, h));
         let over = ctx
@@ -487,13 +746,23 @@ impl Highway {
             }
             x = r.max.x + div_gap;
         }
-        let steppers: [(&str, &str, String, [(&str, &'static str); 2], &'static str); 2] = [
+        let steppers: [(&str, &str, String, [(&str, &'static str); 2], &'static str); 3] = [
             (
-                "Speed",
+                LABELS[0],
                 "Note speed",
                 format!("{}%", self.speed_pct()),
                 [("Slower notes", "hw_slower"), ("Faster notes", "hw_faster")],
                 "hw_speed_reset",
+            ),
+            (
+                LABELS[1],
+                "Note size: the camera closer (bigger frets and notes, fewer frets in view) or further",
+                size_label(self.size),
+                [
+                    ("Smaller notes (camera further)", "hw_smaller"),
+                    ("Bigger notes (camera closer)", "hw_bigger"),
+                ],
+                "hw_size_reset",
             ),
             (
                 "Camera",
@@ -508,19 +777,24 @@ impl Highway {
         ];
         for (i, (label, what, value, keys, reset)) in steppers.iter().enumerate() {
             // what it sets: a plain label before the pill
-            let lw = text::width(&ctx, label, Style::new(11.0, 600, th.caption)).ceil() + px(4.0);
-            let lab = Rect::from_min_size(ipos(x, cy - snap(key / 2.0)), vec2(lw, key));
-            txt(
-                &p,
-                label,
-                ipos(lab.min.x, cy),
-                11.0,
-                th.caption,
-                600,
-                Align2::LEFT_CENTER,
-                None,
-            );
-            let r = Rect::from_min_size(ipos(lab.max.x + px(3.0), lab.min.y), vec2(pill, key));
+            let lab = if labels {
+                let lw = text::width(&ctx, label, Style::new(11.0, 600, th.caption)).ceil() + px(4.0);
+                let lab = Rect::from_min_size(ipos(x, cy - snap(key / 2.0)), vec2(lw, key));
+                txt(
+                    &p,
+                    label,
+                    ipos(lab.min.x, cy),
+                    11.0,
+                    th.caption,
+                    600,
+                    Align2::LEFT_CENTER,
+                    None,
+                );
+                lab.max.x + px(3.0)
+            } else {
+                x
+            };
+            let r = Rect::from_min_size(ipos(lab, cy - snap(key / 2.0)), vec2(pills[i], key));
             paint::inset(&p, r, None, 3.0, Fill::Base);
             // − and + at the pill's ends, the amount between (a click on it puts it back)
             let minus = Rect::from_min_size(r.min, Vec2::splat(key));
@@ -550,13 +824,17 @@ impl Highway {
             txt(&p, value, mid(mid_r), 12.0, ink, 800, Align2::CENTER_CENTER, None);
             if resp.hovered() {
                 ctx.set_cursor_icon(CursorIcon::PointingHand);
-                let back = if i == 0 { "click: 100%" } else { "click: Normal" };
+                let back = match i {
+                    0 => "click: 100%",
+                    1 => "click: 100% (RS's)",
+                    _ => "click: RS",
+                };
                 out.tip = Some((what.to_string(), back.into(), tip_at(mid_r), Align2::RIGHT_TOP));
             }
             if resp.clicked() {
                 out.acts.push(reset);
             }
-            x = r.max.x + if i == 0 { gap } else { 0.0 };
+            x = r.max.x + if i + 1 < steppers.len() { gap } else { 0.0 };
         }
         x = snap(x + div_gap);
         p.rect_filled(
@@ -565,7 +843,42 @@ impl Highway {
             th.line,
         );
         x = snap(x + px(1.0) + div_gap);
-        let toggles = [(Icon::Invert, self.invert, "Invert strings", "I", "hw_invert")];
+        let toggles = [
+            (Icon::Invert, self.invert, "Invert strings", "I", "hw_invert"),
+            (
+                Icon::Music,
+                self.numerals.is_some(),
+                if self.numerals.is_some() {
+                    "Chord names: numbers in the song's key (click: as charted)"
+                } else {
+                    "Chord names as charted (click: numbers in the song's key)"
+                },
+                "K",
+                "chord_numerals",
+            ),
+            (
+                Icon::Eye,
+                self.backdrop != Backdrop::Live,
+                match self.backdrop {
+                    Backdrop::Live => "Background: Live (click: Still, one wallpaper)",
+                    Backdrop::Still => "Background: Still (click: Plain, dark)",
+                    Backdrop::Plain => "Background: Plain (click: Live)",
+                },
+                "D",
+                "hw_backdrop",
+            ),
+            (
+                if self.full { Icon::Shrink } else { Icon::Expand },
+                self.full,
+                if self.full {
+                    "Leave full screen"
+                } else {
+                    "Full screen"
+                },
+                if self.full { "F / Esc" } else { "F" },
+                "tab_full",
+            ),
+        ];
         for (icon, on, label, keycap, act) in toggles {
             let r = Rect::from_min_size(ipos(x, cy - snap(key / 2.0)), Vec2::splat(key));
             let resp = interact(&tu, r, ("hw-tool", act), Sense::click());
@@ -599,7 +912,7 @@ impl Highway {
     }
 }
 
-/// A chord name as Rocksmith spells it: flats as sharps (Gb5 -> F♯5), ♯ for #.
+/// A chord name as RS spells it: flats as sharps (Gb5 -> F♯5), ♯ for #.
 fn sharp_name(name: &str) -> String {
     let mut out = String::new();
     let cs: Vec<char> = name.chars().collect();

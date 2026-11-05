@@ -2,7 +2,7 @@ Audio setup
 -----------
 quickRS listens to your guitar to score your notes, drive note by note and
 ear mode, and record takes. It needs a guitar input and an output. Both are
-picked automatically; Settings (`F2`) > *Audio input / output* shows what was
+picked automatically; Settings (`F2`) > *Sound* shows what was
 picked and lets you choose something else.
 
 * [The guided setup](#the-guided-setup)
@@ -17,7 +17,7 @@ picked and lets you choose something else.
 
 ### The guided setup
 
-*Set up your guitar*, in Settings > *Audio input / output*, walks you
+*Set up your guitar*, in Settings > *Sound*, walks you
 through everything on this page in a couple of minutes. It's also the *Your
 guitar* page of the [first-time setup](INSTALL.md#the-first-start). Coming
 from 0.1.0, run it once: calibration and the scoring are new since then.
@@ -61,8 +61,8 @@ pedalboard.
 
 **An audio interface** (Focusrite, Behringer, and so on). Plug the guitar into
 an instrument (Hi-Z or INST) input. quickRS finds which channel the guitar is
-on from the first clear notes you play; *INPUT CHANNEL* in Settings > *Audio
-input / output* sets it by hand.
+on from the first clear notes you play; *INPUT CHANNEL* in Settings > *Sound*
+sets it by hand.
 
 **An amp modeller or multi-effects over USB.** It works like an interface.
 Set *This input is* to *Amp* so quickRS plays your sound as it is and doesn't
@@ -93,7 +93,7 @@ need to choose.
   quiet while quickRS plays.
 * **ASIO** is the interface maker's own driver, and usually the lowest
   latency. quickRS picks it when your interface has one. It is listed in
-  Settings > *Audio input / output* as *ASIO driver*.
+  Settings > *Sound* as *ASIO driver*.
 
 *Buffer* sets the block size. Smaller is less delay; if you hear crackles,
 make it bigger.
@@ -110,7 +110,7 @@ Rocksmith's does: quickRS listens to your loudest playing and sets the level
 from it, so nothing clips and soft notes still count.
 
 It's step 5 of the [guided setup](#the-guided-setup), or on its own:
-Settings > *Audio input / output* > *INPUT LEVEL* > *Calibrate*.
+Settings > *Sound* > *INPUT LEVEL* > *Calibrate*.
 
 1. Set your interface's gain so its light never goes red on your hardest
    strum. If it clips, turn the gain down.

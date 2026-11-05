@@ -7,14 +7,18 @@ use std::f32::consts::PI;
 
 use eframe::egui;
 use egui::{Align2, Color32, CursorIcon, Painter, Pos2, Rect, Response, Sense, Ui, pos2};
-use qrs_ui::paint;
 use qrs_ui::units::px;
 use qrs_ui::widgets::interact;
+use qrs_ui::{glass, paint};
 
 use crate::listen::Listen;
 
 mod head;
 use crate::state::AppState;
+
+/// How far inside the glass plate the head is drawn (points): its 4 unit corners then sit within the plate's 16 point
+/// ones.
+const GLASS_IN: f32 = 3.5;
 
 pub fn rgb(c: [u8; 3]) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
@@ -75,11 +79,16 @@ pub fn button(ui: &Ui, r: Rect, listen: &Listen, look: &Look) -> Response {
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
-    draw(ui.painter(), r, listen, look.rig);
+    // on the dark themes a glass key lies over it; it stays still on hover, as the head does, and sinks when pressed
+    let glass = qrs_ui::glass::on().then(|| glass::State::of(false, resp.is_pointer_button_down_on()));
+    draw(ui.painter(), r, listen, look.rig, glass);
     resp
 }
 
-pub fn draw(p: &Painter, r: Rect, listen: &Listen, rig: &str) {
+/// The head in `r`; with `glass` (the dark themes) the Crown glass plate over it in that state, as a glass key: the head
+/// drawn a little inside it (so the plate's 16 point corners cover the head's), seen through the glass, which takes
+/// the acrylic sheet's place, the room reflected in it and its soft shadow round it.
+pub fn draw(p: &Painter, r: Rect, listen: &Listen, rig: &str, glass: Option<glass::State>) {
     let hot = listen.hot();
     let body = r;
     // a red glow under it while the input is too hot (the green one while it heard you went: owner, 2026-11-03)
@@ -99,7 +108,23 @@ pub fn draw(p: &Painter, r: Rect, listen: &Listen, rig: &str) {
     } else {
         format!("Rig · {rig}")
     };
-    head::draw(p, body, listen.needle, head::lamp_glow(listen), &sub, hot);
+    let head_r = if glass.is_some() {
+        body.shrink(px(GLASS_IN))
+    } else {
+        body
+    };
+    head::draw(
+        p,
+        head_r,
+        listen.needle,
+        head::lamp_glow(listen),
+        &sub,
+        hot,
+        glass.is_none(),
+    );
+    if let Some(state) = glass {
+        glass::key(p, body, state);
+    }
 }
 
 /// The button's state: the guitar's input, and the room's rig as it names it (read again every 2 s).
@@ -116,6 +141,7 @@ impl Amp {
     /// the needle is still moving (and looks for sound four times a second otherwise). True when clicked.
     pub fn ui(&mut self, ui: &Ui, st: &AppState, body: Rect, key: bool) -> bool {
         let engine = st.audio.as_ref().map(|a| a.engine.clone());
+        self.listen.set_instrument(st.instrument());
         let live = self.listen.update(engine.as_deref());
         if live {
             ui.ctx()

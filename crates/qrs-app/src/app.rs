@@ -149,6 +149,8 @@ pub struct QuickRs {
     dlg_gave_up: bool,
     /// The song being loaded opens paused (a double-click in the library).
     open_paused: bool,
+    /// ...with its last review up (Home's Carry on card).
+    open_review: bool,
     styled: Option<ThemeName>,
     pub screen: Screen,
     gallery: gallery::Gallery,
@@ -218,6 +220,7 @@ impl QuickRs {
             AudioMode::Devices
         };
         let mut state = AppState::new(&cc.egui_ctx, mode);
+        crate::captures::init(&state.data.root, &state.config);
         if shots.is_none() {
             // a recording a crash left in the airlock goes to the recordings folder (P23.13)
             crate::recording::recover_on_start(&mut state);
@@ -232,6 +235,7 @@ impl QuickRs {
             hwnd,
             dlg_gave_up: false,
             open_paused: false,
+            open_review: false,
             styled: None,
             screen: if args.gallery {
                 Screen::Gallery
@@ -301,6 +305,11 @@ impl QuickRs {
                     self.open_song(g, &part);
                     self.open_paused = true;
                 }
+                Req::Review { g, part } => {
+                    self.open_song(g, &part);
+                    self.open_paused = true;
+                    self.open_review = true;
+                }
                 Req::Lick {
                     g,
                     part,
@@ -329,6 +338,24 @@ impl QuickRs {
         }
     }
 
+    /// What the downloads card asked for: Open in the amp room shows the room's catalogue on the new capture.
+    fn download_act(&mut self, act: crate::downloads::Act) {
+        let crate::downloads::Act::OpenRoom(it) = act;
+        if self.settings.is_some() {
+            self.close_settings();
+        }
+        if self.room.is_none() {
+            if self.player.is_some() {
+                self.open_room_song();
+            } else {
+                self.open_room();
+            }
+        }
+        if let Some(r) = &mut self.room {
+            r.show_capture(&mut self.state, &it.name);
+        }
+    }
+
     /// The amp room (from Home's AMP ROOM button or A).
     fn open_room(&mut self) {
         if self.room.is_none() && self.player.is_none() && self.loading.is_none() {
@@ -337,10 +364,34 @@ impl QuickRs {
         }
     }
 
+    /// The amp room over the player, in the song's context (its Pedalboard tile's expand key, D102): the song
+    /// pauses; leaving goes back to it with the tone the room left playing.
+    fn open_room_song(&mut self) {
+        if self.room.is_some() || self.loading.is_some() {
+            return;
+        }
+        let Some(p) = &mut self.player else { return };
+        p.hold();
+        let song = p.rack.song.clone();
+        let (pick, tone) = (p.rack.board.pick, p.rack.board.song_tone);
+        self.room = Some(crate::room::RoomView::open_song(
+            &mut self.state,
+            song,
+            pick,
+            tone,
+        ));
+    }
+
     fn close_room(&mut self) {
         crate::recording::leaving(&mut self.state, crate::recording::Page::Room);
         if let Some(mut r) = self.room.take() {
             r.leave(&mut self.state);
+            if r.song
+                && let Some(p) = &mut self.player
+            {
+                p.rack.reload_song(&self.state, r.rack.board.pick);
+                return;
+            }
         }
         self.lib.view = View::Home;
     }
@@ -354,6 +405,12 @@ impl QuickRs {
                 r.handle(&mut self.state, ev);
             }
             r.ui(ui, &mut self.state, rect);
+            let want = r.want_settings.take();
+            if let Some(sec) = want {
+                self.open_settings(sec);
+                return;
+            }
+            let Some(r) = &mut self.room else { return };
             if r.closed {
                 self.close_room();
                 ctx.request_repaint();
@@ -403,6 +460,7 @@ impl QuickRs {
         self.lick = None;
         self.lesson = None;
         self.open_paused = false;
+        self.open_review = false;
         self.loading = Some(Loading::start(g, &e, part, &self.state.keys, rate));
     }
 
@@ -448,7 +506,7 @@ impl QuickRs {
         let e = self.state.song(g);
         if e.needs_keys {
             self.state.say(format!(
-                "{} needs Rocksmith's keys: add them in Settings > Directories",
+                "{} needs RS's keys: add them in Settings > Directories",
                 r.title
             ));
             return;
@@ -473,6 +531,7 @@ impl QuickRs {
             match r {
                 PlayerReq::Library | PlayerReq::Lessons => self.close_player(),
                 PlayerReq::Settings(section) => self.open_settings(section),
+                PlayerReq::Room => self.open_room_song(),
                 PlayerReq::Riff { lesson, riff } => {
                     self.close_player();
                     self.open_riff(&lesson, &riff);
@@ -559,9 +618,24 @@ impl QuickRs {
             s.ui(ui, &mut self.state, self.player.as_mut(), rect, draw_panel);
             if s.closed {
                 let setup = s.first_setup;
+                let at = s.first_setup_at.take();
+                let room = s.open_room;
                 self.close_settings();
+                if room {
+                    // (Settings › Tone's "Edit in the amp room": over the song when one is open)
+                    if self.player.is_some() {
+                        self.open_room_song();
+                    } else {
+                        self.open_room();
+                    }
+                }
                 if setup {
                     self.open_setup();
+                    if let Some(page) = at
+                        && self.setup.is_some()
+                    {
+                        self.setup = Some(crate::settings::FirstSetup::at(&page));
+                    }
                 }
             }
         }
@@ -574,9 +648,18 @@ impl QuickRs {
             return;
         }
         self.setup_checked = true;
-        let st = &self.state;
+        let st = &mut self.state;
         let keys = matches!(st.key_state, crate::keyfile::KeyState::Found { .. });
-        if crate::setup::due(&st.config, st.first_run, keys) {
+        let due = crate::setup::due(&st.config, st.first_run, keys);
+        // an update: Home asks whether to run the setup again (P37.15); this version is the last run from now on
+        st.whats_new = crate::whatsnew::on_start(
+            &mut st.config,
+            st.first_run,
+            due,
+            &crate::update::Version::current(),
+        );
+        st.save_config();
+        if due {
             self.open_setup();
         }
     }
@@ -768,6 +851,14 @@ impl QuickRs {
             return;
         }
         self.shot_applied = Some(i);
+        if let Some(name) = self
+            .shots
+            .as_ref()
+            .and_then(|s| s.current())
+            .map(|s| s.name.clone())
+        {
+            crate::downloads::stage_shot(&name);
+        }
         theme::set_theme(shot_theme);
         self.setup = match page {
             shots::Page::Setup(what) => Some(crate::settings::FirstSetup::staged(what)),
@@ -786,6 +877,7 @@ impl QuickRs {
             self.devstatus = DevStatus::default(); // (a staged offer stays on its own shot)
         }
         self.state.rec.clear_shot(); // (a staged recording is its shot's only)
+        self.state.whats_new = page == shots::Page::HomeNew; // (the card after an update: its own shot only)
         // settings the last shot changed go back; this shot's go in
         for (k, v) in std::mem::take(&mut self.shot_saved) {
             match v {
@@ -820,7 +912,18 @@ impl QuickRs {
             | shots::Page::Mg300View
             | shots::Page::PlayerAt("tiles_scrolled")
             | shots::Page::PlayerAt("tile_hover") => vec![("tiles", mg_tiles)],
-            shots::Page::PlayerControls => vec![("panel_open", serde_json::json!(["PLAYBACK", "PRACTICE"]))],
+            shots::Page::PlayerControls => vec![
+                ("controls_tab", "practise".into()),
+                ("tiles", serde_json::json!([["board", false]])),
+            ],
+            shots::Page::PlayerAt("controls_sound") => vec![
+                ("controls_tab", "sound".into()),
+                ("tiles", serde_json::json!([["board", false]])),
+            ],
+            shots::Page::PlayerAt("controls_view") => vec![
+                ("controls_tab", "view".into()),
+                ("tiles", serde_json::json!([["board", false]])),
+            ],
             shots::Page::PlayerAt("neck") => vec![("note_view", "guitar".into())],
             shots::Page::PlayerAt("tuner_lyrics") => vec![(
                 "tiles",
@@ -831,13 +934,7 @@ impl QuickRs {
                     ["note", false]
                 ]),
             )],
-            shots::Page::PlayerAt("controls_more") => vec![
-                (
-                    "panel_open",
-                    serde_json::json!(["PART", "TAB", "TILES", "LYRICS", "SOUND"]),
-                ),
-                ("tiles", serde_json::json!([["board", false]])),
-            ],
+
             // (the Python app's player shots: its tiles, the pedalboard's off)
             p if p.is_player() => vec![("tiles", serde_json::json!([["board", false]]))],
             _ => Vec::new(),
@@ -849,7 +946,7 @@ impl QuickRs {
         if page == shots::Page::PlayerAt("board_sounds") {
             // your sounds on the tile: the room's (made up when there are none); your board and the room's state
             // go back when the shots move on
-            for k in ["tone_board", "room"] {
+            for k in ["tone_board", "room", "instrument", "input_cal"] {
                 if !self.shot_saved.iter().any(|(s, _)| *s == k) {
                     self.shot_saved.push((k, self.state.config.get(k).cloned()));
                 }
@@ -884,6 +981,26 @@ impl QuickRs {
                     .unwrap_or_default();
                 self.open_song(g, &part);
             }
+            // the room in the song's context (P37.1)
+            let room_page = matches!(
+                page,
+                shots::Page::PlayerAt("room_song") | shots::Page::PlayerAt("room_explain")
+            );
+            if room_page && self.player.is_some() {
+                if self.room.as_ref().is_some_and(|r| !r.song) {
+                    self.close_room();
+                }
+                if self.room.is_none() {
+                    self.open_room_song();
+                }
+                if let Some(r) = &mut self.room {
+                    r.shot = true;
+                    r.listen.stage(-16.0, 45.04, false);
+                    r.rig_ui.explain = (page == shots::Page::PlayerAt("room_explain")).then_some(0);
+                }
+            } else if self.room.as_ref().is_some_and(|r| r.song) {
+                self.close_room();
+            }
             return;
         }
         if self.player.is_some() {
@@ -902,6 +1019,7 @@ impl QuickRs {
         match page {
             shots::Page::Gallery => {}
             shots::Page::Home => self.lib.view = View::Home,
+            shots::Page::HomeNew => self.lib.view = View::Home,
             shots::Page::HomeAmp(what) => {
                 self.lib.view = View::Home;
                 // E2 three cents sharp at a good level (or clipping)
@@ -960,7 +1078,38 @@ impl QuickRs {
                 self.lib.go(&mut self.state, View::Lessons);
                 self.lib.refresh(&self.state);
             }
+            shots::Page::Lib(what @ ("best" | "playlist")) => {
+                // the rank badges and the Random key (P37.10): all songs by best score, or the first playlist (one
+                // made up of the first few songs when there's none: the shot showed All songs, P37.4)
+                if what == "playlist" && self.state.userdata.playlists.is_empty() {
+                    let st = &self.state;
+                    let ids: Vec<String> = (0..st.groups.len())
+                        .filter(|&g| st.listed(g) && st.song(g).playable())
+                        .take(8)
+                        .map(|g| st.song(g).id())
+                        .collect();
+                    self.state.userdata.playlists.push(("Warm-ups".into(), ids));
+                }
+                self.lib.view = match self.state.userdata.playlists.first() {
+                    Some((name, _)) if what == "playlist" => View::Playlist(name.clone()),
+                    _ => View::All,
+                };
+                self.lib.sort = if what == "best" { 4 } else { 0 };
+                self.lib.sel = 0;
+                self.lib.top = 0;
+                self.lib.refresh(&self.state);
+            }
+            shots::Page::Lib(what @ ("difficulty" | "easy")) => {
+                // P37.6b (D137): all songs by difficulty, easiest first; the sidebar's Easy songs
+                self.lib.view = if what == "easy" { View::Level(0) } else { View::All };
+                self.lib.query.clear();
+                self.lib.sort = crate::library::sort_index("difficulty");
+                self.lib.sel = 0;
+                self.lib.top = 0;
+                self.lib.refresh(&self.state);
+            }
             shots::Page::Lib(what) => {
+                self.lib.sort = 0;
                 self.lib.view = if what == "fav" { View::Fav } else { View::All };
                 if what != "fav" {
                     self.lib.query = "here without".into(); // (the Python tool's search is still in)
@@ -1212,6 +1361,12 @@ impl eframe::App for QuickRs {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let _timer = FrameTimer::new(&ctx);
+        // a board set before the captures library opened gets its NAM blocks once it has (P37.2, AUDIT B11)
+        if crate::captures::is_ready()
+            && let Some(a) = self.state.audio.as_ref()
+        {
+            a.engine.refresh_files();
+        }
         if !self.timed.0 {
             self.timed.0 = true;
             crate::gpu::drawn();
@@ -1466,6 +1621,9 @@ impl eframe::App for QuickRs {
                     if std::mem::take(&mut self.open_paused) {
                         p.open_paused();
                     }
+                    if std::mem::take(&mut self.open_review) {
+                        p.show_review();
+                    }
                     if let Some((a, b, name)) = self.lick.take() {
                         p.set_lick_loop(a, b, &name);
                     }
@@ -1485,6 +1643,7 @@ impl eframe::App for QuickRs {
                 Err(e) => {
                     self.lick = None;
                     self.lesson = None;
+                    self.open_review = false;
                     self.state.say_error(format!("Couldn't open {title}: {e}"))
                 }
             }
@@ -1498,6 +1657,9 @@ impl eframe::App for QuickRs {
                     self.setup_frame(ui, rect);
                 } else if self.settings.is_some() {
                     self.settings_frame(ui, rect);
+                } else if self.room.as_ref().is_some_and(|r| r.song) {
+                    // (the room over the song that opened it)
+                    self.room_frame(ui, rect);
                 } else if let Some(p) = &mut self.player {
                     if let Some(t) = crate::shotclock::shot_now() {
                         p.shot_seq_frame(t); // (a screenshot sequence: the song at this frame's time)
@@ -1512,6 +1674,16 @@ impl eframe::App for QuickRs {
                 if self.loading.is_none() && self.setup.is_none() {
                     self.devstatus.ui(ui, &mut self.state, rect);
                 }
+                // TONE3000 downloads (P38.3): a card over every page, a badge over a song and in the room
+                if self.loading.is_none() {
+                    let room = self.room.is_some();
+                    let song = self.player.is_some() && self.settings.is_none() && self.setup.is_none();
+                    let compact = (room || song) && self.settings.is_none() && self.setup.is_none();
+                    let gap = if song && !room { 150.0 } else { 110.0 };
+                    if let Some(act) = crate::downloads::ui(ui, rect, compact, self.setup.is_none(), gap) {
+                        self.download_act(act);
+                    }
+                }
                 // a recording that stopped by itself; the "Saved" notice over whatever page is up (P23.9)
                 if let Some((a, b)) = crate::recording::poll(&mut self.state) {
                     match &mut self.player {
@@ -1521,7 +1693,15 @@ impl eframe::App for QuickRs {
                 }
                 // (above the player's transport, or the room's strip)
                 let gap = if self.player.is_some() { 150.0 } else { 110.0 };
-                crate::recording::saved_notice(ui, &mut self.state, rect, gap);
+                // (over the song, centred on the tab and no wider: centred on the window it ran over the console)
+                let area = match self.player.as_ref().and_then(|p| p.well_rect()) {
+                    Some(w) => egui::Rect::from_min_max(
+                        egui::pos2(w.min.x, rect.min.y),
+                        egui::pos2(w.max.x, rect.max.y),
+                    ),
+                    None => rect,
+                };
+                crate::recording::saved_notice(ui, &mut self.state, area, gap);
                 // a newer version (P20.1): its notice, not over a song
                 if self.loading.is_none()
                     && self.player.is_none()
@@ -1553,6 +1733,23 @@ impl eframe::App for QuickRs {
                 egui::Rect::from_min_size(at, egui::vec2(272.0, 196.0)),
                 page == shots::Page::NoteWidgetChords,
             );
+        }
+        // (the room in a song's context, once the song has loaded: P37.1)
+        let cur = self.shots.as_ref().and_then(|s| s.current().map(|s| s.page));
+        if let Some(pg @ (shots::Page::PlayerAt("room_song") | shots::Page::PlayerAt("room_explain"))) = cur
+            && self.player.is_some()
+            && self.loading.is_none()
+            && self.room.as_ref().is_none_or(|r| !r.song)
+        {
+            if self.room.is_some() {
+                self.close_room(); // (the room on its own, from the shots before)
+            }
+            self.open_room_song();
+            if let Some(r) = &mut self.room {
+                r.shot = true;
+                r.listen.stage(-16.0, 45.04, false);
+                r.rig_ui.explain = (pg == shots::Page::PlayerAt("room_explain")).then_some(0);
+            }
         }
         if let Some(sh) = &mut self.shots {
             // pages wait for the library (and the player for its song)

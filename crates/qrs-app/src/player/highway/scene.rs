@@ -1,14 +1,15 @@
-//! One frame of the highway, back to front in Rocksmith's layer order (research/spec/00 C3): background, floor
+//! One frame of the highway, back to front in RS's layer order (research/spec/00 C3): background, floor
 //! (unlit lane lines, the anchor zones as lit humps with cyan lines, beat and measure lines, zone-start bars with
 //! their floor numbers), the board and inlays, then notes and chords far to near (notes.rs), then the strings over
 //! them, the fret posts, the hit flashes, the neck's numbers and the words.
 
-use eframe::egui::{self, Align2, Color32, Painter, pos2};
+use eframe::egui::{Align2, Color32, Painter};
 use qrs_analysis::Judgement;
 
 use super::Cache;
 use super::gfx::*;
 use super::notes;
+use super::skin;
 use super::view::{FLOOR, V3, View, fret_w, slot, v3, wire};
 
 const INLAYS: [i32; 10] = [3, 5, 7, 9, 12, 15, 17, 19, 21, 24];
@@ -37,9 +38,29 @@ const POST_OUT: Color32 = rgb(37, 31, 19);
 /// The game's near fades (00 C1, in its units: `View::units`): anchor zones and beat lines over the last 50.
 const ZONE_NEAR: f32 = 50.0;
 
-pub(super) fn draw(p: &Painter, v: &View, c: &Cache, marks: &[Option<(Judgement, f32)>]) {
-    let pen = Pen { p, v };
-    background(p, v);
+/// The skin's images and lights for this frame (skin.rs).
+pub(super) struct Skin<'a> {
+    pub tex: &'a skin::Tex,
+    /// The amp's glow (0..2).
+    pub glow: f32,
+    pub clock: f64,
+    /// Live, Still or Plain (the setting).
+    pub backdrop: skin::Backdrop,
+}
+
+pub(super) fn draw(p: &Painter, v: &View, c: &Cache, marks: &[Option<(Judgement, f32)>], sk: &Skin) {
+    // QUICKRS_HW_PLAIN: no skin at all (the game's colours, for side-by-sides); the Plain setting keeps the notes'
+    // material and drops only the stage
+    let bare = skin::plain();
+    let backdrop = if bare { skin::Backdrop::Plain } else { sk.backdrop };
+    let live = backdrop == skin::Backdrop::Live;
+    let pen = Pen {
+        p,
+        v,
+        pal: if bare { &GAME } else { c.look.pal() },
+        gems: (!bare).then(|| sk.tex.gems(c.look.material)),
+    };
+    skin::background(p, v.well, sk.tex, &c.look, backdrop);
     // the frets whose wires show at the strings (plus one each side)
     let on = |f: i32| {
         v.pt(v3(wire(f as f32), 0.0, 0.0)).is_some_and(|q| {
@@ -49,6 +70,9 @@ pub(super) fn draw(p: &Painter, v: &View, c: &Cache, marks: &[Option<(Judgement,
     let frets: Vec<i32> = (0..=24).filter(|&f| on(f)).collect();
     let win = c.window_now(v.now);
     floor(&pen, c, &frets);
+    if backdrop != skin::Backdrop::Plain {
+        skin::amp(p, v, sk.tex, sk.glow, c.look.dim(), live);
+    }
     board(&pen, &frets, win);
     let out = notes::draw(&pen, c, marks);
     strings(&pen, c);
@@ -56,33 +80,9 @@ pub(super) fn draw(p: &Painter, v: &View, c: &Cache, marks: &[Option<(Judgement,
     notes::flashes(&pen, &out);
     neck_numbers(&pen, &frets, win);
     notes::overlays(&pen, c, &out);
-}
-
-fn background(p: &Painter, v: &View) {
-    let w = v.well;
-    let hz = v
-        .pt(v3(wire(5.0), FLOOR, 1e5))
-        .map_or(w.min.y + w.height() * 0.3, |q| q.y)
-        .clamp(w.min.y, w.max.y);
-    // a dark blue stand-in for the venue (05 §4.3), a faint haze at the horizon
-    let (top, haze, low) = (rgb(4, 9, 18), rgb(13, 30, 52), rgb(3, 6, 12));
-    p.rect_filled(w, 14.0, low);
-    let band = |y0: f32, y1: f32, c0: Color32, c1: Color32| {
-        let mut m = egui::Mesh::default();
-        for (q, c) in [
-            (pos2(w.min.x, y0), c0),
-            (pos2(w.max.x, y0), c0),
-            (pos2(w.max.x, y1), c1),
-            (pos2(w.min.x, y1), c1),
-        ] {
-            m.colored_vertex(q, c);
-        }
-        m.add_triangle(0, 1, 2);
-        m.add_triangle(0, 2, 3);
-        p.add(egui::Shape::mesh(m));
-    };
-    band(w.min.y + 14.0, hz, top, haze);
-    band(hz, w.min.y + w.height() * 0.8, haze, low);
+    if live {
+        skin::embers(p, v.well, sk.clock, (c.look.heat - 2.0).clamp(0.0, 1.0));
+    }
 }
 
 /// Depth samples from z0 to z1, denser near.
@@ -310,7 +310,7 @@ fn strings(pen: &Pen, c: &Cache) {
     for s in 0..v.n_str as i32 {
         let k = si(s);
         let (level, lit) = levels[k];
-        let core = STR_LIT[k];
+        let core = pen.pal.str_lit[k];
         // (a touch wider than the 4K deconvolved cores and halos: the footage at 1080-1440 reads thicker)
         let (sg, tau) = (STR_SIGMA[k] * 1.5, STR_TAU[k] * 1.2);
         let y = v.sy(s);

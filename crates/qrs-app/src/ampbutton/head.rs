@@ -485,8 +485,9 @@ fn lamp_colour(i: f32) -> Color32 {
 }
 
 /// The button in `r` (points): the head, the needle at `needle` (0..1), the lamp at `glow`, and engraved on the
-/// plate "Amp Room" and the rig (or, too hot, what's wrong), centred between the meter and the right-hand screws.
-pub fn draw(p: &Painter, r: Rect, needle: f32, glow: f32, sub: &str, hot: bool) {
+/// plate "Amp Room" and the rig (or, too hot, what's wrong), centred between the meter and the right-hand screws;
+/// `plexi_on`: the acrylic sheet over it all (left off under a glass key, which takes its place: P34.7).
+pub fn draw(p: &Painter, r: Rect, needle: f32, glow: f32, sub: &str, hot: bool, plexi_on: bool) {
     let ppp = p.pixels_per_point();
     let (x0, y0) = ((r.min.x * ppp).round(), (r.min.y * ppp).round());
     let (w, h) = (
@@ -644,6 +645,9 @@ pub fn draw(p: &Painter, r: Rect, needle: f32, glow: f32, sub: &str, hot: bool) 
         true,
     );
     // the plastic over everything
+    if !plexi_on {
+        return;
+    }
     let (tex, size) = paint::texture(ctx, Store::Face, paint::key_of(("amphead-plexi", w, h)), || {
         plexi(w, h)
     });

@@ -1,6 +1,6 @@
 [package]
 name = "qrs-formats"
-description = "Rocksmith 2014 psarc/sng/xml and feedpak song formats, chart model, tab rendering"
+description = "RS2014 psarc/sng/xml and feedpak song formats, chart model, tab rendering"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

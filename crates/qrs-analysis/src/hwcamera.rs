@@ -230,7 +230,7 @@ impl CamPlan {
             let last = &ev[spans[k - 1].1];
             let first = &ev[spans[k].0];
             let end = first.t - o.lead;
-            // Rocksmith's camera drifts: a long eased move (longer the farther it goes). When both holds fit the
+            // RS's camera drifts: a long eased move (longer the farther it goes). When both holds fit the
             // view together it may start during the earlier notes; otherwise it waits for the gap after them.
             let (a, b) = (holds[k - 1], holds[k]);
             let dist = (fret_at((views[k].l + views[k].r) / 2.0)
@@ -331,7 +331,7 @@ fn frame(lo: i32, hi: i32, o: &CamOpts) -> View {
     }
 }
 
-/// Rocksmith's own camera (fitted to the owner's reference video, Take Me Out, to 4.8 px RMS over every frame; scratch
+/// RS's own camera (fitted to the owner's reference video, Take Me Out, to 4.8 px RMS over every frame; scratch
 /// camera/ report 2026-10-16). It frames the union of the hand's windows from the start of the current phrase to
 /// 11.15 s ahead, zooms to fit that union (a 4-fret window ~9-12 frets across depending on where it is on the neck;
 /// the nut never closer than ~12% of the screen from the left), and follows with a
@@ -510,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn rocksmith_camera_settles_on_the_window_and_ignores_hops_inside_it() {
+    fn rs_camera_settles_on_the_window_and_ignores_hops_inside_it() {
         // windows at 7 for a minute: it settles on 7..10 at ~10.8 frets, the window's middle (wire 8) left of centre
         let a = vec![(0.0, 60.0, 7, 4)];
         let cam = RsCamera::new(&a, &[], 60.0);
@@ -535,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn rocksmith_camera_moves_slowly_and_starts_early() {
+    fn rs_camera_moves_slowly_and_starts_early() {
         // 3..6 until 30 s, then 12..15: it starts moving about 9 s ahead and takes seconds, without overshoot
         let a = vec![(0.0, 30.0, 3, 4), (30.0, 60.0, 12, 4)];
         let cam = RsCamera::new(&a, &[0.0, 30.0], 60.0);

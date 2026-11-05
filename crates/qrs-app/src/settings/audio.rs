@@ -1,9 +1,11 @@
-//! The Audio page, designed fresh on `qrs_audio::devices` (the Python app's page listed device names): the guitar
-//! input and the output, each "Automatic" or a device you pick, with what each device is and whether it's
-//! running; the guitar's channel, with a meter on each choice (found by itself from the first clear notes);
-//! hearing the guitar, the latency and the buffer; the volumes; and the Rocksmith 2014 setup it starts from.
-//! Every change is saved as config.json "audio" (`AudioPrefs`) and the device manager re-plans the route.
-//! Laid out as the Python app's page (settingsview.py `draw_audio`), in its whole pixels.
+//! The Sound page (P35.3-P35.6, D92; the Audio page before), designed fresh on `qrs_audio::devices` (the Python
+//! app's page listed device names): the guided setup's status; [the instrument on this input, a slot for bass
+//! mode]; the guitar input and the output, each the chosen device ("Automatic" or one you picked, whether it's
+//! running) with Change… for the list; the guitar's channel, with a meter on each choice (found by itself from the
+//! first clear notes); hearing yourself and the volumes; the input level (Check level, the kind of input, the trim
+//! folded); folded under Advanced, the RS2014 setup it starts from and every device. Low-latency output and
+//! the buffer are Timing's (timing.rs), the note widget Display's. Every change is saved as config.json "audio"
+//! (`AudioPrefs`) and the device manager re-plans the route. Whole pixels, as the Python app's pages.
 
 use eframe::egui;
 use egui::{Align2, Rect, Ui, pos2, vec2};
@@ -16,9 +18,9 @@ use qrs_ui::paint;
 use qrs_ui::text::{self, Style};
 use qrs_ui::theme::t;
 use qrs_ui::units::{pixels, px};
-use qrs_ui::widgets::{self, Segmented, segment_widths};
+use qrs_ui::widgets::{self, Segmented};
 
-use super::{SettingsView, caption_lines, centre_x, centre_y, line_h, snap};
+use super::{SettingsView, caption_lines, centre_x, centre_y, fastout, line_h, snap};
 use crate::devstatus::same_device;
 use crate::state::{AppState, AudioMode};
 
@@ -45,7 +47,7 @@ fn kind_note(r: &RankedInput) -> &'static str {
 /// connected, and no input. Returns the rows and the current one.
 pub(super) fn input_rows(audio: &Audio, prefs: &AudioPrefs) -> (Vec<Row>, Option<usize>) {
     let devices = audio.devices();
-    let rs = audio.rocksmith();
+    let rs = audio.rs_setup();
     let auto = devices::plan(
         &AudioPrefs {
             input: Choice::Auto,
@@ -99,7 +101,7 @@ pub(super) fn input_rows(audio: &Audio, prefs: &AudioPrefs) -> (Vec<Row>, Option
         }
     }
     rows.push(Row {
-        label: "No guitar input".into(),
+        label: "No input".into(),
         note: String::new(),
         choice: Choice::Off,
     });
@@ -164,6 +166,90 @@ pub(super) fn output_rows(audio: &Audio, prefs: &AudioPrefs) -> (Vec<Row>, Optio
     (rows, current)
 }
 
+/// Sound's All devices fold (P35.6): every input (`input`) or output, virtual ones too, with the one chosen; the
+/// input's list ends with No input. Returns the rows and the current one.
+pub(super) fn rows_all(audio: &Audio, prefs: &AudioPrefs, input: bool) -> (Vec<Row>, Option<usize>) {
+    let chosen = match if input { &prefs.input } else { &prefs.output } {
+        Choice::Device(p) => Some(p.clone()),
+        _ => None,
+    };
+    let mut rows = Vec::new();
+    if input {
+        let rs = audio.rs_setup();
+        for r in rank::rank_inputs(&audio.devices(), rs.as_ref())
+            .into_iter()
+            .filter(|r| r.kind != InputKind::Test)
+        {
+            rows.push(Row {
+                label: r.device.label(),
+                note: kind_note(&r).into(),
+                choice: Choice::Device(DevicePref::of(&r.device)),
+            });
+        }
+    } else {
+        for d in audio
+            .outputs()
+            .iter()
+            .filter(|d| !matches!(d.id.backend, Backend::Null | Backend::System))
+        {
+            rows.push(Row {
+                label: d.label(),
+                note: if d.id.backend == Backend::Asio {
+                    "ASIO driver".into()
+                } else if rank::is_virtual(d) {
+                    "virtual".into()
+                } else {
+                    String::new()
+                },
+                choice: Choice::Device(DevicePref::of(d)),
+            });
+        }
+    }
+    let mut current = chosen.as_ref().and_then(|p| {
+        rows.iter().position(|row| match &row.choice {
+            Choice::Device(d) => d.backend == p.backend && (d.id == p.id || d.name == p.name),
+            _ => false,
+        })
+    });
+    if let Some(p) = &chosen
+        && current.is_none()
+    {
+        rows.push(Row {
+            label: p.name.clone(),
+            note: "not connected".into(),
+            choice: Choice::Device(p.clone()),
+        });
+        current = Some(rows.len() - 1);
+    }
+    if input {
+        rows.push(Row {
+            label: "No input".into(),
+            note: String::new(),
+            choice: Choice::Off,
+        });
+        if prefs.input == Choice::Off {
+            current = Some(rows.len() - 1);
+        }
+    }
+    (rows, current)
+}
+
+/// A device's status under its name, without the name again: "Listening: NUX Audio (ASIO)  ·  ASIO  ·  2 ch" is
+/// "Listening  ·  ASIO  ·  2 ch" (the rest as it is).
+pub(super) fn short_status(msg: &str) -> String {
+    for lead in ["Listening: ", "Playing on "] {
+        if let Some(rest) = msg.strip_prefix(lead)
+            && let Some((_, tail)) = rest.split_once("  \u{b7}  ")
+        {
+            return format!(
+                "{}  \u{b7}  {tail}",
+                lead.trim_end().trim_end_matches(':').trim_end_matches(" on")
+            );
+        }
+    }
+    msg.to_string()
+}
+
 /// One line of status under a device list: a light (running, failing, off) and what it says.
 pub(super) fn status_line(p: &egui::Painter, x: f32, y: f32, w: f32, light: Option<bool>, msg: &str) {
     let th = t();
@@ -207,9 +293,15 @@ pub(super) fn device_status(st: &AppState, audio: &Audio, input: bool) -> (Optio
                 ),
             )
         } else if audio.prefs().input == Choice::Off {
-            (None, "No guitar input: nothing is scored".into())
+            (None, "No input: nothing is scored".into())
         } else {
-            (None, "Plug your guitar in: it's picked up by itself".into())
+            (
+                None,
+                format!(
+                    "Plug your {} in: it's picked up by itself",
+                    st.instrument().noun()
+                ),
+            )
         }
     } else if silent {
         (None, "Silent mode: the song plays on a timer".to_string())
@@ -352,19 +444,20 @@ impl SettingsView {
             knobs::led_meter(&p, pk, mr, 10);
         }
         let route_ch = plan.route.input.as_ref().map(|i| i.channel);
+        let n = st.instrument().noun();
         let hint = match (route_ch, prefs.channel) {
-            (None, _) => "Pick a guitar input above to set its channel.".to_string(),
+            (None, _) => "Pick an input above to set its channel.".to_string(),
             (Some(_), Some(_)) | (Some(_), None) if n_ch == 1 => {
-                "Your input has one channel: that's the guitar.".into()
+                format!("Your input has one channel: that's the {n}.")
             }
             (Some(_), Some(_)) => {
-                "Rocksmith-style cables and most interfaces put the guitar on channel 1.".into()
+                format!("RS-style cables and most interfaces put the {n} on channel 1.")
             }
             (Some(_), None) if !plan.channel_fixed => {
-                "Pluck a string: the channel your guitar is on is found by itself.".into()
+                format!("Pluck a string: the channel your {n} is on is found by itself.")
             }
             (Some(-1), None) => "Listening to every channel mixed.".into(),
-            (Some(c), None) => format!("Your guitar is on channel {}: found by itself.", c + 1),
+            (Some(c), None) => format!("Your {n} is on channel {}: found by itself.", c + 1),
         };
         caption_lines(&p, &hint, x, seg.max.y + px(14.0), w, 13.0, 2)
     }
@@ -448,7 +541,10 @@ impl SettingsView {
         let engine = st.audio.as_ref().map(|a| a.engine.clone());
         ctx.request_repaint();
         if input.as_ref().map(|i| &i.0) != Some(&run.id) {
+            // (unplugged, or another input picked, mid-run: P36.3)
             self.cal_run = None;
+            self.cal_out = None;
+            self.say("The input changed while calibrating: calibrate again");
             return None;
         }
         let e = engine?;
@@ -468,7 +564,9 @@ impl SettingsView {
         let out = run.feed(m.level, m.peak, m.clips)?;
         let id = run.id.clone();
         self.cal_run = None;
-        if let Some(c) = &out.cal {
+        // (a run that asks for another go isn't saved: the last good calibration stays, or none; Keep these
+        // settings anyway saves it, P36.3)
+        if let Some(c) = out.cal.as_ref().filter(|_| !out.verdict.retry()) {
             calibrate::save(&mut st.config, &id, c);
             st.save_config();
             calibrate::apply(st);
@@ -489,7 +587,7 @@ fn khz(rate: u32) -> String {
 }
 
 impl SettingsView {
-    pub(super) fn draw_audio(&mut self, ui: &mut Ui, st: &mut AppState, body: Rect) -> f32 {
+    pub(super) fn draw_sound(&mut self, ui: &mut Ui, st: &mut AppState, body: Rect) -> f32 {
         let th = t();
         let p = ui.painter().clone();
         let ctx = ui.ctx().clone();
@@ -524,34 +622,158 @@ impl SettingsView {
             return card.max.y;
         };
         let engine = audio.engine.clone();
+        let gap = px(24.0);
+        let mut y = body.min.y;
+
+        // the guided setup (P23.8): how this input stands, and the way in
+        y = self.draw_setup_entry(ui, st, body, y) + gap;
+        // SLOT: the Instrument card (bass mode, P32)
+        let after = self.draw_instrument_card(ui, st, body, y);
+        if after > y {
+            y = after + gap;
+        }
+        // the devices: each the chosen one, Change… for the list
+        y = self.draw_devices(ui, st, body, y) + gap;
+        // hearing yourself: the monitor and the volumes (also in a song's Controls, and on the keys)
+        y = self.draw_hearing(ui, st, &engine, body, y) + gap;
+        // the input level: the meter, Check level, what kind of input; the trim folded
+        y = self.draw_input_level(ui, st, body, y) + gap;
+
+        // advanced, folded: the RS2014 setup, every device
+        text::caps(
+            &p,
+            "ADVANCED",
+            pos2(body.min.x + px(4.0), y),
+            12.0,
+            th.caption,
+            Align2::LEFT_TOP,
+            None,
+        );
+        y += Self::h_heading(&ctx);
+        y = self.draw_rs_fold(ui, st, body, y) + px(12.0);
+        self.draw_all_devices_fold(ui, st, body, y)
+    }
+
+    /// The "Instrument on this input" card (bass mode, P32.1, D89): Guitar / Bass / 5-string bass, kept per input
+    /// (`input_cal[id].instrument`; what the tuner's strings, the parts opened first and the notes heard follow). The
+    /// Sound page's second card, under the guided setup. Returns the card's bottom.
+    pub(super) fn draw_instrument_card(&mut self, ui: &mut Ui, st: &mut AppState, body: Rect, y: f32) -> f32 {
+        use crate::calibrate;
+        use qrs_analysis::instrument::Instrument;
+        let p = ui.painter().clone();
+        let ctx = ui.ctx().clone();
+        let (pad, hh) = (px(20.0), Self::h_heading(&ctx));
+        let input = calibrate::current_input(st);
+        let cal = input
+            .as_ref()
+            .map(|(id, _)| calibrate::load(&st.config, id))
+            .unwrap_or_else(|| calibrate::load(&st.config, ""));
+        let seg_h = px(40.0);
+        let card_h = 2.0 * pad + hh + seg_h.max(3.0 * line_h(&ctx, 13.0));
+        let card = Rect::from_min_size(pos2(body.min.x, y), vec2(body.width(), card_h));
+        paint::card(&p, card, 24.0, false);
+        let (x, wd) = (card.min.x + pad, card.width() - 2.0 * pad);
+        let note = match &input {
+            Some((_, name)) => format!("{name}  \u{b7}  each input keeps its own"),
+            None => "no input yet: the setup's pick".into(),
+        };
+        let yy = self.heading(
+            &p,
+            "INSTRUMENT",
+            x,
+            card.min.y + pad,
+            Some(card.max.x - pad),
+            &note,
+            "",
+        );
+        let labels = ["Guitar", "Bass", "5-string bass"];
+        let sel = Instrument::ALL.iter().position(|i| *i == cal.instrument);
+        let seg_w = snap(wd * 0.42);
+        let seg = Rect::from_min_size(pos2(x, yy), vec2(seg_w, seg_h));
+        let mut so = Segmented::new(&labels, sel);
+        so.size = 13.0;
+        so.pad = 4.0;
+        so.r = 14.0;
+        so.inner_r = 10.0;
+        let (_, clicked) = widgets::segmented(ui, seg, "set-calinst", &so);
+        if let Some(i) = clicked {
+            self.acts.push(format!("calinst:{}", Instrument::ALL[i].key()));
+        }
+        let words = match cal.instrument {
+            Instrument::Bass5 => {
+                "Notes are read as a bass's, down to the low B; bass parts open first, and the tuner has your five \
+                 strings. Check its level as a bass."
+            }
+            Instrument::Bass => {
+                "Notes are read as a bass's, down to the low E; bass parts open first, and the tuner has your four \
+                 strings. Check its level as a bass."
+            }
+            Instrument::Guitar => {
+                "Playing a bass? Pick Bass: its notes are read a bass's way and bass parts open first. A guitar can \
+                 still play bass parts."
+            }
+        };
+        let hx = seg.max.x + px(20.0);
+        caption_lines(&p, words, hx, yy, x + wd - hx, 13.0, 3);
+        card.max.y
+    }
+
+    /// GUITAR INPUT and OUTPUT side by side: each the chosen device (its light and what's running) with Change…,
+    /// which opens the list under it; the input's channel with a meter each. Returns the cards' bottom.
+    fn draw_devices(&mut self, ui: &mut Ui, st: &mut AppState, body: Rect, y: f32) -> f32 {
+        let th = t();
+        let p = ui.painter().clone();
+        let ctx = ui.ctx().clone();
+        let Some(audio) = &st.audio else { return y };
         let prefs = audio.prefs();
-        let status = engine.status();
-        let rocksmith = audio.rocksmith();
-        let (inputs, in_cur) = input_rows(audio, &prefs);
-        let (outputs, out_cur) = output_rows(audio, &prefs);
-        let silent = st.audio_mode == AudioMode::Silent;
         let (gap, pad) = (px(24.0), px(20.0));
         let colw = snap((body.width() - gap) / 2.0);
         let hh = Self::h_heading(&ctx);
-        let mut y = body.min.y;
-
-        // the guided setup (P23.8): its way in, at the top
-        y = self.draw_setup_entry(ui, st, body, y) + gap;
-
-        // the devices (and a line under each list: what's running)
-        let rows = inputs.len().max(outputs.len()).max(1) as f32;
-        let list_h = 2.0 * px(8.0) + rows * px(46.0) + (rows - 1.0) * px(4.0);
-        let ch = pad + hh + list_h + px(14.0) + line_h(&ctx, 13.0) + pad;
+        let (inputs, in_cur) = input_rows(audio, &prefs);
+        let (outputs, out_cur) = output_rows(audio, &prefs);
         let in_status = device_status(st, audio, true);
         let out_status = device_status(st, audio, false);
-        for (c, (kind, title, note, rows_, cur, stat)) in [
+        let chosen_h = px(60.0);
+        let list_h = |n: usize| 2.0 * px(8.0) + n as f32 * px(46.0) + (n as f32 - 1.0).max(0.0) * px(4.0);
+        let in_open = self.folds.is_open("dev_input");
+        let out_open = self.folds.is_open("dev_output");
+        let chan_h = px(14.0) + line_h(&ctx, 14.0) + px(10.0) + px(76.0) + px(14.0) + line_h(&ctx, 13.0);
+        let in_h = pad
+            + hh
+            + chosen_h
+            + if in_open {
+                px(12.0) + list_h(inputs.len())
+            } else {
+                0.0
+            }
+            + chan_h
+            + pad;
+        let out_h = pad
+            + hh
+            + chosen_h
+            + if out_open {
+                px(12.0) + list_h(outputs.len())
+            } else {
+                0.0
+            }
+            + px(14.0)
+            + 2.0 * line_h(&ctx, 13.0)
+            + pad;
+        let card_h = in_h.max(out_h);
+        let inst = st.instrument();
+        let (in_title, in_note) = (
+            inst.say("GUITAR INPUT"),
+            format!("what your {} plugs into", inst.noun()),
+        );
+        for (c, (kind, title, note, rows_, cur, stat, open)) in [
             (
                 "input",
-                "GUITAR INPUT",
-                "what your guitar plugs into",
+                in_title.as_str(),
+                in_note.as_str(),
                 &inputs,
                 in_cur,
                 &in_status,
+                in_open,
             ),
             (
                 "output",
@@ -560,255 +782,190 @@ impl SettingsView {
                 &outputs,
                 out_cur,
                 &out_status,
+                out_open,
             ),
         ]
         .into_iter()
         .enumerate()
         {
-            let card = Rect::from_min_size(pos2(body.min.x + c as f32 * (colw + gap), y), vec2(colw, ch));
+            let card = Rect::from_min_size(pos2(body.min.x + c as f32 * (colw + gap), y), vec2(colw, card_h));
             paint::card(&p, card, 24.0, false);
-            let yy = self.heading(
-                &p,
-                title,
-                card.min.x + pad,
-                card.min.y + pad,
-                Some(card.max.x - pad),
-                note,
-                "",
+            let (x, wd) = (card.min.x + pad, card.width() - 2.0 * pad);
+            let mut yy = self.heading(&p, title, x, card.min.y + pad, Some(card.max.x - pad), note, "");
+            // the chosen device: its light, its name, what's running; Change… at the right
+            let row = Rect::from_min_size(pos2(x, yy), vec2(wd, chosen_h));
+            paint::inset(&p, row, Some(16.0), 3.0, paint::Fill::Base);
+            let label = match cur.and_then(|i| rows_.get(i)) {
+                Some(r) if r.choice == Choice::Auto && !r.note.is_empty() => format!("Automatic: {}", r.note),
+                Some(r) => r.label.clone(),
+                None => "Automatic".into(),
+            };
+            let blabel = if open { "Close" } else { "Change\u{2026}" };
+            let bw = widgets::button_width(&ctx, blabel, "", 14.0, false).max(px(104.0));
+            let br = Rect::from_min_size(
+                pos2(row.max.x - px(8.0) - bw, centre_y(row) - px(21.0)),
+                vec2(bw, px(42.0)),
             );
-            let labels: Vec<String> = rows_.iter().map(|r| r.label.clone()).collect();
-            let notes: Vec<String> = rows_.iter().map(|r| r.note.clone()).collect();
-            // (neu.radio_rows' own row height and size: 46, 14)
-            let (_, clicked) = widgets::radio_rows(
+            self.button(
                 ui,
-                Rect::from_min_size(pos2(card.min.x + pad, yy), vec2(card.width() - 2.0 * pad, 0.0)),
-                ("set-dev", kind),
-                &labels,
-                &notes,
-                cur,
-                46.0,
-                14.0,
+                br,
+                blabel,
+                "",
+                &format!("fold:dev_{kind}"),
+                widgets::ButtonStyle {
+                    size: 14.0,
+                    r: Some(12.0),
+                    active: open,
+                    ..Default::default()
+                },
             );
-            if let Some(i) = clicked {
-                self.acts.push(format!("{kind}:{i}"));
+            let lc = pos2(row.min.x + px(18.0), centre_y(row));
+            match stat.0 {
+                Some(true) => paint::led(&p, lc, 8.0, th.hit),
+                Some(false) => paint::led(&p, lc, 8.0, th.miss),
+                None => paint::dot(&p, lc, 4.0, th.unlit),
             }
-            status_line(
+            let tw = br.min.x - row.min.x - px(46.0);
+            text::draw(
                 &p,
-                card.min.x + pad + px(4.0),
-                yy + list_h + px(14.0),
-                card.width() - 2.0 * pad - px(4.0),
-                stat.0,
-                &stat.1,
+                &label,
+                pos2(row.min.x + px(34.0), centre_y(row) - px(9.0)),
+                Align2::LEFT_CENTER,
+                Style::new(15.0, 800, th.text),
+                Some(tw),
             );
+            text::draw(
+                &p,
+                &short_status(&stat.1),
+                pos2(row.min.x + px(34.0), centre_y(row) + px(11.0)),
+                Align2::LEFT_CENTER,
+                Style::new(
+                    12.0,
+                    500,
+                    if stat.0 == Some(false) {
+                        th.miss
+                    } else {
+                        th.caption
+                    },
+                ),
+                Some(tw),
+            );
+            yy = row.max.y;
+            if open {
+                let labels: Vec<String> = rows_.iter().map(|r| r.label.clone()).collect();
+                let notes: Vec<String> = rows_.iter().map(|r| r.note.clone()).collect();
+                let (_, clicked) = widgets::radio_rows(
+                    ui,
+                    Rect::from_min_size(pos2(x, yy + px(12.0)), vec2(wd, 0.0)),
+                    ("set-dev", kind),
+                    &labels,
+                    &notes,
+                    cur,
+                    46.0,
+                    14.0,
+                );
+                if let Some(i) = clicked {
+                    self.acts.push(format!("{kind}:{i}"));
+                }
+                yy += px(12.0) + list_h(rows_.len());
+            }
+            if kind == "input" {
+                let ly = yy + px(14.0);
+                text::draw(
+                    &p,
+                    "Channel",
+                    pos2(x, ly),
+                    Align2::LEFT_TOP,
+                    Style::new(14.0, 700, th.text),
+                    None,
+                );
+                text::draw(
+                    &p,
+                    "pick the one whose meter moves",
+                    pos2(x + wd, ly + snap(line_h(&ctx, 14.0) / 2.0)),
+                    Align2::RIGHT_CENTER,
+                    Style::new(12.0, 500, th.caption),
+                    Some(wd - px(90.0)),
+                );
+                self.draw_channel(ui, st, x, ly + line_h(&ctx, 14.0) + px(10.0), wd);
+            } else {
+                caption_lines(
+                    &p,
+                    "A device that comes back is picked again by itself; Automatic follows the system's default.",
+                    x,
+                    yy + px(14.0),
+                    wd,
+                    13.0,
+                    2,
+                );
+            }
         }
         self.inputs = inputs.into_iter().map(|r| r.choice).collect();
         self.outputs = outputs.into_iter().map(|r| r.choice).collect();
-        y += ch + gap;
+        y + card_h
+    }
 
-        // the guitar's channel, and hearing the guitar (one more switch row than the Python app's: the buffer)
-        let chan_h = 2.0 * pad + hh + px(76.0) + px(14.0) + line_h(&ctx, 13.0);
-        let hear_h = 2.0 * pad + hh + px(4.0) + 4.0 * Self::h_switch("lg", true) + 3.0 * px(12.0);
-        let card_h = chan_h.max(hear_h);
-        let card = Rect::from_min_size(pos2(body.min.x, y), vec2(colw, card_h));
-        paint::card(&p, card, 24.0, false);
-        let yy = self.heading(
-            &p,
-            "INPUT CHANNEL",
-            card.min.x + pad,
-            card.min.y + pad,
-            Some(card.max.x - pad),
-            "pick the one whose meter moves",
-            "",
-        );
-        self.draw_channel(ui, st, card.min.x + pad, yy, card.width() - 2.0 * pad);
-
-        let card = Rect::from_min_size(pos2(body.min.x + colw + gap, y), vec2(colw, card_h));
-        paint::card(&p, card, 24.0, false);
-        let mut yy = self.heading(
-            &p,
-            "HEARING YOUR GUITAR",
-            card.min.x + pad,
-            card.min.y + pad,
-            None,
-            "",
-            "",
-        );
-        let ms =
-            |i: &qrs_audio::backend::StreamInfo| (i.block as f64 / i.rate.max(1) as f64 + i.latency) * 1000.0;
-        let lat = match (&status.input, &status.output) {
-            _ if silent => "silent".to_string(),
-            (Some(i), Some(o)) if status.duplex => {
-                format!("in {:.1} ms + out {:.1} ms  ·  {}", ms(i), ms(o), o.mode)
-            }
-            (Some(i), Some(o)) => format!(
-                "in {:.1} ms + out {:.1} ms  ·  {}",
-                ms(i),
-                ms(o),
-                if i.mode == o.mode {
-                    o.mode.clone()
-                } else {
-                    format!("{} / {}", i.mode, o.mode)
-                }
+    /// HEARING YOURSELF: Hear guitar (M) at the left, the song's and the guitar's volumes (9 0, 7 8) at the right.
+    fn draw_hearing(
+        &mut self,
+        ui: &mut Ui,
+        st: &mut AppState,
+        engine: &std::sync::Arc<qrs_audio::Engine>,
+        body: Rect,
+        y: f32,
+    ) -> f32 {
+        let th = t();
+        let p = ui.painter().clone();
+        let ctx = ui.ctx().clone();
+        let (gap, pad) = (px(48.0), px(22.0));
+        let hh = Self::h_heading(&ctx);
+        let slider_h = line_h(&ctx, 15.0) + px(16.0) + px(12.0) + px(14.0);
+        let card = Rect::from_min_size(
+            pos2(body.min.x, y),
+            vec2(
+                body.width(),
+                2.0 * pad + (2.0 * slider_h + px(14.0)).max(hh + px(84.0)),
             ),
-            (None, Some(o)) => format!("out {:.1} ms  ·  {}", ms(o), o.mode),
-            (Some(i), None) => format!("in {:.1} ms  ·  {}", ms(i), i.mode),
-            (None, None) => "no devices".into(),
-        };
-        let lst = Style::new(12.0, 700, th.text_2);
-        let lw = (text::width(&ctx, &lat, lst) + px(20.0)).min(snap(card.width() / 2.0));
-        let chip = Rect::from_min_size(
-            pos2(card.max.x - pad - lw, card.min.y + pad - px(6.0)),
-            vec2(lw, px(28.0)),
         );
-        paint::display(&p, chip, Some(9.0), 3.0);
-        text::draw(
-            &p,
-            &lat,
-            pos2(centre_x(chip), centre_y(chip)),
-            Align2::CENTER_CENTER,
-            lst,
-            Some(lw - px(16.0)),
-        );
-        let (x, wd) = (card.min.x + pad, card.width() - 2.0 * pad);
-        yy += px(4.0);
+        paint::card(&p, card, 24.0, false);
+        let x = card.min.x + pad;
+        let colw = snap((card.width() - 2.0 * pad - gap) / 2.0);
+        let yy = self.heading(&p, "HEARING YOURSELF", x, card.min.y + pad, None, "", "");
         let monitor = engine.monitor();
-        yy += self.switch_row(
+        let h = self.switch_row(
             ui,
             x,
             yy,
-            wd,
-            "Hear guitar",
-            if st.mic_input() {
-                "a microphone: off at first, it can feed back"
+            colw,
+            &st.instrument().say("Hear guitar"),
+            &if st.mic_input() {
+                "a microphone: off at first, it can feed back".to_string()
             } else {
-                "play your guitar through the app"
+                st.instrument().say("play your guitar through quickRS")
             },
             monitor,
             "monitor",
             "lg",
             "M",
             700,
-        ) + px(12.0);
-        // Low-latency output, highlighted (owner request, 2026-10-29: mockup C): a glow, a tinted plate, a FAST badge
-        // before the label, the hint in the highlight's colour (emerald in the dark themes, orange in Daylight)
-        {
-            let col = if qrs_ui::theme::is_dark() {
-                egui::Color32::from_rgb(52, 199, 123)
-            } else {
-                egui::Color32::from_rgb(232, 112, 30)
-            };
-            let p = ui.painter().clone();
-            let h = Self::h_switch("lg", true);
-            let plate = Rect::from_min_size(
-                pos2(x - px(12.0), yy - px(7.0)),
-                vec2(wd + px(24.0), h + px(14.0)),
-            );
-            paint::glow(&p, plate, col, 8.0, Some(0.45), Some(px(14.0)));
-            p.rect_filled(plate, px(14.0), t().base.lerp_to_gamma(col, 0.14));
-            p.rect_stroke(
-                plate,
-                px(14.0),
-                egui::Stroke::new(1.5, col),
-                egui::StrokeKind::Inside,
-            );
-            let badge = Style::new(11.0, 800, egui::Color32::from_rgb(6, 34, 20));
-            let bw = text::width(ui.ctx(), "FAST", badge) + px(16.0);
-            let br = Rect::from_min_size(pos2(x, yy + h / 2.0 - px(9.0) - px(8.0)), vec2(bw, px(16.0)));
-            p.rect_filled(br, px(8.0), col);
-            text::draw(&p, "FAST", br.center(), Align2::CENTER_CENTER, badge, None);
-            self.hint_color = Some(col);
-            // (the label and its hint after the badge)
-            yy += self
-                .switch_row(
-                    ui,
-                    x + bw + px(8.0),
-                    yy,
-                    wd - bw - px(8.0),
-                    "Low-latency output",
-                    "quicker: skips the system's sound mixer \u{b7} other apps go quiet",
-                    prefs.exclusive,
-                    "exclusive",
-                    "lg",
-                    "",
-                    700,
-                )
-                .max(h);
-        }
-        yy += px(12.0);
-        yy += self.switch_row(
-            ui,
+        );
+        caption_lines(
+            &p,
+            "Also in a song's Controls, and on the keys.",
             x,
-            yy,
-            wd,
-            "Note widget",
-            "the always-on-top note and key window",
-            st.config.bool("note_widget", true),
-            "notewidget",
-            "lg",
-            "",
-            700,
-        ) + px(12.0);
-        // the buffer: smaller is quicker, bigger rides out a busy computer (a row like the switches', the choice
-        // at its right as the switches are)
-        let row = Rect::from_min_size(pos2(x, yy), vec2(wd, Self::h_switch("lg", true)));
-        let cy = centre_y(row);
-        let bufs: [(&str, Option<u32>); 5] = [
-            ("Auto", None),
-            ("64", Some(64)),
-            ("128", Some(128)),
-            ("256", Some(256)),
-            ("512", Some(512)),
-        ];
-        let blabels: Vec<&str> = bufs.iter().map(|b| b.0).collect();
-        let widths = segment_widths(&ctx, &blabels, 12.0, 2.0);
-        // (as the tone page's: the widths, the gaps between them and the padding either side)
-        let sw: f32 = widths.iter().sum::<f32>() + px(4.0) * (widths.len() - 1) as f32 + 2.0 * px(4.0);
-        let bh = px(40.0);
-        let bseg = Rect::from_min_size(pos2(row.max.x - sw, cy - snap(bh / 2.0)), vec2(sw, bh));
-        let bsel = bufs.iter().position(|b| b.1 == prefs.buffer);
-        let mut bo = Segmented::new(&blabels, bsel);
-        bo.size = 12.0;
-        bo.widths = Some(widths);
-        bo.pad = 4.0;
-        bo.r = 14.0;
-        bo.inner_r = 10.0;
-        let (_, bclicked) = widgets::segmented(ui, bseg, "set-buffer", &bo);
-        if let Some(i) = bclicked {
-            self.acts.push(match bufs[i].1 {
-                None => "buffer:auto".into(),
-                Some(n) => format!("buffer:{n}"),
-            });
-        }
-        text::draw(
-            &p,
-            "Buffer",
-            pos2(x, cy - px(9.0)),
-            Align2::LEFT_CENTER,
-            Style::new(15.0, 700, th.text),
-            Some(bseg.min.x - x - px(12.0)),
+            yy + h + px(10.0),
+            colw,
+            12.0,
+            2,
         );
-        text::draw(
-            &p,
-            "raise it if you hear crackles",
-            pos2(x, cy + px(11.0)),
-            Align2::LEFT_CENTER,
-            Style::new(12.0, 500, th.caption),
-            Some(bseg.min.x - x - px(12.0)),
-        );
-        y += card_h + gap;
-        y = self.draw_input_level(ui, st, body, y) + gap;
-
-        // the volumes
-        let card = Rect::from_min_size(pos2(body.min.x, y), vec2(body.width(), px(104.0)));
-        paint::card(&p, card, 24.0, false);
-        let sw = snap((card.width() - 2.0 * px(24.0) - px(48.0)) / 2.0);
         let vol = engine.song_gain();
         let gvol = engine.guitar_gain();
+        let sx = x + colw + gap;
         self.slider_row(
             ui,
-            card.min.x + px(24.0),
+            sx,
             card.min.y + pad,
-            sw,
+            colw,
             "Song volume",
             &format!("{}%", (vol * 100.0).round() as i64),
             vol,
@@ -817,36 +974,25 @@ impl SettingsView {
         );
         self.slider_row(
             ui,
-            card.min.x + px(24.0) + sw + px(48.0),
-            card.min.y + pad,
-            sw,
-            "Guitar volume",
+            sx,
+            card.min.y + pad + slider_h + px(14.0),
+            colw,
+            &st.instrument().say("Guitar volume"),
             &format!("{}%", (gvol * 100.0).round() as i64),
             gvol / 2.0,
             "gvol",
             "7 8",
         );
-        y = card.max.y + gap;
+        let _ = th;
+        card.max.y
+    }
 
-        // the Rocksmith 2014 setup
-        let hs = Self::h_switch("md", true);
-        let card = Rect::from_min_size(pos2(body.min.x, y), vec2(body.width(), pad + hh + hs + pad));
-        paint::card(&p, card, 24.0, false);
-        let (x, wd) = (card.min.x + pad, card.width() - 2.0 * pad);
-        let note = match &rocksmith {
-            Some(r) => format!("found in {}", r.folder.display()),
-            None => "not found next to your songs or in Steam".into(),
-        };
-        let yy = self.heading(
-            &p,
-            "ROCKSMITH 2014",
-            x,
-            card.min.y + pad,
-            Some(card.max.x - pad),
-            &note,
-            "",
-        );
-        let hint = match &rocksmith {
+    /// The RS2014 setup, folded: what was found, and the switch to start from it.
+    fn draw_rs_fold(&mut self, ui: &mut Ui, st: &mut AppState, body: Rect, y: f32) -> f32 {
+        let Some(audio) = &st.audio else { return y };
+        let prefs = audio.prefs();
+        let rs_setup = audio.rs_setup();
+        let setup = match &rs_setup {
             Some(r) => {
                 let mut parts = Vec::new();
                 if let Some(a) = r.rs_asio.as_ref().filter(|a| a.enable_asio) {
@@ -857,38 +1003,76 @@ impl SettingsView {
                         parts.push(format!("buffer {b}"));
                     }
                 } else {
-                    parts.push(format!("guitar channel {}", r.mono_channel + 1));
+                    parts.push(format!("input channel {}", r.mono_channel + 1));
                 }
                 if r.exclusive_mode {
-                    parts.push("exclusive mode".into());
+                    parts.push("low-latency output".into());
                 }
-                parts.join("  ·  ")
+                parts.join("  \u{b7}  ")
             }
             None => "the devices and channel RS_ASIO and Rocksmith.ini use, when they're found".into(),
         };
-        let bw = widgets::button_width(&ctx, "Look for devices", "", 14.0, false);
-        self.switch_row(
+        let hint = match &rs_setup {
+            Some(r) => format!(
+                "{}  \u{b7}  found in {}",
+                if prefs.use_rs_setup {
+                    "started from"
+                } else {
+                    "not used"
+                },
+                r.folder.display()
+            ),
+            None => "not found next to your songs or in Steam".into(),
+        };
+        let (h, open) = self.fold(ui, body.min.x, y, body.width(), "rs_setup", "RS2014 setup", &hint);
+        if !prefs.use_rs_setup {
+            Self::changed_dot(ui.painter(), pos2(body.max.x - px(18.0), y + snap(h / 2.0)));
+        }
+        let mut y = y + h;
+        if open {
+            let x = body.min.x + px(42.0);
+            y += px(12.0);
+            y += self.switch_row(
+                ui,
+                x,
+                y,
+                body.max.x - x - px(16.0),
+                "Start on my RS setup",
+                &setup,
+                prefs.use_rs_setup,
+                "rs_setup",
+                "md",
+                "",
+                700,
+            );
+        }
+        y
+    }
+
+    /// Every device, folded: Look for devices, and the whole lists (a device that isn't plugged in, a virtual one).
+    fn draw_all_devices_fold(&mut self, ui: &mut Ui, st: &mut AppState, body: Rect, y: f32) -> f32 {
+        let ctx = ui.ctx().clone();
+        let (h, open) = self.fold(
             ui,
-            x,
-            yy,
-            wd - bw - px(32.0),
-            "Start on my Rocksmith setup",
-            &hint,
-            prefs.use_rocksmith,
-            "rocksmith",
-            "md",
-            "",
-            700,
+            body.min.x,
+            y,
+            body.width(),
+            "devices",
+            "All devices",
+            "look for devices again; pick from the whole list, a virtual device among them",
         );
-        // the key at the right, on the switch row's middle
-        let bh = px(46.0);
-        let br = Rect::from_min_size(
-            pos2(card.max.x - pad - bw, yy + snap(hs / 2.0) - snap(bh / 2.0)),
-            vec2(bw, bh),
-        );
+        let mut y = y + h;
+        let Some(audio) = &st.audio else { return y };
+        if !open {
+            return y;
+        }
+        let prefs = audio.prefs();
+        y += px(12.0);
+        let x = body.min.x + px(42.0);
+        let bw = widgets::button_width(&ctx, "Look for devices", "", 14.0, false);
         self.button(
             ui,
-            br,
+            Rect::from_min_size(pos2(x, y), vec2(bw, px(46.0))),
             "Look for devices",
             "",
             "devrescan",
@@ -898,10 +1082,51 @@ impl SettingsView {
                 ..Default::default()
             },
         );
-        card.max.y
+        caption_lines(
+            ui.painter(),
+            "after plugging something in that isn't listed",
+            x + bw + px(16.0),
+            y + px(14.0),
+            body.max.x - x - bw - px(16.0),
+            12.0,
+            1,
+        );
+        y += px(46.0) + px(14.0);
+        let gap = px(24.0);
+        let colw = snap((body.max.x - x - gap) / 2.0);
+        let (ins, in_cur) = rows_all(audio, &prefs, true);
+        let (outs, out_cur) = rows_all(audio, &prefs, false);
+        let mut bottom = y;
+        for (c, (kind, rows_, cur)) in [("input", &ins, in_cur), ("output", &outs, out_cur)]
+            .into_iter()
+            .enumerate()
+        {
+            let labels: Vec<String> = rows_.iter().map(|r| r.label.clone()).collect();
+            let notes: Vec<String> = rows_.iter().map(|r| r.note.clone()).collect();
+            let (rects, clicked) = widgets::radio_rows(
+                ui,
+                Rect::from_min_size(pos2(x + c as f32 * (colw + gap), y), vec2(colw, 0.0)),
+                ("set-devall", kind),
+                &labels,
+                &notes,
+                cur,
+                46.0,
+                14.0,
+            );
+            if let Some(i) = clicked {
+                self.acts.push(format!("{kind}:a{i}"));
+            }
+            if let Some(r) = rects.last() {
+                bottom = bottom.max(r.max.y + px(8.0));
+            }
+        }
+        self.inputs_all = ins.into_iter().map(|r| r.choice).collect();
+        self.outputs_all = outs.into_iter().map(|r| r.choice).collect();
+        bottom
     }
 
-    /// The way into the guided setup (P23.8): what it does, how this input stands, and Set up. Returns its bottom.
+    /// The way into the guided setup (P23.8), slim: how this input stands, and Guided setup (accented while it's
+    /// not been set up). Returns its bottom.
     fn draw_setup_entry(&mut self, ui: &Ui, st: &AppState, body: Rect, y: f32) -> f32 {
         let th = t();
         let p = ui.painter().clone();
@@ -911,7 +1136,7 @@ impl SettingsView {
             pos2(body.min.x, y),
             vec2(
                 body.width(),
-                2.0 * pad + line_h(&ctx, 17.0) + px(4.0) + line_h(&ctx, 13.0),
+                2.0 * pad + line_h(&ctx, 16.0) + px(4.0) + line_h(&ctx, 12.0),
             ),
         );
         paint::card(&p, card, 24.0, false);
@@ -921,9 +1146,9 @@ impl SettingsView {
             .map(|(id, _)| crate::calibrate::load(&st.config, id))
             .filter(|c| c.peak_db.is_some());
         let label = if cal.is_some() {
-            "Run it again"
+            "Guided setup again"
         } else {
-            "Set up your guitar"
+            "Guided setup"
         };
         let bw = widgets::button_width(&ctx, label, "", 14.0, false).max(px(190.0));
         let br = Rect::from_min_size(
@@ -943,36 +1168,59 @@ impl SettingsView {
                 ..Default::default()
             },
         );
-        let tw = br.min.x - card.min.x - 2.0 * pad;
+        let tx = card.min.x + pad + px(20.0);
+        let tw = br.min.x - tx - pad;
+        let (title, note) = match (&input, &cal) {
+            (Some((_, name)), Some(c)) => (
+                format!("{name} is set up"),
+                match c.floor_db {
+                    Some(f) => format!(
+                        "peaks at {:.0} dB  \u{b7}  noise at {f:.0} dB  \u{b7}  the setup checks the input, its level \
+                         and the notes",
+                        c.peak_db.unwrap_or(0.0)
+                    ),
+                    None => format!("peaks at {:.0} dB", c.peak_db.unwrap_or(0.0)),
+                },
+            ),
+            (Some((_, name)), None) => (
+                format!("Set up {name}, step by step"),
+                "About a minute: input and output, a level check, calibration and a short tune to play."
+                    .to_string(),
+            ),
+            (None, _) => (
+                format!("Set up your {}, step by step", st.instrument().noun()),
+                "About a minute: input and output, a level check, calibration and a short tune to play."
+                    .to_string(),
+            ),
+        };
         let tr = text::draw(
             &p,
-            "Guitar setup, step by step",
-            pos2(card.min.x + pad, card.min.y + pad),
+            &title,
+            pos2(tx, card.min.y + pad),
             Align2::LEFT_TOP,
-            Style::new(17.0, 800, th.text),
+            Style::new(16.0, 800, th.text),
             Some(tw),
         );
-        let note = match (&input, &cal) {
-            (Some((_, name)), Some(c)) => format!(
-                "{name} is calibrated (peaks at {:.0} dB). The setup checks the input, its level and the notes.",
-                c.peak_db.unwrap_or(0.0)
-            ),
-            _ => "About a minute: input and output, a level check, calibration and a note check.".into(),
-        };
+        let lc = pos2(card.min.x + pad + px(5.0), centre_y(tr));
+        if cal.is_some() {
+            paint::led(&p, lc, 8.0, th.hit);
+        } else {
+            paint::led(&p, lc, 8.0, th.accent);
+        }
         text::draw(
             &p,
             &note,
-            pos2(card.min.x + pad, tr.max.y + px(4.0)),
+            pos2(tx, tr.max.y + px(4.0)),
             Align2::LEFT_TOP,
-            Style::new(13.0, 500, th.text_2),
+            Style::new(12.0, 500, th.text_2),
             Some(tw),
         );
         card.max.y
     }
 
-    /// The guitar input's level (D33): a meter of what comes in with the zone the pedalboard wants, Calibrate, the
-    /// trim, and what kind of input it is (a dry guitar for the pedalboard, or an amp modeller heard as is). Each
-    /// input keeps its own. Returns the card's bottom.
+    /// The guitar input's level (D33): a meter of what comes in with the zone the pedalboard wants, Check level
+    /// (the level tool), what kind of input it is (a dry guitar for the pedalboard, or an amp modeller heard as
+    /// is), and the trim folded. Each input keeps its own. Returns the card's bottom.
     fn draw_input_level(&mut self, ui: &mut Ui, st: &mut AppState, body: Rect, y: f32) -> f32 {
         use crate::calibrate::{self, Kind};
         let th = t();
@@ -985,15 +1233,26 @@ impl SettingsView {
         let cal = input
             .as_ref()
             .map(|(id, _)| calibrate::load(&st.config, id))
-            .unwrap_or_default();
+            .unwrap_or_else(|| calibrate::load(&st.config, "")); // (no input: the setup's instrument)
         let slider_h = line_h(&ctx, 15.0) + px(16.0) + px(12.0) + px(14.0);
-        let card_h = 2.0 * pad + hh + px(58.0) + px(18.0) + slider_h + px(14.0) + 2.0 * line_h(&ctx, 13.0);
+        let trim_open = self.folds.is_open("trim");
+        let kind_h = px(44.0);
+        let card_h = 2.0 * pad
+            + hh
+            + px(58.0)
+            + px(14.0)
+            + kind_h
+            + px(14.0)
+            + 2.0 * line_h(&ctx, 13.0)
+            + px(14.0)
+            + px(widgets::FOLD_ROW_H)
+            + if trim_open { px(14.0) + slider_h } else { 0.0 };
         let card = Rect::from_min_size(pos2(body.min.x, y), vec2(body.width(), card_h));
         paint::card(&p, card, 24.0, false);
         let (x, wd) = (card.min.x + pad, card.width() - 2.0 * pad);
         let note = match &input {
-            Some((_, name)) => format!("{name}  ·  each input keeps its own"),
-            None => "no guitar input yet".into(),
+            Some((_, name)) => format!("{name}  \u{b7}  each input keeps its own"),
+            None => "no input yet".into(),
         };
         let mut yy = self.heading(
             &p,
@@ -1006,7 +1265,7 @@ impl SettingsView {
         );
 
         // the meter: -60..0 dBFS of what comes in (before the trim), the zone the boards like, the trim's result
-        let bw = widgets::button_width(&ctx, "Calibrate", "", 14.0, false).max(px(150.0));
+        let bw = widgets::button_width(&ctx, "Check level", "", 14.0, false).max(px(150.0));
         let mw = snap(wd - bw - px(32.0));
         let groove = Rect::from_min_size(pos2(x, yy + px(8.0)), vec2(mw, px(18.0)));
         let raw = meters.as_ref().map(|m| m.peak).unwrap_or(0.0);
@@ -1032,13 +1291,13 @@ impl SettingsView {
             Style::new(11.0, 600, th.caption),
             Some(at(-48.0) - groove.min.x - px(16.0)),
         );
-        // Calibrate: its own two steps in the page's place (knobs up, strum hard; then the settings, P23.10)
+        // Check level: the level tool's two steps in the page's place (knobs up, strum hard; then the settings)
         let br = Rect::from_min_size(pos2(card.max.x - pad - bw, yy), vec2(bw, px(46.0)));
         if input.is_some() {
             self.button(
                 ui,
                 br,
-                "Calibrate",
+                "Check level",
                 "",
                 "setup:calibrate",
                 widgets::ButtonStyle {
@@ -1049,28 +1308,14 @@ impl SettingsView {
                 },
             );
         }
-        yy += px(58.0) + px(18.0);
+        yy += px(58.0) + px(14.0);
 
-        // the trim, and what kind of input this is
-        let half = snap((wd - px(48.0)) / 2.0);
-        let u = (cal.trim_db - calibrate::TRIM.0) / (calibrate::TRIM.1 - calibrate::TRIM.0);
-        self.slider_row(
-            ui,
-            x,
-            yy,
-            half,
-            "Trim",
-            &format!("{:+.1} dB", cal.trim_db),
-            u,
-            "trim",
-            "",
-        );
-        let kx = x + half + px(48.0);
-        text::draw(
+        // what kind of input this is, and what that means
+        let lr = text::draw(
             &p,
             "This input is",
-            pos2(kx, yy),
-            Align2::LEFT_TOP,
+            pos2(x, yy + snap(kind_h / 2.0)),
+            Align2::LEFT_CENTER,
             Style::new(15.0, 700, th.text),
             None,
         );
@@ -1079,14 +1324,17 @@ impl SettingsView {
             Some(Kind::Modeller) => "Auto: amp",
             _ => "Auto: dry",
         };
-        let labels = [auto_label, "Dry guitar", "Amp", "Mic"];
+        let dry = format!("Dry {}", st.instrument().noun());
+        let labels = [auto_label, dry.as_str(), "Amp / modeller", "Mic"];
         let sel = match cal.kind {
             Kind::Auto => 0,
             Kind::Dry => 1,
             Kind::Modeller => 2,
             Kind::Mic => 3,
         };
-        let seg = Rect::from_min_size(pos2(kx, yy + line_h(&ctx, 15.0) + px(8.0)), vec2(half, px(40.0)));
+        let sx = lr.max.x + px(18.0);
+        let seg_w = snap((wd * 0.58).min(x + wd - sx - px(180.0)));
+        let seg = Rect::from_min_size(pos2(sx, yy), vec2(seg_w, kind_h));
         let mut so = Segmented::new(&labels, Some(sel));
         so.size = 13.0;
         so.pad = 4.0;
@@ -1099,7 +1347,17 @@ impl SettingsView {
                 [Kind::Auto, Kind::Dry, Kind::Modeller, Kind::Mic][i].key()
             ));
         }
-        yy += slider_h + px(14.0);
+        let hx = seg.max.x + px(16.0);
+        caption_lines(
+            &p,
+            "Dry: quickRS's tone plays it. Amp / modeller: heard as it is (the tone As is).",
+            hx,
+            yy + px(2.0),
+            x + wd - hx,
+            12.0,
+            3,
+        );
+        yy += kind_h + px(14.0);
 
         // what's happening, or the last result, or how to start
         let pluck = format!(
@@ -1118,14 +1376,22 @@ impl SettingsView {
             )
         } else if let (Some(pk), Some(fl)) = (cal.peak_db, cal.floor_db) {
             (
-                format!("Calibrated: peaks at {pk:.0} dB, noise at {fl:.0} dB; {pluck}{own}"),
+                format!("Level checked: peaks at {pk:.0} dB, noise at {fl:.0} dB; {pluck}{own}"),
                 th.text_2,
+            )
+        } else if cal.instrument.is_bass() {
+            (
+                "Calibrate: turn the bass's volume all the way up, keep still for 2 seconds, then pluck the open \
+                 strings as hard as you can until the bar fills. A dry input gets the rig; an amp or \
+                 modeller is heard as it is."
+                    .into(),
+                th.caption,
             )
         } else {
             (
-                "Calibrate: turn the guitar's volume and tone all the way up, keep still for 2 seconds, then strum \
-                 as hard as you can until the bar fills. Dry guitar inputs get the pedalboard; an amp or modeller \
-                 is heard as it is."
+                "Check level: turn the guitar's volume and tone all the way up, keep still for 2 seconds, then strum \
+                 as hard as you can until the bar fills. A dry input gets the rig; an amp or modeller is \
+                 heard as it is."
                     .into(),
                 th.caption,
             )
@@ -1141,6 +1407,59 @@ impl SettingsView {
                 None,
             );
         }
+        yy += 2.0 * line_h(&ctx, 13.0) + px(14.0);
+
+        // the trim, folded: Check level sets it
+        let (h, open) = self.fold(
+            ui,
+            x,
+            yy,
+            wd,
+            "trim",
+            "Input boost by hand",
+            &format!(
+                "{:+.1} dB  \u{b7}  Check level sets it; change it only if the meter stays out of the green zone",
+                cal.trim_db
+            ),
+        );
+        if cal.has_recommendation() && !cal.is_recommended() {
+            Self::changed_dot(&p, pos2(x + wd - px(18.0), yy + snap(h / 2.0)));
+        }
+        yy += h;
+        if open {
+            yy += px(14.0);
+            let u = (cal.trim_db - calibrate::TRIM.0) / (calibrate::TRIM.1 - calibrate::TRIM.0);
+            let tx = x + px(42.0);
+            let half = snap((wd - px(42.0) - px(48.0)) / 2.0);
+            self.slider_row(
+                ui,
+                tx,
+                yy,
+                half,
+                "Input boost",
+                &format!("{:+.1} dB", cal.trim_db),
+                u,
+                "trim",
+                "",
+            );
+            if cal.has_recommendation() {
+                let label = "Back to what Check level found";
+                let bw = widgets::button_width(&ctx, label, "", 13.0, false);
+                self.button(
+                    ui,
+                    Rect::from_min_size(pos2(tx + half + px(48.0), yy + px(8.0)), vec2(bw, px(40.0))),
+                    label,
+                    "",
+                    "calrec",
+                    widgets::ButtonStyle {
+                        size: 13.0,
+                        r: Some(12.0),
+                        enabled: !cal.is_recommended(),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
         card.max.y
     }
 
@@ -1148,15 +1467,37 @@ impl SettingsView {
     pub(super) fn cal_act(&mut self, st: &mut AppState, verb: &str, arg: &str) {
         use crate::calibrate::{self, Kind, Run};
         let Some((id, name)) = calibrate::current_input(st) else {
-            self.say("No guitar input is listening");
+            self.say("No input is listening");
             return;
         };
         let mut cal = calibrate::load(&st.config, &id);
         match (verb, arg) {
             ("cal", "start") => {
                 let clips = st.audio.as_ref().map(|a| a.engine.meters().clips).unwrap_or(0);
-                self.cal_run = Some(Run::new(id, clips, cal.kind));
+                let mut run = Run::for_instrument(id, clips, cal.kind, cal.instrument);
+                run.device = match cal.kind {
+                    calibrate::Kind::Auto => calibrate::auto_kind(st, &name),
+                    k => k,
+                };
+                self.cal_run = Some(run);
                 self.cal_out = None;
+                return;
+            }
+            ("cal", "keep") => {
+                // (a verdict that asked for another go, kept anyway: P36.3, the hardware can't always be turned
+                // down; it counts as calibrated, the verdict still shown)
+                let Some(mut c) = self.cal_out.as_ref().and_then(|o| o.cal.clone()) else {
+                    return;
+                };
+                c.kept = true;
+                c.instrument = cal.instrument;
+                calibrate::save(&mut st.config, &id, &c);
+                st.save_config();
+                calibrate::apply(st);
+                if let Some(o) = &mut self.cal_out {
+                    o.cal = Some(c);
+                }
+                self.say(format!("Kept for {name}: trim and pluck threshold as measured"));
                 return;
             }
             ("cal", "cancel") => {
@@ -1194,10 +1535,24 @@ impl SettingsView {
                 cal.restore_recommended();
                 self.say(format!("{name}: back to the recommended settings"));
             }
+            ("calinst", k) => {
+                let was = cal.instrument;
+                cal.instrument = qrs_analysis::instrument::Instrument::parse(k);
+                if cal.instrument == was {
+                    return;
+                }
+                self.say(match cal.instrument {
+                    qrs_analysis::instrument::Instrument::Guitar => format!("{name}: a guitar"),
+                    i => format!(
+                        "{name}: a {}, its notes read as a bass's; calibrate it as one",
+                        i.label().to_lowercase()
+                    ),
+                });
+            }
             ("calkind", k) => {
                 cal.kind = Kind::parse(k);
                 self.say(match cal.kind {
-                    Kind::Dry => format!("{name}: a dry guitar, the pedalboard shapes it"),
+                    Kind::Dry => format!("{name}: straight in, the rig shapes it"),
                     Kind::Modeller => format!("{name}: an amp or modeller, heard as it is"),
                     Kind::Mic => format!("{name}: a microphone, heard as it is"),
                     Kind::Auto => format!("{name}: told apart by its name"),
@@ -1212,6 +1567,18 @@ impl SettingsView {
 
     /// Device and route changes: saved as config.json "audio", and the device manager re-plans the route.
     pub(super) fn audio_act(&mut self, st: &mut AppState, verb: &str, arg: &str) {
+        // the Reduce delay card's (shared with the song's Controls panel, which calls `fastout::apply` too)
+        let whole = if arg.is_empty() {
+            verb.to_string()
+        } else {
+            format!("{verb}:{arg}")
+        };
+        if let Some(act) = fastout::Act::parse(&whole) {
+            match fastout::apply(st, act) {
+                Ok(m) | Err(m) => self.say(m),
+            }
+            return;
+        }
         if st.audio_mode == AudioMode::Silent {
             self.say("Silent mode: quickRS isn't using any sound device");
             return;
@@ -1223,14 +1590,25 @@ impl SettingsView {
         let mut prefs = audio.prefs();
         match verb {
             "input" | "output" => {
-                let list = if verb == "input" {
-                    &self.inputs
-                } else {
-                    &self.outputs
+                // "a<i>": a row of All devices' lists; "<i>": of the list under Change… (which closes again)
+                let (all, i) = match arg.strip_prefix('a') {
+                    Some(i) => (true, i),
+                    None => (false, arg),
                 };
-                let Some(choice) = arg.parse::<usize>().ok().and_then(|i| list.get(i)).cloned() else {
+                let list = match (verb == "input", all) {
+                    (true, false) => &self.inputs,
+                    (false, false) => &self.outputs,
+                    (true, true) => &self.inputs_all,
+                    (false, true) => &self.outputs_all,
+                };
+                let Some(choice) = i.parse::<usize>().ok().and_then(|i| list.get(i)).cloned() else {
                     return;
                 };
+                self.folds.close(if verb == "input" {
+                    "dev_input"
+                } else {
+                    "dev_output"
+                });
                 let what = match &choice {
                     Choice::Auto => "automatic".to_string(),
                     Choice::Off => "none".into(),
@@ -1241,23 +1619,14 @@ impl SettingsView {
                         prefs.channel = None; // a new device: find its channel again
                     }
                     prefs.input = choice;
-                    self.say(format!("Guitar input: {what}"));
+                    self.say(format!("{} input: {what}", st.instrument().noun_cap()));
                 } else {
                     prefs.output = choice;
                     self.say(format!("Output: {what}"));
                 }
             }
             "ch" => prefs.channel = arg.parse().ok(),
-            "buffer" => prefs.buffer = arg.parse().ok(),
-            "exclusive" => {
-                prefs.exclusive = !prefs.exclusive;
-                self.say(if prefs.exclusive {
-                    "Low-latency output: other programs go quiet while quickRS plays"
-                } else {
-                    "Shared output: other programs can play too"
-                });
-            }
-            "rocksmith" => prefs.use_rocksmith = !prefs.use_rocksmith,
+            "rs_setup" => prefs.use_rs_setup = !prefs.use_rs_setup,
             "devrescan" => {
                 audio.rescan();
                 self.say("Looking for sound devices…");
@@ -1269,5 +1638,26 @@ impl SettingsView {
         st.config
             .set("audio", serde_json::to_value(&prefs).unwrap_or_default());
         st.save_config();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_chosen_device_s_status_leaves_its_name_out() {
+        assert_eq!(
+            short_status("Listening: NUX Audio (ASIO)  \u{b7}  ASIO  \u{b7}  2 ch  \u{b7}  48 kHz"),
+            "Listening  \u{b7}  ASIO  \u{b7}  2 ch  \u{b7}  48 kHz"
+        );
+        assert_eq!(
+            short_status("Playing on Speakers  \u{b7}  WASAPI shared  \u{b7}  48 kHz"),
+            "Playing  \u{b7}  WASAPI shared  \u{b7}  48 kHz"
+        );
+        assert_eq!(
+            short_status("No input: nothing is scored"),
+            "No input: nothing is scored"
+        );
     }
 }

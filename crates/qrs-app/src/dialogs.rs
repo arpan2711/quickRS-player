@@ -44,6 +44,15 @@ pub fn pick_folder_titled(title: &str, from: Option<&Path>) -> Option<PathBuf> {
     noted(|| d.pick_folder())
 }
 
+/// A capture to add: a .nam (an amp or pedal) or a .wav (a cab's impulse response).
+pub fn pick_capture_file() -> Option<PathBuf> {
+    let d = rfd::FileDialog::new()
+        .set_title("Add a .nam capture or an IR")
+        .add_filter("NAM capture or IR", &["nam", "wav"])
+        .add_filter("All files", &["*"]);
+    noted(|| d.pick_file())
+}
+
 /// A keys file (keys.json, or Notepad's keys.json.txt).
 pub fn pick_keys_file() -> Option<PathBuf> {
     let d = rfd::FileDialog::new()

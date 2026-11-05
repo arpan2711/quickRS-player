@@ -11,8 +11,11 @@ workspace = true
 
 [features]
 default = []
-# the Lessons page and the coach (off in the shared build, D50: only the owner's own build has them)
+# the Lessons page and the coach: off in every build for now (D152, the owner put Lessons aside; was the owner's
+# build only, D50). `--features lessons` builds them back in
 lessons = []
+# NAM captures and TONE3000 on the pedalboard (P31, D80: the owner's build only for now)
+nam = []
 # the pedalboard's real brand names (off in the shared build, D58)
 brands = ["qrs-audio/brands"]
 
@@ -34,6 +37,7 @@ serde_json.workspace = true
 rfd = { version = "0.15", default-features = false }
 ureq.workspace = true
 sha2.workspace = true
+getrandom.workspace = true
 zip.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

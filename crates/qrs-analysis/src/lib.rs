@@ -5,6 +5,7 @@ pub mod chordname;
 pub mod detect;
 pub mod ear;
 pub mod hwcamera;
+pub mod instrument;
 pub mod keyguess;
 pub mod onsets;
 pub mod parts;
@@ -12,6 +13,7 @@ pub mod pitch;
 pub mod similar;
 pub mod spectrum;
 pub mod take;
+pub mod testsig;
 
 pub use detect::{Held, Judgement, Pluck, SampleSource, Scorer};
 pub use spectrum::Spectra;

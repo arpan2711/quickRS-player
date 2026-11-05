@@ -1,4 +1,4 @@
-//! `quickrs-cli board rigs`: how well the song tone matcher (qrs-audio `board::rocksmith`) covers a library. Every
+//! `quickrs-cli board rigs`: how well the song tone matcher (qrs-audio `board::rs_gear`) covers a library. Every
 //! tone of every part of every song (psarc and feedpak; a tone met twice, as a feedpak converted from a psarc has
 //! it, counts once) is matched gear by gear; the report lists each gear key with how many tones use it, the model it
 //! becomes (or LEFT OUT), the knobs seen with their ranges, and the share of gear and of whole tones matched.
@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use qrs_audio::board::rocksmith;
+use qrs_audio::board::rs_gear;
 use qrs_formats::rig::RigTone;
 use qrs_formats::{Keys, Package, package::Format};
 
@@ -118,11 +118,7 @@ pub fn run(
         // every tone with this gear: its descriptors, its rig and the board it becomes
         for t in tones.iter().filter(|t| t.gear.iter().any(|g| g.key.contains(o))) {
             let gear: Vec<&str> = t.gear.iter().map(|g| g.key.as_str()).collect();
-            let board: Vec<&str> = rocksmith::board_for(t)
-                .blocks
-                .iter()
-                .map(|b| b.def().id)
-                .collect();
+            let board: Vec<&str> = rs_gear::board_for(t).blocks.iter().map(|b| b.def().id).collect();
             println!(
                 "{} {:?}\n    {}\n    -> {}",
                 t.key,
@@ -140,7 +136,7 @@ pub fn run(
     for t in &tones {
         let mut all = true;
         for g in &t.gear {
-            let id = rocksmith::blocks_for(g, t).map(|bs| {
+            let id = rs_gear::blocks_for(g, t).map(|bs| {
                 if bs.is_empty() {
                     "(flat)".to_string()
                 } else {
@@ -149,7 +145,7 @@ pub fn run(
             });
             if g.slot == "Amp" {
                 amps += 1;
-                if rocksmith::amp_known(&g.key) {
+                if rs_gear::amp_known(&g.key) {
                     amps_known += 1;
                 }
             }
@@ -238,7 +234,7 @@ pub fn run(
                 }
             })
             .collect();
-        let real = rocksmith::real_gear(key)
+        let real = rs_gear::real_gear(key)
             .map(|r| format!("   [{r}]"))
             .unwrap_or_default();
         r.push_str(&format!(

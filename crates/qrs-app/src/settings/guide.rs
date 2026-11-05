@@ -1,6 +1,6 @@
 //! The guided guitar setup, drawn in Settings > Audio (P23.8, owner request; new code, no Python source). Eight
 //! steps on the Audio page's own pieces: the input (its device list and channel meters), the output (and hearing
-//! the guitar), a level check in words, the kind of input (D33), Calibrate (P23.10: Rocksmith's way, knobs up and
+//! the guitar), a level check in words, the kind of input (D33), Calibrate (P23.10: RS's way, knobs up and
 //! the hardest strumming you can do), the settings it recommends as sliders to adjust while you play, a note check
 //! (the tuner's pitch reading) and a summary. Back, Skip and Next on every step; Enter, Backspace, S and Esc as keys,
 //! digits for a step's choices. Everything it sets is saved per input as the Audio page saves it (`input_cal`,
@@ -31,7 +31,7 @@ use crate::state::AppState;
 pub(super) struct Guide {
     pub flow: Flow,
     watch: LevelWatch,
-    listen: Listen,
+    pub listen: Listen,
     /// The open strings heard in the note check, and whether any note was.
     heard: [bool; 6],
     any_note: bool,
@@ -39,7 +39,7 @@ pub(super) struct Guide {
     /// What the level check last said (not "play your guitar"), for the summary.
     level: Option<Level>,
     /// Screenshots: a level, a calibration and notes made up for the step shown.
-    staged: bool,
+    pub staged: bool,
     /// The Audio page's Calibrate: only Calibrate and the settings.
     only_cal: bool,
     /// Screenshots: the calibration the sliders show.
@@ -49,6 +49,10 @@ pub(super) struct Guide {
     /// Run inside the first-time setup's guitar page (P23.14): Close closes the setup, Back from the first step and
     /// Finish go back to it (`SettingsView::guide_exit`).
     pub embedded: bool,
+    /// The timing step's tool (P36.2): its runs and results (a run stops when the guide goes).
+    pub timing: super::timing_tool::TimingTool,
+    /// Settings > Timing's Calibrate timing: the timing step on its own.
+    pub only_timing: bool,
 }
 
 /// How a guide run inside the first-time setup was left.
@@ -64,6 +68,8 @@ pub(super) enum GuideExit {
 
 /// The steps the Audio page's Calibrate shows.
 const CAL_STEPS: [Step; 2] = [Step::Calibrate, Step::Settings];
+/// Settings > Timing's Calibrate timing.
+const TIMING_STEPS: [Step; 1] = [Step::Timing];
 
 impl Guide {
     pub fn new(step: Step, staged: bool, only_cal: bool) -> Guide {
@@ -80,6 +86,8 @@ impl Guide {
             staged_cal: None,
             pluck_at: None,
             embedded: false,
+            timing: Default::default(),
+            only_timing: false,
         };
         if staged {
             let steps = g.steps();
@@ -109,7 +117,13 @@ impl Guide {
 
     /// The steps this run walks through.
     fn steps(&self) -> &'static [Step] {
-        if self.only_cal { &CAL_STEPS } else { &Step::ALL }
+        if self.only_timing {
+            &TIMING_STEPS
+        } else if self.only_cal {
+            &CAL_STEPS
+        } else {
+            &Step::ALL
+        }
     }
 
     /// Where `step` is among them (0-based), and how many there are.
@@ -159,7 +173,7 @@ fn kind_rows(guess: Kind) -> [(String, String); 4] {
     let guess_word = match guess {
         Kind::Mic => "a microphone",
         Kind::Modeller => "an amp modeller",
-        _ => "a guitar straight in",
+        _ => "an instrument straight in",
     };
     [
         (
@@ -167,16 +181,18 @@ fn kind_rows(guess: Kind) -> [(String, String); 4] {
             format!("quickRS decides from the device's name and kind: it looks like {guess_word}."),
         ),
         (
-            "Guitar straight in".into(),
-            "A guitar cable into an audio interface, or a Real Tone Cable. The pedalboard gives it its tone.".into(),
+            "Instrument straight in (guitar or bass DI)".into(),
+            "A guitar or bass cable into an audio interface, a Real Tone Cable, or a bass's DI out. The rig (amps \
+             and pedals) gives it its tone."
+                .into(),
         ),
         (
             "Amp modeller or processed".into(),
-            "A modeller, multi-effects or an amp's line out. Heard as it comes in, no pedalboard.".into(),
+            "A modeller, multi-effects or an amp's line out. Heard as it comes in, no rig.".into(),
         ),
         (
             "Microphone".into(),
-            "A mic in front of an acoustic guitar or an amp. Heard as it is; plucks count over the room's noise."
+            "A mic in front of an acoustic instrument or an amp. Heard as it is; notes count over the room's noise."
                 .into(),
         ),
     ]
@@ -188,13 +204,13 @@ const KINDS: [Kind; 4] = [Kind::Auto, Kind::Dry, Kind::Modeller, Kind::Mic];
 fn kind_name(k: Kind, guess: Kind) -> String {
     match k {
         Kind::Auto => format!("Automatic ({})", kind_name(guess, Kind::Dry).to_lowercase()),
-        Kind::Dry => "Guitar straight in".into(),
+        Kind::Dry => "Instrument straight in".into(),
         Kind::Modeller => "Amp modeller or processed".into(),
         Kind::Mic => "Microphone".into(),
     }
 }
 
-/// The trim's and the pluck threshold's words under their sliders.
+/// The input boost's (the trim's) and the note sensitivity's (the pluck threshold's) words under their sliders.
 fn trim_words(c: &InputCal) -> String {
     let rec = match c.rec_trim_db {
         Some(r) if (r - c.trim_db).abs() >= 0.05 => format!("Recommended {r:+.1} dB. "),
@@ -203,11 +219,11 @@ fn trim_words(c: &InputCal) -> String {
     };
     match c.peak_db {
         Some(pk) => format!(
-            "{rec}Your hardest strum goes into the tones at {:.0} dB; they're voiced for {:.0}.",
+            "{rec}Your hardest playing goes into the amps at {:.0} dB; they're voiced for {:.0}.",
             pk + c.trim_db,
             calibrate::TARGET_DB
         ),
-        None => format!("{rec}How loud your guitar goes into the tones. Calibrate sets it for you."),
+        None => format!("{rec}How loud your instrument goes into the amps. Calibrate sets it for you."),
     }
 }
 
@@ -220,17 +236,17 @@ fn pluck_words(c: &InputCal, mic: bool) -> String {
     };
     match (c.floor_db, c.soft_db) {
         (Some(f), Some(s)) => format!(
-            "{rec}A pluck counts from {o:.0} dB: over the noise ({f:.0}), under soft playing (about {s:.0})."
+            "{rec}A note counts from {o:.0} dB: over the noise ({f:.0}), under soft playing (about {s:.0})."
         ),
-        (Some(f), None) => format!("{rec}A pluck counts from {o:.0} dB, over the noise ({f:.0})."),
+        (Some(f), None) => format!("{rec}A note counts from {o:.0} dB, over the noise ({f:.0})."),
         _ => format!(
-            "{rec}A pluck counts from {o:.0} dB (the default for a {}).",
-            if mic { "microphone" } else { "guitar input" }
+            "{rec}A note counts from {o:.0} dB (the default for a {}).",
+            if mic { "microphone" } else { "cable input" }
         ),
     }
 }
 
-/// A step's line under its heading.
+/// A step's line under its heading, written for a guitar (`Instrument::say` words it for a bass).
 fn intro(step: Step, only_cal: bool) -> &'static str {
     match step {
         Step::Input => {
@@ -243,11 +259,11 @@ fn intro(step: Step, only_cal: bool) -> &'static str {
         }
         Step::Level => "Play your guitar and watch the meter: it says what to change, if anything.",
         Step::Kind => {
-            "This decides whether quickRS gives your guitar its tone (the pedalboard) or plays it as it comes in."
+            "This decides whether quickRS gives your guitar its tone (the rig: amps and pedals) or plays it as it comes in."
         }
         Step::Calibrate => {
-            "As in Rocksmith: quickRS listens to your loudest playing and sets the level from it, so nothing clips \
-             and soft notes still count. About 10 seconds."
+            "quickRS listens to your loudest playing and sets the level from it, so nothing clips and soft notes \
+             still count. About 10 seconds."
         }
         Step::Settings if only_cal => {
             "What calibration recommends for this input. Play and watch the meters; move a slider if you like."
@@ -255,7 +271,14 @@ fn intro(step: Step, only_cal: bool) -> &'static str {
         Step::Settings => {
             "What calibration recommends. Play and watch the meters; move a slider if you like, or keep going."
         }
-        Step::Notes => "Play the open strings, one at a time. Each lights up when quickRS hears it.",
+        Step::Notes => {
+            "Play the open strings, one at a time: each lights up when quickRS hears it. Next you'll play a short \
+             tune, which checks the rest."
+        }
+        Step::Timing => {
+            "Play this along with the click. quickRS checks it hears every note and measures how late your notes \
+             reach it, then sets your timing. About 20 seconds."
+        }
         Step::Done => "Saved for this input: plug in another and set it up the same way.",
     }
 }
@@ -291,6 +314,26 @@ impl SettingsView {
         self.scroll = 0.0;
     }
 
+    /// Settings > Timing's Calibrate timing: the timing step on its own (`staged`: "", "measure", "screenmeasure",
+    /// "result" for the screenshots).
+    pub(super) fn open_timing_guide(&mut self, staged: Option<&str>) {
+        let mut g = Guide::new(Step::Timing, staged.is_some(), false);
+        g.only_timing = true;
+        g.timing = super::timing_tool::TimingTool::staged(staged.unwrap_or(""));
+        self.setup = Some(g);
+        self.cal_run = None;
+        self.cal_out = None;
+        self.scroll = 0.0;
+    }
+
+    /// Screenshots: the guide's timing step in a state ("measure", "screenmeasure", "result").
+    pub(super) fn open_staged_timing(&mut self, what: &str) {
+        self.open_guide(Step::Timing, true);
+        if let Some(g) = &mut self.setup {
+            g.timing = super::timing_tool::TimingTool::staged(what);
+        }
+    }
+
     /// Screenshots: calibrating, held mid-strum.
     pub(super) fn open_staged_measure(&mut self, only_cal: bool) {
         self.setup = Some(Guide::new(Step::Calibrate, true, only_cal));
@@ -306,11 +349,83 @@ impl SettingsView {
         let last = g.last(step);
         let only_cal = g.only_cal;
         let Event::Key {
-            key, pressed: true, ..
+            key,
+            pressed: true,
+            modifiers,
+            ..
         } = ev
         else {
             return matches!(ev, Event::MouseWheel { .. });
         };
+        if step == Step::Timing && !g.timing.advanced {
+            // (the play-along, P38.4: Enter plays the tune until it has set the timing, L listens first, A the click
+            // tool; , . the delay as on the click tool's page)
+            let ms = if modifiers.shift { 1 } else { 5 };
+            let busy = g.timing.play.busy();
+            let done = g.timing.play.outcome.as_ref().is_some_and(|o| o.ok());
+            let act = match key {
+                Key::Escape if busy => Some("pa:stop".to_string()),
+                Key::Escape => Some("setup:close".into()),
+                Key::Enter if g.timing.play.running() => None,
+                Key::Enter if !done => Some("pa:play".into()),
+                Key::Enter | Key::ArrowRight => Some(if last {
+                    "setup:finish".into()
+                } else {
+                    "setup:next".into()
+                }),
+                Key::ArrowLeft | Key::Backspace if !busy => Some("setup:back".into()),
+                Key::S if !last && !busy => Some("setup:skip".into()),
+                Key::L => Some("pa:listen".into()),
+                Key::P if !g.timing.play.running() => Some("pa:play".into()),
+                Key::A => Some("pa:advanced".into()),
+                Key::Comma => Some(format!("ms:input_offset:{ms}")),
+                Key::Period => Some(format!("ms:input_offset:-{ms}")),
+                Key::M => Some("monitor".into()),
+                _ => None,
+            };
+            if let Some(a) = act {
+                self.acts.push(a);
+            }
+            return true;
+        }
+        if step == Step::Timing {
+            // (the Advanced fine-tuning fold open, P38.4: Enter is still Next; 1 Your timing, 2 Screen timing, P
+            // plays along, A rolls it up; , . make
+            // the delay shorter / longer (`input_offset` up / down, D132) and ; ' move the Screen, 5 ms a press,
+            // Shift 1 ms)
+            let ms = if modifiers.shift { 1 } else { 5 };
+            let running = g.timing.running();
+            let act = match key {
+                Key::Escape if running => Some("tcal:stop".to_string()),
+                Key::Escape => Some("setup:close".into()),
+                Key::Enter if running => None,
+                Key::Enter | Key::ArrowRight => Some(if last {
+                    "setup:finish".into()
+                } else {
+                    "setup:next".into()
+                }),
+                Key::ArrowLeft | Key::Backspace if !running => Some("setup:back".into()),
+                Key::S if !last && !only_cal && !running => Some("setup:skip".into()),
+                Key::Num1 if !running => Some("tcal:guitar".into()),
+                Key::Num2 if !running => Some("tcal:screen".into()),
+                Key::P => Some(if running {
+                    "tcal:stop".into()
+                } else {
+                    "tcal:along".into()
+                }),
+                Key::A if !running => Some("pa:advanced".into()),
+                Key::Comma => Some(format!("ms:input_offset:{ms}")),
+                Key::Period => Some(format!("ms:input_offset:-{ms}")),
+                Key::Semicolon => Some(format!("ms:display_offset:-{ms}")),
+                Key::Quote => Some(format!("ms:display_offset:{ms}")),
+                Key::M => Some("monitor".into()),
+                _ => None,
+            };
+            if let Some(a) = act {
+                self.acts.push(a);
+            }
+            return true;
+        }
         let digit = match key {
             Key::Num1 => Some(0),
             Key::Num2 => Some(1),
@@ -344,6 +459,10 @@ impl SettingsView {
                 "cal:start".into()
             }),
             Key::C if step == Step::Settings => Some("setup:again".into()),
+            Key::K if step == Step::Calibrate && !running => Some("cal:keep".into()),
+            Key::D if step == Step::Output => Some("band:toggle".into()),
+            Key::Num9 if step == Step::Output => Some("vol:-0.1".into()),
+            Key::Num0 if step == Step::Output => Some("vol:0.1".into()),
             Key::Minus if sliders => Some("trimstep:-0.5".into()),
             Key::Equals | Key::Plus if sliders => Some("trimstep:0.5".into()),
             Key::Comma if sliders => Some("pluckstep:1".into()),
@@ -363,7 +482,7 @@ impl SettingsView {
         true
     }
 
-    /// Back, Skip, Next, Finish, Close, Calibrate again and the Practice page (from the summary).
+    /// Back, Skip, Next, Finish, Close, Calibrate again and the Timing page (from the summary).
     pub(super) fn guide_act(&mut self, st: &mut AppState, arg: &str) {
         if arg == "open" {
             self.open_guide(Step::Input, false);
@@ -371,6 +490,10 @@ impl SettingsView {
         }
         if arg == "calibrate" {
             self.open_cal_guide(Step::Calibrate, false);
+            return;
+        }
+        if arg == "timing" {
+            self.open_timing_guide(None);
             return;
         }
         let Some(g) = &mut self.setup else { return };
@@ -389,6 +512,7 @@ impl SettingsView {
                 gs::record(&mut st.config, "done");
                 st.save_config();
             }
+            self.guide_flow = Some(g.flow.clone());
             self.setup = None;
             self.cal_run = None;
             self.guide_exit = Some(e);
@@ -424,8 +548,13 @@ impl SettingsView {
             }
             "finish" => {
                 let only_cal = g.only_cal;
+                let only_timing = g.only_timing;
                 self.setup = None;
                 self.cal_run = None;
+                if only_timing {
+                    self.say("Timing saved");
+                    return;
+                }
                 if only_cal {
                     self.say(match calibrate::current_input(st) {
                         Some((_, name)) => format!("Saved for {name}"),
@@ -436,14 +565,14 @@ impl SettingsView {
                 gs::record(&mut st.config, "done");
                 st.save_config();
                 self.say(match calibrate::current_input(st) {
-                    Some((_, name)) => format!("Your guitar is set up: saved for {name}"),
+                    Some((_, name)) => format!("Your {} is set up: saved for {name}", st.instrument().noun()),
                     None => "Setup done".into(),
                 });
                 return;
             }
             "practice" => {
                 self.setup = None;
-                self.show("practice");
+                self.show("timing");
                 return;
             }
             _ => return,
@@ -459,6 +588,9 @@ impl SettingsView {
                 g.heard = [false; 6];
                 g.any_note = false;
             }
+            if matches!(was, Step::Timing | Step::Notes | Step::Output) {
+                g.timing.stop();
+            }
         }
     }
 
@@ -471,6 +603,7 @@ impl SettingsView {
         let finished = self.feed_calibration(st, &ctx);
         let engine = st.audio.as_ref().map(|a| a.engine.clone());
         let input = calibrate::current_input(st);
+        let inst = st.instrument();
         let Some(g) = &mut self.setup else {
             return body.min.y;
         };
@@ -499,7 +632,7 @@ impl SettingsView {
             && let Some(m) = g.listen.midi
         {
             g.any_note = true;
-            if let Some(s) = gs::open_string(m) {
+            if let Some(s) = gs::open_string_of(gs::open_strings(inst).0, m) {
                 g.heard[s] = true;
             }
         }
@@ -524,17 +657,22 @@ impl SettingsView {
         let mut y = body.min.y;
         let cr = text::caps(
             &p,
-            &format!(
-                "{}  ·  STEP {} OF {n}",
-                if only_cal {
-                    "CALIBRATE YOUR INPUT"
-                } else if embedded {
-                    "YOUR GUITAR"
-                } else {
-                    "SET UP YOUR GUITAR"
-                },
-                si + 1
-            ),
+            &if g.only_timing {
+                "CALIBRATE TIMING  ·  ABOUT 30 SECONDS".to_string()
+            } else {
+                format!(
+                    "{} {} OF {n}",
+                    if only_cal {
+                        "CALIBRATE YOUR INPUT  \u{b7}  STEP".to_string()
+                    } else if embedded {
+                        // (inside the first-time setup, its own step "Your instrument": these are its parts)
+                        format!("YOUR {}  \u{b7}  PART", inst.noun_upper())
+                    } else {
+                        format!("SET UP YOUR {}  \u{b7}  STEP", inst.noun_upper())
+                    },
+                    si + 1
+                )
+            },
             pos2(x, y),
             12.0,
             th.caption,
@@ -542,7 +680,7 @@ impl SettingsView {
             None,
         );
         let dot_gap = px(22.0);
-        for (i, s) in steps.iter().enumerate() {
+        for (i, s) in steps.iter().enumerate().filter(|_| n > 1) {
             let c = pos2(x + w - px(8.0) - (n - 1 - i) as f32 * dot_gap, centre_y(cr));
             if *s == step {
                 paint::led(&p, c, 10.0, th.accent);
@@ -559,10 +697,10 @@ impl SettingsView {
         y = cr.max.y + px(10.0);
         let tr = text::draw(
             &p,
-            if only_cal && step == Step::Calibrate {
-                "Calibrate your input"
+            &if only_cal && step == Step::Calibrate {
+                "Check your input's level".to_string()
             } else {
-                step.title()
+                inst.say(step.title())
             },
             pos2(x, y),
             Align2::LEFT_TOP,
@@ -571,7 +709,10 @@ impl SettingsView {
         );
         y = tr.max.y + px(6.0);
         let ist = Style::new(14.0, 500, th.text_2);
-        for line in text::wrap(&ctx, intro(step, only_cal), ist, w).iter().take(2) {
+        for line in text::wrap(&ctx, &inst.say(intro(step, only_cal)), ist, w)
+            .iter()
+            .take(2)
+        {
             y = text::draw(&p, line, pos2(x, y), Align2::LEFT_TOP, ist, None)
                 .max
                 .y;
@@ -651,14 +792,18 @@ impl SettingsView {
             Step::Kind => self.guide_kind(ui, st, area),
             Step::Calibrate => self.guide_calibrate(ui, st, area, peak, staged),
             Step::Settings => self.guide_settings(ui, st, area, (peak, level), staged),
-            Step::Notes => self.guide_notes(ui, area),
+            Step::Notes => {
+                // (the note check's "notes on a click" is the next step's play-along now, P38.4)
+                self.guide_notes(ui, area, st.instrument());
+            }
+            Step::Timing => self.guide_timing(ui, st, area),
             Step::Done => self.guide_done(ui, st, area, (peak, level)),
         }
         body.max.y
     }
 
     /// Two cards side by side in `area` (`left`'s share of the width), `h` high; returns their rects.
-    fn two_cards(&self, p: &egui::Painter, area: Rect, h: f32) -> (Rect, Rect) {
+    pub(super) fn two_cards(&self, p: &egui::Painter, area: Rect, h: f32) -> (Rect, Rect) {
         let gap = px(24.0);
         let cw = snap((area.width() - gap) / 2.0);
         let a = Rect::from_min_size(area.min, vec2(cw, h));
@@ -694,7 +839,7 @@ impl SettingsView {
         let (a, b) = self.two_cards(&p, area, left_h.max(right_h).min(area.height()));
         let yy = self.heading(
             &p,
-            "GUITAR INPUT",
+            &st.instrument().say("GUITAR INPUT"),
             a.min.x + pad,
             a.min.y + pad,
             Some(a.max.x - pad),
@@ -727,8 +872,10 @@ impl SettingsView {
         let yy = self.draw_channel(ui, st, b.min.x + pad, yy, b.width() - 2.0 * pad) + px(16.0);
         super::caption_lines(
             &p,
-            "Automatic listens to every channel and picks the one your guitar is on from the first clear notes. \
-             On a two-input interface, pick the input your cable is in.",
+            &st.instrument().say(
+                "Automatic listens to every channel and picks the one your guitar is on from the first clear \
+                 notes. On a two-input interface, pick the input your cable is in.",
+            ),
             b.min.x + pad,
             yy,
             b.width() - 2.0 * pad,
@@ -758,7 +905,8 @@ impl SettingsView {
             + slider_h
             + px(20.0)
             + 3.0 * line_h(&ctx, 13.0)
-            + pad;
+            + pad
+            + Self::h_balance(&ctx);
         let (a, b) = self.two_cards(&p, area, left_h.max(right_h).min(area.height()));
         let yy = self.heading(
             &p,
@@ -783,9 +931,26 @@ impl SettingsView {
             stat.0,
             &stat.1,
         );
+        // (P36.6) a wireless or TV output adds a delay quickRS can't see
+        let out_name = st
+            .audio
+            .as_ref()
+            .and_then(|au| au.engine.status().output.map(|o| o.device_name))
+            .unwrap_or_default();
+        if crate::timing_cal::slow_output(&out_name) {
+            super::caption_lines(
+                &p,
+                "Bluetooth and HDMI add about 150-250 ms that quickRS can't see: use wired, or run the Timing step.",
+                a.min.x + pad + px(4.0),
+                yy + lh + px(14.0) + line_h(&ctx, 13.0) + px(6.0),
+                a.width() - 2.0 * pad - px(4.0),
+                12.0,
+                2,
+            );
+        }
         let mut yy = self.heading(
             &p,
-            "HEARING YOUR GUITAR",
+            &st.instrument().say("HEARING YOUR GUITAR"),
             b.min.x + pad,
             b.min.y + pad,
             None,
@@ -796,16 +961,17 @@ impl SettingsView {
         let engine = st.audio.as_ref().map(|a| a.engine.clone());
         let monitor = engine.as_ref().is_some_and(|e| e.monitor());
         let mic = st.mic_input();
+        let inst = st.instrument();
         yy += self.switch_row(
             ui,
             bx,
             yy,
             bw,
-            "Hear guitar",
-            if mic {
-                "a microphone: off at first, it can feed back"
+            &inst.say("Hear guitar"),
+            &if mic {
+                "a microphone: off at first, it can feed back".to_string()
             } else {
-                "play your guitar through the app"
+                inst.say("play your guitar through the app")
             },
             monitor,
             "monitor",
@@ -819,7 +985,7 @@ impl SettingsView {
             bx,
             yy,
             bw,
-            "Guitar volume",
+            &inst.say("Guitar volume"),
             &format!("{}%", (gvol * 100.0).round() as i64),
             gvol / 2.0,
             "gvol",
@@ -827,8 +993,10 @@ impl SettingsView {
         ) + px(20.0);
         let lines = text::wrap(
             &ctx,
-            "Through an amp modeller with its own speaker or headphones, you may want Hear guitar off: you'd hear \
-             it twice.",
+            &inst.say(
+                "Through an amp modeller with its own speaker or headphones, you may want Hear guitar off: you'd \
+                 hear it twice.",
+            ),
             Style::new(13.0, 500, th.caption),
             bw,
         );
@@ -844,6 +1012,7 @@ impl SettingsView {
             .max
             .y;
         }
+        self.draw_balance(ui, st, bx, yy, bw);
     }
 
     fn guide_level(&mut self, ui: &mut Ui, st: &mut AppState, area: Rect, verdict: Level, peak: f32) {
@@ -857,8 +1026,17 @@ impl SettingsView {
             .map(|(id, _)| calibrate::load(&st.config, id))
             .unwrap_or_default();
         let detail_st = Style::new(14.0, 500, th.text_2);
-        let (head, detail) = verdict.words();
-        let lines = text::wrap(&ctx, detail, detail_st, area.width() - 2.0 * pad - px(40.0));
+        let kind = match cal.kind {
+            Kind::Auto => input
+                .as_ref()
+                .map(|(_, n)| calibrate::auto_kind(st, n))
+                .unwrap_or(Kind::Dry),
+            k => k,
+        };
+        let (head, detail) = verdict.words_for(kind);
+        let inst = st.instrument();
+        let (head, detail) = (inst.say(head), inst.say(detail));
+        let lines = text::wrap(&ctx, &detail, detail_st, area.width() - 2.0 * pad - px(40.0));
         // (room for the longest advice, three lines, so the card doesn't jump as the verdict changes)
         let ch = pad
             + hh
@@ -874,7 +1052,7 @@ impl SettingsView {
         let (x, wd) = (card.min.x + pad, card.width() - 2.0 * pad);
         let note = match &input {
             Some((_, name)) => name.clone(),
-            None => "no guitar input".into(),
+            None => "no input".into(),
         };
         let mut yy = self.heading(
             &p,
@@ -901,7 +1079,7 @@ impl SettingsView {
         }
         text::draw(
             &p,
-            head,
+            &head,
             pos2(x + px(30.0), lc.y),
             Align2::LEFT_CENTER,
             Style::new(22.0, 800, if verdict == Level::Waiting { th.text } else { col }),
@@ -967,10 +1145,42 @@ impl SettingsView {
         let cur = KINDS.iter().position(|k| *k == cal.kind);
         let row_h = px(64.0);
         let list_h = 2.0 * px(8.0) + 4.0 * row_h + 3.0 * px(4.0);
-        let card_h = pad + Self::h_heading(&ctx) + list_h + px(16.0) + line_h(&ctx, 13.0) + pad;
+        // what it plays first (P36.6, the review's Bass section): Level, Calibrate, the note check and the timing
+        // step all follow it
+        let inst_h = Self::h_heading(&ctx) + px(40.0) + pad;
+        let card_h = pad + inst_h + Self::h_heading(&ctx) + list_h + px(16.0) + line_h(&ctx, 13.0) + pad;
         let card = Rect::from_min_size(area.min, vec2(area.width(), card_h.min(area.height())));
         paint::card(&p, card, 24.0, false);
         let (x, wd) = (card.min.x + pad, card.width() - 2.0 * pad);
+        {
+            use qrs_analysis::instrument::Instrument;
+            let iy = self.heading(
+                &p,
+                "IT PLAYS",
+                x,
+                card.min.y + pad,
+                Some(card.max.x - pad),
+                match cal.instrument {
+                    Instrument::Bass5 => "read down to the low B; songs open on their bass part",
+                    Instrument::Bass => "read down to the low E; songs open on their bass part",
+                    Instrument::Guitar => "a bass reads lower and opens songs on their bass part",
+                },
+                "",
+            );
+            let labels = ["Guitar", "Bass", "5-string bass"];
+            let sel = Instrument::ALL.iter().position(|i| *i == cal.instrument);
+            let seg = Rect::from_min_size(pos2(x, iy), vec2(px(380.0).min(wd), px(40.0)));
+            let mut so = widgets::Segmented::new(&labels, sel);
+            so.size = 13.0;
+            so.pad = 4.0;
+            so.r = 14.0;
+            so.inner_r = 10.0;
+            let (_, clicked) = widgets::segmented(ui, seg, "setup-instrument", &so);
+            if let Some(i) = clicked {
+                self.acts.push(format!("calinst:{}", Instrument::ALL[i].key()));
+            }
+        }
+        let card = Rect::from_min_max(pos2(card.min.x, card.min.y + inst_h), card.max);
         let yy = self.heading(
             &p,
             "THIS INPUT IS",
@@ -992,7 +1202,7 @@ impl SettingsView {
         }
         text::draw(
             &p,
-            "Saved for this input; it's also in Settings > Audio input / output > Input level.",
+            "Saved for this input; it's also in Settings > Sound > Input level.",
             pos2(x, yy + h + px(16.0)),
             Align2::LEFT_TOP,
             Style::new(13.0, 500, th.caption),
@@ -1084,12 +1294,50 @@ impl SettingsView {
                     .max
                     .y;
             }
+            // (the hardware can't always be turned down: keep it anyway, P36.3)
+            if o.cal.is_some() && o.verdict != Verdict::Nothing {
+                let kl = "Keep these settings anyway";
+                let kw = widgets::button_width(&ctx, kl, "K", 13.0, false);
+                self.button(
+                    ui,
+                    Rect::from_min_size(pos2(rx + px(28.0), ry), vec2(kw, px(36.0))),
+                    kl,
+                    "K",
+                    "cal:keep",
+                    ButtonStyle {
+                        size: 13.0,
+                        r: Some(12.0),
+                        ..Default::default()
+                    },
+                );
+                ry += px(36.0) + px(12.0);
+            }
             ry += px(16.0);
         }
+        // (what to do for the kind of input and the instrument, P36.6)
+        let bass = st.instrument().is_bass();
+        let kind = match self.shown_cal(st).kind {
+            Kind::Auto => calibrate::auto_kind(st, name),
+            k => k,
+        };
+        let first = match kind {
+            Kind::Modeller => {
+                "Set the modeller's sound and main volume as you play, and its USB level so the meter peaks in \
+                 the green."
+            }
+            Kind::Mic => "Put the microphone 20-30 cm from the 12th fret, or in front of your amp.",
+            _ if bass => "Turn your bass's volume knobs all the way up.",
+            _ => "Turn your guitar's volume and tone knobs all the way up.",
+        };
+        let go = if bass {
+            "When it says Go, pluck the open strings as hard as you play, again and again, until the bar fills."
+        } else {
+            "When it says Go, strum as hard as you can on all strings, again and again, until the bar fills."
+        };
         let items = [
-            "Turn your guitar's volume and tone knobs all the way up.",
+            first,
             "Take your hands off the strings: it listens to the quiet for 2 seconds.",
-            "When it says Go, strum as hard as you can on all strings, again and again, until the bar fills.",
+            go,
         ];
         let ist = Style::new(15.0, 600, th.text);
         let lh = line_h(&ctx, 15.0);
@@ -1139,7 +1387,7 @@ impl SettingsView {
         let note = match (&self.cal_out, cal.peak_db) {
             (Some(o), _) if !o.verdict.retry() => format!("Done: {}", o.verdict.head().to_lowercase()),
             (_, Some(pk)) => format!(
-                "Calibrated before: peaks at {pk:.0} dB, trim {:+.1} dB.",
+                "Calibrated before: peaks at {pk:.0} dB, input boost {:+.1} dB.",
                 cal.trim_db
             ),
             _ => "About 10 seconds. C starts it, or cancels it while it runs.".into(),
@@ -1254,7 +1502,7 @@ impl SettingsView {
         // the live meter, with the loudest so far
         let cr = text::caps(
             &p,
-            "YOUR GUITAR, AS IT COMES IN",
+            "YOUR INSTRUMENT, AS IT COMES IN",
             pos2(x, yy),
             12.0,
             th.caption,
@@ -1314,7 +1562,26 @@ impl SettingsView {
         };
         let cal = self.shown_cal(st);
         let bottom = self.cal_heard_card(ui, area, &cal, &name);
-        let rest = Rect::from_min_max(pos2(area.min.x, bottom + px(24.0)), area.max);
+        let mut top = bottom + px(24.0);
+        // (simple first, P38.4: in the guided setup the sliders are an Advanced fold, rolled up; the Audio page's
+        // own Calibrate is there for them, so they stay out)
+        let only_cal = self.setup.as_ref().is_some_and(|g| g.only_cal);
+        if !only_cal {
+            let (fh, open) = self.fold(
+                ui,
+                area.min.x,
+                top,
+                area.width(),
+                "setup-levels",
+                "Advanced: input boost and note sensitivity",
+                "What calibration set, as sliders to adjust while you play. Most people leave them.",
+            );
+            if !open {
+                return;
+            }
+            top += fh + px(12.0);
+        }
+        let rest = Rect::from_min_max(pos2(area.min.x, top), area.max);
         self.cal_sliders_card(ui, rest, &cal, st.mic_input(), meters, true);
     }
 
@@ -1336,7 +1603,7 @@ impl SettingsView {
             ),
             None if cal.peak_db.is_some() => (
                 "Calibrated before".into(),
-                "Calibrate again after changing the interface's gain or the guitar.".into(),
+                "Calibrate again after changing the interface's gain or the instrument.".into(),
                 th.hit,
             ),
             None => (
@@ -1472,14 +1739,23 @@ impl SettingsView {
         let slider_h = line_h(&ctx, 15.0) + px(16.0) + px(12.0) + px(14.0);
         let cst = Style::new(13.0, 500, th.caption);
         let meter_h = px(18.0) + line_h(&ctx, 12.0) + px(8.0) + px(18.0) + px(6.0) + line_h(&ctx, 11.0);
-        let ch = 2.0 * pad
-            + Self::h_heading(&ctx)
-            + slider_h
-            + if live {
-                px(8.0) + 2.0 * line_h(&ctx, 13.0) + meter_h
-            } else {
-                0.0
-            };
+        // the recommendation's words take two lines, one or none when the window is short (a 16:9 window has no
+        // height to spare: at 1920 x 1080 or 3080 x 1804 the meters ran out of the card, P37.4)
+        let ch_for = |lines: f32| {
+            2.0 * pad
+                + Self::h_heading(&ctx)
+                + slider_h
+                + if live {
+                    px(8.0) + lines * line_h(&ctx, 13.0) + meter_h
+                } else {
+                    0.0
+                }
+        };
+        let words_lines = [2usize, 1, 0]
+            .into_iter()
+            .find(|&n| ch_for(n as f32) <= area.height())
+            .unwrap_or(0);
+        let ch = ch_for(words_lines as f32);
         let card = Rect::from_min_size(area.min, vec2(area.width(), ch.min(area.height().max(px(120.0)))));
         paint::card(&p, card, 24.0, false);
         let (x, wd) = (card.min.x + pad, card.width() - 2.0 * pad);
@@ -1532,7 +1808,7 @@ impl SettingsView {
             x,
             yy,
             half,
-            "Trim",
+            "Input boost",
             &format!("{:+.1} dB", cal.trim_db),
             u,
             "trim",
@@ -1545,7 +1821,7 @@ impl SettingsView {
             px2,
             yy,
             half,
-            "Pluck sensitivity",
+            "Note sensitivity",
             &format!("{:.0} dB", db(onset)),
             calibrate::sensitivity_of(onset),
             "pluck",
@@ -1558,14 +1834,14 @@ impl SettingsView {
         let wy = yy + slider_h + px(8.0);
         for (cx, words) in [(x, trim_words(cal)), (px2, pluck_words(cal, mic))] {
             let mut ly = wy;
-            for line in text::wrap(&ctx, &words, cst, half).iter().take(2) {
+            for line in text::wrap(&ctx, &words, cst, half).iter().take(words_lines) {
                 ly = text::draw(&p, line, pos2(cx, ly), Align2::LEFT_TOP, cst, None)
                     .max
                     .y;
             }
         }
         // the live meters: into the tones (after the trim), and the playing against the pluck threshold
-        let my = wy + 2.0 * line_h(&ctx, 13.0) + px(18.0);
+        let my = wy + words_lines as f32 * line_h(&ctx, 13.0) + px(18.0);
         let into = peak * lin(cal.trim_db);
         let cr = text::caps(
             &p,
@@ -1602,7 +1878,7 @@ impl SettingsView {
         };
         let cr2 = text::caps(
             &p,
-            "PLUCKS",
+            "NOTES HEARD",
             pos2(px2, my),
             12.0,
             th.caption,
@@ -1617,7 +1893,7 @@ impl SettingsView {
         }
         text::draw(
             &p,
-            if lit { "counts" } else { "a pluck lights it" },
+            if lit { "counts" } else { "a note lights it" },
             pos2(lc.x - px(16.0), lc.y),
             Align2::RIGHT_CENTER,
             Style::new(12.0, 700, if lit { th.hit } else { th.caption }),
@@ -1628,12 +1904,15 @@ impl SettingsView {
         card.max.y
     }
 
-    fn guide_notes(&mut self, ui: &mut Ui, area: Rect) {
+    fn guide_notes(&mut self, ui: &mut Ui, area: Rect, inst: qrs_analysis::instrument::Instrument) -> f32 {
+        let (open, open_names) = gs::open_strings(inst);
         let th = t();
         let p = ui.painter().clone();
         let ctx = ui.ctx().clone();
         let pad = px(20.0);
-        let Some(g) = &self.setup else { return };
+        let Some(g) = &self.setup else {
+            return area.min.y;
+        };
         let ch = 2.0 * pad + Self::h_heading(&ctx) + px(200.0);
         let card = Rect::from_min_size(area.min, vec2(area.width(), area.height().min(ch)));
         paint::card(&p, card, 24.0, false);
@@ -1693,11 +1972,16 @@ impl SettingsView {
         let sx = screen.max.x + px(28.0);
         let sw = x + wd - sx;
         let gap = px(10.0);
-        let cw = snap((sw - 5.0 * gap) / 6.0);
+        // (a box per string the instrument has: 6, 5 with a 5-string's low B, or 4; P37.6a)
+        let cw = string_box_w(sw, gap, open.len());
         let count = g.heard.iter().filter(|h| **h).count();
         text::caps(
             &p,
-            "OPEN STRINGS, E STANDARD",
+            match inst {
+                qrs_analysis::instrument::Instrument::Bass5 => "OPEN STRINGS, 5-STRING BASS IN STANDARD",
+                qrs_analysis::instrument::Instrument::Bass => "OPEN STRINGS, BASS IN E STANDARD",
+                qrs_analysis::instrument::Instrument::Guitar => "OPEN STRINGS, E STANDARD",
+            },
             pos2(sx, yy),
             12.0,
             th.caption,
@@ -1705,10 +1989,10 @@ impl SettingsView {
             None,
         );
         let cy = yy + px(28.0);
-        for (i, name) in gs::OPEN_NAMES.iter().enumerate() {
+        for (i, name) in open_names.iter().enumerate() {
             let r = Rect::from_min_size(pos2(sx + i as f32 * (cw + gap), cy), vec2(cw, px(84.0)));
             let on = g.heard[i];
-            let now = midi.and_then(gs::open_string) == Some(i);
+            let now = midi.and_then(|m| gs::open_string_of(open, m)) == Some(i);
             if now {
                 paint::inset(&p, r, Some(16.0), 3.0, Fill::Base);
             } else {
@@ -1730,7 +2014,7 @@ impl SettingsView {
             );
             text::draw(
                 &p,
-                &qrs_analysis::pitch::note_label(gs::OPEN[i] as f64),
+                &qrs_analysis::pitch::note_label(open[i] as f64),
                 pos2(r.center().x, r.max.y - px(14.0)),
                 Align2::CENTER_CENTER,
                 Style::new(11.0, 600, th.caption),
@@ -1740,7 +2024,7 @@ impl SettingsView {
         let wy = cy + px(84.0) + px(22.0);
         text::draw(
             &p,
-            gs::notes_words(count, g.any_note),
+            gs::notes_words_of(count, open.len(), g.any_note),
             pos2(sx, wy),
             Align2::LEFT_TOP,
             Style::new(17.0, 800, if count >= 3 { th.hit } else { th.text }),
@@ -1760,6 +2044,7 @@ impl SettingsView {
         {
             ly = text::draw(&p, line, pos2(sx, ly), Align2::LEFT_TOP, cst, None).max.y;
         }
+        card.max.y
     }
 
     fn guide_done(&mut self, ui: &mut Ui, st: &mut AppState, area: Rect, meters: (f32, f32)) {
@@ -1796,7 +2081,7 @@ impl SettingsView {
             match &in_name {
                 Some(n) if channel.is_empty() => n.clone(),
                 Some(n) => format!("{n}  ·  {channel}"),
-                None => "no guitar input".into(),
+                None => "no input".into(),
             },
         ));
         rows.push((
@@ -1824,10 +2109,10 @@ impl SettingsView {
         rows.push((Step::Kind, Some(true), kind_name(cal.kind, guess)));
         rows.push((
             Step::Calibrate,
-            cal.peak_db.map(|_| true),
+            cal.peak_db.map(|_| cal.calibrated() && cal.caveat().is_none()),
             match cal.peak_db {
                 Some(pk) => format!(
-                    "trim {:+.1} dB  ·  plucks from {:.0} dB  ·  peaks at {pk:.0} dB{}",
+                    "boost {:+.1} dB  ·  notes from {:.0} dB  ·  peaks at {pk:.0} dB{}",
                     cal.trim_db,
                     db(cal.onset_or_default(st.mic_input())),
                     if cal.is_recommended() {
@@ -1836,20 +2121,41 @@ impl SettingsView {
                         "  ·  set by hand"
                     }
                 ),
-                None => "not calibrated (Calibrate any time in Settings > Audio input / output)".into(),
+                None if skipped(Step::Calibrate) => "skipped: Settings > Sound > Check level any time".into(),
+                None => "not calibrated yet (Check level any time in Settings > Sound)".into(),
             },
         ));
         rows.push((
             Step::Notes,
             (heard > 0 || g.any_note).then_some(true),
             if heard > 0 {
-                format!("{heard} of 6 open strings heard")
+                format!(
+                    "{heard} of {} open strings heard",
+                    gs::open_strings(st.instrument()).0.len()
+                )
             } else if g.any_note {
                 "notes heard".into()
             } else if skipped(Step::Notes) {
                 "skipped".into()
             } else {
                 "not checked".into()
+            },
+        ));
+        // timing (P36.6): what the tool set, and on what
+        let timing = super::timing_tool::summary(st);
+        rows.push((
+            Step::Timing,
+            match &timing {
+                Some(_) => Some(true),
+                None if skipped(Step::Timing) => Some(false),
+                None => None,
+            },
+            match timing {
+                Some(s) => s,
+                None if skipped(Step::Timing) => {
+                    "skipped: Settings > Timing > Calibrate timing any time".into()
+                }
+                None => "not measured".into(),
             },
         ));
         let row_h = px(34.0);
@@ -1902,20 +2208,25 @@ impl SettingsView {
         }
         paint::card(&p, t_card, 24.0, false);
         let yy = self.heading(&p, "TIMING", x, t_card.min.y + pad, None, "", "");
-        let bw = widgets::button_width(&ctx, "Practice settings", "", 14.0, false).max(px(170.0));
+        let bw = widgets::button_width(&ctx, "Timing settings", "", 14.0, false).max(px(170.0));
         let cst = Style::new(13.0, 500, th.text_2);
         let mut ly = yy;
         for line in text::wrap(
             &ctx,
-            "If your hits show as late or early in a song, Settings > Practice > Guitar timing moves them (Ctrl+, \
-             and Ctrl+.). Crackles: raise the Buffer on the Audio page.",
+            &format!(
+                "Changed devices, or notes still late or early in a song? Settings > Timing > Calibrate timing \
+                 measures it again, and {} delay there moves them by hand. Crackles: raise the Buffer there.",
+                st.instrument().noun_cap()
+            ),
             cst,
             wd - bw - px(32.0),
         )
         .iter()
         .take(3)
         {
-            ly = text::draw(&p, line, pos2(x, ly), Align2::LEFT_TOP, cst, None).max.y;
+            ly = text::draw(&p, line, pos2(x, ly), Align2::LEFT_TOP, cst, None)
+                .max
+                .y;
         }
         let _ = ly;
         self.button(
@@ -1927,7 +2238,7 @@ impl SettingsView {
                 ),
                 vec2(bw, px(46.0)),
             ),
-            "Practice settings",
+            "Timing settings",
             "",
             "setup:practice",
             ButtonStyle {
@@ -1937,6 +2248,14 @@ impl SettingsView {
             },
         );
     }
+}
+
+/// The width of each open string's box in the note check: `n` boxes and their gaps across `w`, no wider than a
+/// guitar's six would be at twice the width (a 4-string's boxes don't sprawl).
+fn string_box_w(w: f32, gap: f32, n: usize) -> f32 {
+    let n = n.max(1) as f32;
+    let six = (w - 5.0 * gap) / 6.0;
+    snap(((w - (n - 1.0) * gap) / n).min(six * 1.5))
 }
 
 /// The playing's level (RMS, -60..0 dBFS) against the pluck threshold: the level filled (lit while over it), the
@@ -1986,13 +2305,13 @@ fn pluck_meter(p: &egui::Painter, groove: Rect, level: f32, onset: f32) {
     }
 }
 
-/// "No guitar input" in a step's place.
+/// "No input" in a step's place.
 fn no_input(p: &egui::Painter, area: Rect) {
     notice(
         p,
         area,
-        "No guitar input is listening",
-        "Go back to the first step and pick the input your guitar is plugged into.",
+        "No input is listening",
+        "Go back to the first step and pick the input your instrument is plugged into.",
     );
 }
 
@@ -2106,4 +2425,29 @@ fn choice_rows(
         );
     }
     (h, clicked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// P37.6a: the open-strings boxes fill the row for 6, 5 or 4 strings (no empty slots), each as wide as the
+    /// row allows, a 4-string's no wider than 1.5 of a guitar's.
+    #[test]
+    fn the_string_boxes_fit_the_string_count() {
+        let (w, gap) = (600.0, 10.0);
+        for inst in qrs_analysis::instrument::Instrument::ALL {
+            let n = gs::open_strings(inst).0.len();
+            assert_eq!(n, inst.open_strings().len());
+            let cw = string_box_w(w, gap, n);
+            let used = n as f32 * cw + (n - 1) as f32 * gap;
+            assert!(used <= w + 1.0, "{inst:?}: {used}");
+            if n >= 5 {
+                assert!(used >= w - n as f32, "{inst:?} fills the row: {used}");
+            }
+        }
+        let six = string_box_w(w, gap, 6);
+        assert!(string_box_w(w, gap, 4) <= six * 1.5 + 1.0);
+        assert!(string_box_w(w, gap, 5) > six);
+    }
 }

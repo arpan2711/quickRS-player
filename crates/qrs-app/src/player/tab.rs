@@ -56,16 +56,6 @@ pub(super) fn int_(v: f64) -> f64 {
     v.trunc()
 }
 
-/// `int(v)` of a pixel value held in points (with slack for their f32 noise).
-pub(super) fn int_pt(v: f32) -> f64 {
-    let v = px_of(v);
-    if v >= 0.0 {
-        (v + 1e-3).trunc()
-    } else {
-        (v - 1e-3).trunc()
-    }
-}
-
 /// `int(n * s)` of a scale-1 number, in pixels.
 pub(super) fn ipx(n: f64) -> f64 {
     (n * sc()).trunc()
@@ -502,6 +492,8 @@ pub struct TabCtx<'a> {
     pub ear: Option<&'a [bool]>,
     /// Note by note (P15.3): the scorer group the song waits at, its breath (0..1) and a wrong note's flash (0..1).
     pub held: Option<(usize, f32, f32)>,
+    /// Chord names as numbers in this key (the toolbar's chord-names key); None: as charted.
+    pub numerals: Option<qrs_analysis::keyguess::Key>,
 }
 
 pub struct TabView {
@@ -1507,6 +1499,9 @@ impl TabView {
             );
             let mut last_name: Option<&str> = None;
             let mut last_x = -1e9f64;
+            // where the last name drawn ends: chords close together (F#m F#5/C# C#m in a beat) push the next name
+            // right of it instead of printing over it (owner report, Someday)
+            let mut last_right = -1e9f64;
             let chords = if c.ear.is_some() {
                 &chart.chords[0..0] // (ear mode: a chord's name gives it away)
             } else {
@@ -1514,11 +1509,18 @@ impl TabView {
             };
             let chord_st = Style::new(13.0, 800, th.accent_ink);
             for ch in chords {
-                let mut cx = self.x_of(Self::tt(chart, c.snap, ch.time), None);
-                if !ch.name.is_empty() && (last_name != Some(ch.name.as_str()) || cx - last_x > 160.0 * s) {
+                let at = self.x_of(Self::tt(chart, c.snap, ch.time), None);
+                let name: std::borrow::Cow<str> = match c.numerals {
+                    Some(key) if !ch.name.trim().is_empty() => {
+                        qrs_analysis::chordname::name_in_key(ch.name.trim(), key).into()
+                    }
+                    _ => ch.name.as_str().into(),
+                };
+                if !name.is_empty() && (last_name != Some(ch.name.as_str()) || at - last_x > 160.0 * s) {
+                    let half = tw(&ctx, &name, chord_st) / 2.0;
+                    let mut cx = at.max(last_right + ipx(8.0) + half);
                     if self.compact {
                         // (the section labels are on this line too: a name that would sit on one goes after it)
-                        let half = tw(&ctx, &ch.name, chord_st) / 2.0;
                         for pl in &pills {
                             if cx + half > pl.x && cx - half < pl.right() {
                                 cx = pl.right() + ipx(6.0) + half;
@@ -1527,7 +1529,7 @@ impl TabView {
                     }
                     put(
                         &pc,
-                        &ch.name,
+                        &name,
                         cx,
                         band_top - ipx(1.0),
                         Align2::CENTER_BOTTOM,
@@ -1535,7 +1537,8 @@ impl TabView {
                         None,
                     );
                     last_name = Some(ch.name.as_str());
-                    last_x = cx;
+                    last_x = at;
+                    last_right = cx + half;
                 }
             }
             // the cursor, under the notes so their knock-outs mask it instead of it slicing through digits
@@ -1830,7 +1833,19 @@ impl TabView {
                 + 12.0 * s,
         );
         let x = (well.x + ipx(12.0)).max(x.min(well.right() - ipx(12.0) - total));
-        let y = (well.y + ipx(12.0)).max(y.min(well.bottom() - bh - 2.0 * pad - ipx(40.0)));
+        // under the selection's staff; when that's past the well's foot, over the staff instead (clamped up, it sat
+        // on the selected bar's low strings: at scale 2.2, P37.4b)
+        let limit = well.bottom() - bh - 2.0 * pad - ipx(40.0);
+        let bar_above = y > limit;
+        let y = if bar_above {
+            let above = int_(self.top + self.row_top(m.row) - self.scroll_px + self.top_m - 12.0 * s)
+                - bh
+                - 2.0 * pad;
+            if above >= well.y + ipx(12.0) { above } else { limit }
+        } else {
+            y
+        };
+        let y = (well.y + ipx(12.0)).max(y.min(limit));
         let bx = PRect {
             x,
             y,
@@ -1971,25 +1986,45 @@ impl TabView {
         };
         let speed = (c.selection_speed * 100.0).round_ties_even() as i64;
         let caption = format!(
-            "{bars} selected  ·  plays {}{}  ·  Esc clears it",
-            if track { "the song" } else { "on the synth guitar" },
+            "{bars} selected: the loop  ·  P hears it alone {}{}  ·  Esc clears it",
+            if track {
+                "in the song"
+            } else {
+                "on the synth guitar"
+            },
             if speed != 100 {
                 format!(" at {speed}% speed")
             } else {
                 String::new()
             }
         );
+        // on its own plate, just under the toolbar (or over it when there's no room): at the well's foot with no
+        // plate it lay on the next row's strings and notes (P37.4b)
         let st = Style::new(13.0, 500, th.caption);
         let h = th_px(&ctx, st);
+        let w = tw(&ctx, &caption, st);
+        let (padx, pady) = (ipx(14.0), ipx(6.0));
+        let below = bx.bottom() + ipx(8.0);
+        // (over the toolbar when the toolbar is over the staff: under it, it lay on the selected bar)
+        let cy = if !bar_above && below + h + 2.0 * pady <= well.bottom() - ipx(6.0) {
+            below + pady
+        } else {
+            bx.y - ipx(8.0) - pady - h
+        };
         let tr = PRect {
-            x: well.x + ipx(28.0),
-            y: well.bottom() - ipx(18.0) - h,
-            w: tw(&ctx, &caption, st),
+            x: (bx.x + ipx(4.0)).min(well.right() - ipx(8.0) - w - 2.0 * padx) + padx,
+            y: cy,
+            w,
             h,
         };
-        pg(&p, th.screen, |px| {
-            px.rect(tr.inflate(ipx(16.0), ipx(6.0)), ipx(8.0))
-        });
+        paint::raised(
+            &p,
+            tr.inflate(2.0 * padx, 2.0 * pady).rect(),
+            Some(10.0),
+            3.0,
+            Fill::Base,
+            0.0,
+        );
         put(&p, &caption, tr.x, tr.y, Align2::LEFT_TOP, st, None);
         acts
     }
@@ -2258,6 +2293,7 @@ mod tests {
                     selection_speed: 1.0,
                     ear: None,
                     held: None,
+                    numerals: None,
                 };
                 let well = Rect::from_min_size(egui::pos2(28.0, 143.0), egui::vec2(960.0, 400.0));
                 let groove = Rect::from_min_size(egui::pos2(1002.0, 143.0), egui::vec2(10.0, 400.0));
@@ -2321,6 +2357,7 @@ mod tests {
                     selection_speed: 1.0,
                     ear: None,
                     held: None,
+                    numerals: None,
                 };
                 tv.layout(ctx, &c, content);
                 (tv.row_h, tv.line_gap, tv.rows.len(), tv.chip_h)

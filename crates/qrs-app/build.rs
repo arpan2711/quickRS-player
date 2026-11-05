@@ -13,7 +13,7 @@ fn main() {
             .set("ProductName", "quickRS Bristol 2026")
             .set(
                 "FileDescription",
-                "quickRS Bristol 2026: Rocksmith song library and player",
+                "quickRS Bristol 2026: RS song library and player",
             )
             .set("OriginalFilename", "quickrs.exe")
             .set("InternalName", "quickrs");

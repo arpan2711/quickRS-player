@@ -13,9 +13,13 @@
 //! - **Back panel** (D45): sag (how far the supply droops; a tube rectifier droops further and recovers slower),
 //!   bias (cold: a crossover notch around zero; hot: earlier, lopsided clipping), power tubes (EL34, 6L6, KT88, EL84,
 //!   6V6: the stage's headroom, curve and EQ, relative to the amp's own) and a power master (drive into the stage).
+//! - **Bass** (P37.2): the SVT (with its Ultra Lo and Ultra Hi switches), the B-15 Portaflex (a small tube head, the
+//!   Bassman stack, 6V6s), a solid-state hybrid head (a clean preamp into a hard-clipping boost, an active EQ with a
+//!   semi-parametric mid and a Contour scoop, a transformerless power stage) and an Orange-style all-tube head. Their
+//!   input and output-transformer high-passes sit at 15-20 Hz, so a 5-string's low B (31 Hz) keeps its fundamental.
 
 use super::dsp::{
-    Biquad, Curve, Filter, OnePole, Oversample2, Shaper, Smooth, audio_taper, db_to_gain, flush, sweep,
+    Biquad, Curve, Filter, Lfo, OnePole, Oversample2, Shaper, Smooth, audio_taper, db_to_gain, flush, sweep,
     unit10,
 };
 use super::{MAX_KNOBS, Pedal};
@@ -277,7 +281,19 @@ enum Voice {
     Lead,
     Modern,
     Bass,
+    B15,
+    BassSs,
+    BassTube,
+    /// P41.2 (D167): the Mark (a cascaded lead preamp with its tone stack early and a five-band graphic EQ), the
+    /// SLO / 5150-style hot-rodded lead, the Orange-style crunch, the Hiwatt-style clean-loud head.
+    Cali,
+    Snake,
+    Tangerine,
+    Surrey,
 }
+
+/// The Mark's five-band graphic EQ (Hz), in the power amp's path as on the real one.
+pub const GEQ_HZ: [f32; 5] = [80.0, 240.0, 750.0, 2200.0, 6600.0];
 
 /// Where the tone stack sits.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -291,6 +307,8 @@ enum StackAt {
 }
 
 struct Amp {
+    /// The Twin's reverb and vibrato (none on the others).
+    extra: Option<Box<Extras>>,
     voice: Voice,
     rate: f32,
     input_hp: OnePole,
@@ -306,6 +324,9 @@ struct Amp {
     /// After the preamp, at the base rate: tweed tone, bass amp mid, Vox brilliance.
     post: [Biquad; 3],
     npost: usize,
+    /// The Mark's graphic EQ (none on the others).
+    geq: [Biquad; 5],
+    ngeq: usize,
     /// Power stage.
     presence: Biquad,
     depth: Biquad,
@@ -400,9 +421,64 @@ fn inverse(f: Filter) -> Filter {
     }
 }
 
+/// The Twin's own reverb and vibrato channel (P37.6c): a spring tank after the amp (ours; on the real one it sits
+/// before the power stage) and an optical-style tremolo. Allocated with the amp, never on the audio thread.
+struct Extras {
+    spring: Box<dyn Pedal>,
+    buf: [f32; 128],
+    reverb: bool,
+    trem: Lfo,
+    trem_depth: Smooth,
+}
+
+impl Extras {
+    fn new(rate: f32) -> Box<Extras> {
+        Box::new(Extras {
+            spring: super::reverb::spring(rate),
+            buf: [0.0; 128],
+            reverb: false,
+            trem: Lfo::default(),
+            trem_depth: Smooth::new(rate, 30.0, 0.0),
+        })
+    }
+
+    fn set(&mut self, rate: f32, reverb: f32, speed: f32, intensity: f32) {
+        let mut k = [0.0f32; MAX_KNOBS];
+        // (dwell and tone where the Twin's tank sits; the Reverb knob is the mix)
+        k[0] = 4.5;
+        k[1] = 6.0;
+        k[2] = 70.0 * reverb;
+        self.spring.set(&k);
+        self.reverb = reverb > 0.0;
+        self.trem.set(rate, sweep(1.5, 10.0, speed));
+        self.trem_depth.target = 0.9 * intensity;
+    }
+
+    fn run(&mut self, x: &mut [f32]) {
+        if self.trem_depth.target > 0.0 || self.trem_depth.tick() > 1e-4 {
+            for v in x.iter_mut() {
+                let p = self.trem.step();
+                let d = self.trem_depth.tick();
+                *v *= 1.0 - d * (0.5 + 0.5 * Lfo::sine(p));
+            }
+        }
+        if self.reverb {
+            for c in x.chunks_mut(128) {
+                let b = &mut self.buf[..c.len()];
+                b.copy_from_slice(c);
+                self.spring.process(b);
+                for (o, w) in c.iter_mut().zip(b.iter()) {
+                    *o += *w;
+                }
+            }
+        }
+    }
+}
+
 fn new(voice: Voice, rate: f32) -> Box<dyn Pedal> {
     let r2 = rate * 2.0;
     Box::new(Amp {
+        extra: (voice == Voice::Clean).then(|| Extras::new(rate)),
         voice,
         rate,
         input_hp: OnePole::new(rate, 25.0),
@@ -417,6 +493,8 @@ fn new(voice: Voice, rate: f32) -> Box<dyn Pedal> {
         os_pre: Oversample2::new(),
         post: [Biquad::default(); 3],
         npost: 0,
+        geq: [Biquad::default(); 5],
+        ngeq: 0,
         presence: Biquad::new(rate, Filter::HighShelf { f: 3500.0, db: 0.0 }),
         depth: Biquad::new(
             rate,
@@ -466,6 +544,27 @@ pub fn modern(rate: f32) -> Box<dyn Pedal> {
 }
 pub fn bass(rate: f32) -> Box<dyn Pedal> {
     new(Voice::Bass, rate)
+}
+pub fn b15(rate: f32) -> Box<dyn Pedal> {
+    new(Voice::B15, rate)
+}
+pub fn bass_ss(rate: f32) -> Box<dyn Pedal> {
+    new(Voice::BassSs, rate)
+}
+pub fn bass_tube(rate: f32) -> Box<dyn Pedal> {
+    new(Voice::BassTube, rate)
+}
+pub fn cali(rate: f32) -> Box<dyn Pedal> {
+    new(Voice::Cali, rate)
+}
+pub fn snake(rate: f32) -> Box<dyn Pedal> {
+    new(Voice::Snake, rate)
+}
+pub fn tangerine(rate: f32) -> Box<dyn Pedal> {
+    new(Voice::Tangerine, rate)
+}
+pub fn surrey(rate: f32) -> Box<dyn Pedal> {
+    new(Voice::Surrey, rate)
 }
 
 impl Amp {
@@ -567,6 +666,8 @@ impl Pedal for Amp {
             os_pre,
             post,
             npost,
+            geq,
+            ngeq,
             presence,
             depth,
             drive,
@@ -612,6 +713,9 @@ impl Pedal for Amp {
             for b in post.iter_mut().take(*npost) {
                 s = b.tick(s);
             }
+            for b in geq.iter_mut().take(*ngeq) {
+                s = b.tick(s);
+            }
             // the power stage
             s = depth.tick(presence.tick(s));
             for b in tube_eq.iter_mut().take(*ntube) {
@@ -637,20 +741,38 @@ impl Pedal for Amp {
             let out = xf_lp.tick(xf_hp.hp(y)) / d.max(0.2).sqrt();
             *v = out * level.tick();
         }
+        if let Some(e) = self.extra.as_mut() {
+            e.run(x);
+        }
     }
 
     fn set(&mut self, v: &[f32; MAX_KNOBS]) {
         let rate2 = self.rate * 2.0;
+        // the input coupling cap and the output transformer: a bass amp's reach a 5-string's low B (P37.2)
+        let bass_voice = matches!(
+            self.voice,
+            Voice::Bass | Voice::B15 | Voice::BassSs | Voice::BassTube
+        );
+        self.input_hp.set(self.rate, if bass_voice { 5.0 } else { 25.0 });
+        self.ngeq = 0;
+        // (P41.2, D166: the Rectifier, the 800 and the tweed's transformers reach lower)
+        let xf = match self.voice {
+            Voice::Modern | Voice::Lead => 30.0,
+            Voice::Tweed => 25.0,
+            _ => 55.0,
+        };
+        self.xf_hp.set(self.rate, if bass_voice { 6.0 } else { xf });
         match self.voice {
             Voice::Clean => {
-                // gain, bass, mid, treble, bright, master
-                let (g, bass, mid, treble, bright, master) = (
-                    unit10(v[0]),
+                // bright, volume ("gain"), treble, middle, bass, reverb, speed, intensity, master (P41.2: the real
+                // panel's order)
+                let (bright, g, treble, mid, bass, master) = (
+                    v[0] > 0.5,
                     unit10(v[1]),
                     unit10(v[2]),
                     unit10(v[3]),
-                    v[4] > 0.5,
-                    unit10(v[5]),
+                    unit10(v[4]),
+                    unit10(v[8]),
                 );
                 self.pre(&[Filter::HighShelf {
                     f: 2500.0,
@@ -673,11 +795,19 @@ impl Pedal for Amp {
                 self.npost = 0;
                 self.power(Curve::Tanh, 0.35 + 1.8 * audio_taper(master), 1.0, 1.5, 9500.0);
                 self.cut.set(rate2, 18000.0);
-                self.level.target = db_to_gain(-1.0 - 4.0 * g);
+                // (P37.2: past noon the Twin's volume got 12 dB louder from 3 to 7 and into the board's limiter;
+                // a steeper trim above 5 keeps it rising, as a turned-up amp does, by about half that)
+                self.level.target = db_to_gain(-1.0 - 4.0 * g - 20.0 * (g - 0.5).max(0.0));
+                let rate = self.rate;
+                if let Some(e) = self.extra.as_mut() {
+                    e.set(rate, unit10(v[5]), unit10(v[6]), unit10(v[7]));
+                }
             }
             Voice::Tweed => {
                 let (vol, tone, master) = (unit10(v[0]), unit10(v[1]), unit10(v[2]));
-                self.pre(&[Filter::HighPass { f: 40.0, q: 0.6 }]);
+                // (P41.2, D166: the input and coupling caps let the lows through, and the depth grows as it's turned up and
+                // the supply loosens: 15-20% of a chug under 100 Hz, as the 5E3 and Bassman captures; it was 8%)
+                self.pre(&[Filter::HighPass { f: 25.0, q: 0.6 }]);
                 self.nstages = 2;
                 self.stages[0].tune(rate2, 3.0, Curve::Asym(0.7), 0.15, 11000.0, 25.0);
                 self.stages[1].tune(
@@ -686,7 +816,7 @@ impl Pedal for Amp {
                     Curve::Asym(0.6),
                     0.2,
                     8000.0,
-                    40.0,
+                    20.0,
                 );
                 self.stages[0].cathode(rate2, 100.0, 1.0);
                 self.stages[1].cathode(rate2, 100.0, 1.0);
@@ -712,7 +842,7 @@ impl Pedal for Amp {
                     Curve::Asym(0.85),
                     0.7 + 3.5 * audio_taper(master),
                     0.0,
-                    2.0,
+                    6.0 + 4.0 * vol,
                     6500.0,
                 );
                 self.cut.set(rate2, 18000.0);
@@ -803,7 +933,7 @@ impl Pedal for Amp {
                     unit10(v[5]),
                 );
                 self.pre(&[
-                    Filter::HighPass { f: 70.0, q: 0.6 },
+                    Filter::HighPass { f: 50.0, q: 0.6 },
                     Filter::HighShelf { f: 2500.0, db: 4.0 },
                 ]);
                 self.nstages = 3;
@@ -816,14 +946,16 @@ impl Pedal for Amp {
                     50.0,
                 );
                 // the cold-biased second stage: tight, lopsided
-                self.stages[1].tune(rate2, 12.0, Curve::Asym(0.75), 0.1, 7000.0, 120.0);
+                // (P41.2, D166: its coupling cap 120 Hz to 70 and the input's 70 to 50: the JCM800 captures' 3-6% under
+                // 100 Hz, not 1%)
+                self.stages[1].tune(rate2, 12.0, Curve::Asym(0.75), 0.1, 7000.0, 70.0);
                 self.stages[2].tune(rate2, 1.0, Curve::Soft, 0.0, 16000.0, 10.0);
                 self.stages[0].cathode(rate2, 160.0, 0.4);
                 // the 2203's second stage has an unbypassed cathode: much less gain down low
                 self.stages[1].cathode(rate2, 250.0, 0.3);
                 self.stages[2].cathode(rate2, 100.0, 1.0);
                 self.stack(StackAt::AfterPreamp, JCM800, treble, mid, bass, 9.0);
-                self.npost = 0;
+                self.post(&[Filter::LowShelf { f: 110.0, db: 6.0 }]);
                 self.power(
                     Curve::Tanh,
                     0.5 + 3.0 * audio_taper(master),
@@ -844,33 +976,53 @@ impl Pedal for Amp {
                     unit10(v[5]),
                     unit10(v[6]),
                 );
-                // a tight front end: cut the lows before the gain, push the mids
+                // the channel's mode (P37.6c): Raw (the least gain, open and gritty), Vintage (smoother, more
+                // mids, a softer low end) or Modern (as it always was)
+                let (g1, g2, push, dep) = match v[7].round() as i32 {
+                    0 => (0.35, 6.0, 0.0, dep * 0.4),
+                    1 => (0.7, 12.0, 3.5, dep * 0.5),
+                    _ => (1.0, 18.0, 2.0, dep),
+                };
+                // (P41.2, D166: turned down, the later stages give up their gain too, so a Rectifier at 3 is a
+                // crunch with a quiet idle, not the full cascade's +48 dB of hiss; from 6 up it is as it was)
+                let s = ((g - 0.1) / 0.5).clamp(0.0, 1.0);
+                // a firm front end: the lows trimmed before the gain (less than before: the real one's chug is
+                // loose), the mids pushed
                 self.pre(&[
-                    Filter::HighPass { f: 105.0, q: 0.7 },
+                    Filter::HighPass { f: 90.0, q: 0.7 },
                     Filter::Peak {
                         f: 900.0,
                         q: 0.7,
-                        db: 2.0,
+                        db: push,
                     },
                 ]);
                 self.nstages = 4;
                 self.stages[0].tune(
                     rate2,
-                    6.0 + 34.0 * audio_taper(g),
+                    (2.0 + 38.0 * audio_taper(g)) * g1,
                     Curve::Asym(0.7),
                     0.15,
                     7000.0,
                     30.0,
                 );
-                self.stages[1].tune(rate2, 18.0, Curve::Asym(0.75), 0.1, 5500.0, 90.0);
-                self.stages[2].tune(rate2, 9.0, Curve::Asym(0.8), 0.1, 5000.0, 70.0);
+                self.stages[1].tune(rate2, g2 * (0.2 + 0.8 * s), Curve::Asym(0.75), 0.1, 5500.0, 90.0);
+                self.stages[2].tune(
+                    rate2,
+                    9.0 * (0.12 + 0.88 * s),
+                    Curve::Asym(0.8),
+                    0.1,
+                    5000.0,
+                    70.0,
+                );
                 self.stages[3].tune(rate2, 1.0, Curve::Soft, 0.0, 16000.0, 10.0);
                 self.stages[0].cathode(rate2, 180.0, 0.5);
                 self.stages[1].cathode(rate2, 220.0, 0.45);
                 self.stages[2].cathode(rate2, 150.0, 0.6);
                 self.stages[3].cathode(rate2, 100.0, 1.0);
                 self.stack(StackAt::AfterPreamp, MESA, treble, mid, bass, 10.0);
-                self.npost = 0;
+                // (P41.2, D166: the 6L6s into a big transformer: the lows the preamp's clipping makes come through,
+                // 10-15% of a chug's energy under 100 Hz as in the owner's Dual Rec captures; it was 2%)
+                self.post(&[Filter::LowShelf { f: 110.0, db: 11.0 }]);
                 self.power(
                     Curve::Tanh,
                     0.6 + 3.0 * audio_taper(master),
@@ -890,7 +1042,15 @@ impl Pedal for Amp {
                     unit10(v[4]),
                     unit10(v[5]),
                 );
-                self.pre(&[Filter::HighPass { f: 25.0, q: 0.6 }]);
+                let (ultra_lo, ultra_hi) = (v[6] >= 0.5, v[7] >= 0.5);
+                // Ultra Hi: the SVT's treble lift at the input; (P37.2: the high-pass 25 Hz to 6)
+                self.pre(&[
+                    Filter::HighPass { f: 6.0, q: 0.5 },
+                    Filter::HighShelf { f: 4500.0, db: 8.0 },
+                ]);
+                if !ultra_hi {
+                    self.npre = 1;
+                }
                 self.nstages = 2;
                 self.stages[0].tune(
                     rate2,
@@ -898,38 +1058,387 @@ impl Pedal for Amp {
                     Curve::Asym(0.8),
                     0.1,
                     12000.0,
-                    15.0,
+                    5.0,
                 );
-                self.stages[1].tune(rate2, 1.0 + 6.0 * g, Curve::Asym(0.85), 0.08, 10000.0, 20.0);
+                self.stages[1].tune(rate2, 1.0 + 6.0 * g, Curve::Asym(0.85), 0.08, 10000.0, 6.0);
                 // the SVT's bass and treble; its mid is a sweepable boost or cut
                 self.stages[0].cathode(rate2, 100.0, 1.0);
                 self.stages[1].cathode(rate2, 100.0, 1.0);
                 self.stack(StackAt::AfterFirst, AMPEG, treble, 0.5, bass, 6.0);
-                self.post(&[Filter::Peak {
-                    f: freq.clamp(100.0, 4000.0),
-                    q: 0.9,
-                    db: (mid - 0.5) * 20.0,
-                }]);
+                // Ultra Lo: a deep mid scoop and a little more bottom
+                self.post(&[
+                    Filter::Peak {
+                        f: freq.clamp(100.0, 4000.0),
+                        q: 0.9,
+                        db: (mid - 0.5) * 20.0,
+                    },
+                    Filter::Peak {
+                        f: 500.0,
+                        q: 0.7,
+                        db: -10.0,
+                    },
+                    Filter::LowShelf { f: 50.0, db: 3.0 },
+                ]);
+                if !ultra_lo {
+                    self.npost = 1;
+                }
                 self.power(Curve::Tanh, 0.35 + 2.0 * audio_taper(master), 0.0, 2.0, 7000.0);
                 self.cut.set(rate2, 18000.0);
                 self.level.target = db_to_gain(-12.0 - 3.0 * g);
             }
+            Voice::B15 => {
+                let (vol, bass, treble, hi_in, master) = (
+                    unit10(v[0]),
+                    unit10(v[1]),
+                    unit10(v[2]),
+                    v[3] >= 0.5,
+                    unit10(v[4]),
+                );
+                self.pre(&[Filter::HighPass { f: 6.0, q: 0.5 }]);
+                self.nstages = 2;
+                // the Hi input is the one most players use: about 6 dB more into the first triode
+                self.stages[0].tune(
+                    rate2,
+                    if hi_in { 3.0 } else { 1.5 },
+                    Curve::Asym(0.8),
+                    0.1,
+                    11000.0,
+                    5.0,
+                );
+                self.stages[1].tune(
+                    rate2,
+                    1.0 + 14.0 * audio_taper(vol),
+                    Curve::Asym(0.7),
+                    0.15,
+                    6500.0,
+                    5.0,
+                );
+                self.stages[0].cathode(rate2, 100.0, 1.0);
+                self.stages[1].cathode(rate2, 100.0, 1.0);
+                self.stack(StackAt::AfterFirst, BASSMAN, treble, 0.5, bass, 6.0);
+                self.npost = 0;
+                // two 6V6s and a small output transformer: early, soft, round
+                self.power(
+                    Curve::Asym(0.85),
+                    0.7 + 2.5 * audio_taper(master),
+                    0.0,
+                    2.0,
+                    5000.0,
+                );
+                self.cut.set(rate2, 16000.0);
+                self.level.target = db_to_gain(-13.0 - 4.0 * vol);
+            }
+            Voice::BassSs => {
+                let (g, bass_db, mid_db, freq, treble_db, contour, master) =
+                    (unit10(v[0]), v[1], v[2], v[3], v[4], v[5] >= 0.5, unit10(v[6]));
+                // the Contour: a wide scoop around 500 Hz before the preamp (slap)
+                self.pre(&[
+                    Filter::HighPass { f: 6.0, q: 0.5 },
+                    Filter::Peak {
+                        f: 500.0,
+                        q: 0.8,
+                        db: -10.0,
+                    },
+                ]);
+                if !contour {
+                    self.npre = 1;
+                }
+                self.nstages = 2;
+                // a clean op-amp preamp, then the boost's hard clipping as Gain goes up
+                self.stages[0].tune(rate2, 1.2 + 6.0 * audio_taper(g), Curve::Soft, 0.0, 16000.0, 5.0);
+                self.stages[1].tune(rate2, 0.8 + 6.0 * g * g, Curve::Hard, 0.0, 12000.0, 6.0);
+                self.stages[0].cathode(rate2, 100.0, 1.0);
+                self.stages[1].cathode(rate2, 100.0, 1.0);
+                self.stack_at = StackAt::None;
+                // the active EQ: shelves at 60 Hz and 5 kHz, a semi-parametric mid
+                self.post(&[
+                    Filter::LowShelf { f: 60.0, db: bass_db },
+                    Filter::Peak {
+                        f: freq.clamp(100.0, 4000.0),
+                        q: 0.8,
+                        db: mid_db,
+                    },
+                    Filter::HighShelf {
+                        f: 5000.0,
+                        db: treble_db,
+                    },
+                ]);
+                // a transformerless power stage: wide and flat, a little clipping at the top
+                self.power(Curve::Tanh, 0.25 + 1.2 * audio_taper(master), 0.0, 0.0, 14000.0);
+                self.cut.set(rate2, 18000.0);
+                // (the boost's hard clipping adds a lot of level as Gain goes up: taken back)
+                self.level.target = db_to_gain(0.5 - 4.0 * g - 14.0 * g * g);
+            }
+            Voice::BassTube => {
+                let (g, bass, mid, treble, master) = (
+                    unit10(v[0]),
+                    unit10(v[1]),
+                    unit10(v[2]),
+                    unit10(v[3]),
+                    unit10(v[4]),
+                );
+                self.pre(&[Filter::HighPass { f: 6.0, q: 0.5 }]);
+                self.nstages = 3;
+                self.stages[0].tune(
+                    rate2,
+                    1.2 + 18.0 * audio_taper(g),
+                    Curve::Asym(0.7),
+                    0.15,
+                    10000.0,
+                    5.0,
+                );
+                self.stages[1].tune(rate2, 1.5 + 3.0 * g, Curve::Asym(0.8), 0.1, 6500.0, 6.0);
+                self.stages[2].tune(rate2, 1.0, Curve::Soft, 0.0, 16000.0, 10.0);
+                self.stages[0].cathode(rate2, 100.0, 1.0);
+                self.stages[1].cathode(rate2, 120.0, 0.8);
+                self.stages[2].cathode(rate2, 100.0, 1.0);
+                self.stack(StackAt::AfterPreamp, BASSMAN, treble, mid, bass, 9.0);
+                self.npost = 0;
+                self.power(Curve::Tanh, 0.5 + 3.0 * audio_taper(master), 2.0, 3.0, 6500.0);
+                self.cut.set(rate2, 18000.0);
+                self.level.target = db_to_gain(-13.0 - 3.0 * g);
+            }
+            Voice::Cali => {
+                // the Mark IIC+'s lead channel: Gain (its Lead Drive), Treble, Bass, Middle, Master, Presence, then
+                // the graphic EQ's five sliders (dB)
+                let (g, treble, bass, mid, master, pres) = (
+                    unit10(v[0]),
+                    unit10(v[1]),
+                    unit10(v[2]),
+                    unit10(v[3]),
+                    unit10(v[4]),
+                    unit10(v[5]),
+                );
+                self.pre(&[
+                    Filter::HighPass { f: 60.0, q: 0.7 },
+                    Filter::HighShelf { f: 2000.0, db: 2.0 },
+                ]);
+                self.nstages = 4;
+                // the tone stack straight after the first triode, before the cascade: what the cascade clips is
+                // already shaped, so the Bass knob tightens or loosens the distortion itself (the Mark's tight,
+                // mid-heavy push); then the lead drive and two more stages
+                self.stages[0].tune(rate2, 3.0, Curve::Asym(0.75), 0.12, 12000.0, 30.0);
+                self.stages[1].tune(
+                    rate2,
+                    2.0 + 40.0 * audio_taper(g),
+                    Curve::Asym(0.7),
+                    0.15,
+                    6500.0,
+                    80.0,
+                );
+                self.stages[2].tune(rate2, 10.0, Curve::Asym(0.8), 0.1, 6000.0, 60.0);
+                self.stages[3].tune(rate2, 1.0, Curve::Soft, 0.0, 16000.0, 10.0);
+                self.stages[0].cathode(rate2, 150.0, 0.7);
+                self.stages[1].cathode(rate2, 250.0, 0.35);
+                self.stages[2].cathode(rate2, 200.0, 0.5);
+                self.stages[3].cathode(rate2, 100.0, 1.0);
+                // (the bass pot reads high: the Mark's bass is famously strong in front of the gain)
+                self.stack(StackAt::AfterFirst, MESA, treble, mid, bass * 0.7, 12.0);
+                // the lead channel's mid hump; the 6L6s' firm low end under it (the owner's Mark captures: 3-8% of a
+                // chug under 100 Hz)
+                self.post(&[
+                    Filter::Peak {
+                        f: 700.0,
+                        q: 0.8,
+                        db: 3.0,
+                    },
+                    Filter::LowShelf { f: 120.0, db: 8.0 },
+                ]);
+                for (k, (b, f)) in self.geq.iter_mut().zip(GEQ_HZ).enumerate() {
+                    b.set(
+                        self.rate,
+                        Filter::Peak {
+                            f,
+                            q: 1.1,
+                            db: v[6 + k].clamp(-12.0, 12.0),
+                        },
+                    );
+                }
+                self.ngeq = 5;
+                // simul-class 6L6s: firm and focused
+                self.power(
+                    Curve::Tanh,
+                    0.5 + 2.5 * audio_taper(master),
+                    7.0 * pres,
+                    1.0,
+                    8000.0,
+                );
+                self.cut.set(rate2, 18000.0);
+                self.level.target = db_to_gain(-14.0);
+            }
+            Voice::Snake => {
+                // the SLO / 5150 overdrive channel: a Marshall-style cascade hot-rodded to four stages, smoother on
+                // top (lower Miller corners) and with more gain than the 800
+                let (g, bass, mid, treble, master, pres) = (
+                    unit10(v[0]),
+                    unit10(v[1]),
+                    unit10(v[2]),
+                    unit10(v[3]),
+                    unit10(v[4]),
+                    unit10(v[5]),
+                );
+                self.pre(&[
+                    Filter::HighPass { f: 55.0, q: 0.6 },
+                    Filter::HighShelf { f: 2200.0, db: 3.0 },
+                ]);
+                self.nstages = 4;
+                self.stages[0].tune(
+                    rate2,
+                    3.0 + 34.0 * audio_taper(g),
+                    Curve::Asym(0.7),
+                    0.15,
+                    8000.0,
+                    40.0,
+                );
+                self.stages[1].tune(rate2, 14.0, Curve::Asym(0.75), 0.1, 6000.0, 80.0);
+                self.stages[2].tune(rate2, 7.0, Curve::Asym(0.8), 0.1, 5000.0, 60.0);
+                self.stages[3].tune(rate2, 1.0, Curve::Soft, 0.0, 16000.0, 10.0);
+                self.stages[0].cathode(rate2, 160.0, 0.45);
+                self.stages[1].cathode(rate2, 250.0, 0.35);
+                self.stages[2].cathode(rate2, 180.0, 0.6);
+                self.stages[3].cathode(rate2, 100.0, 1.0);
+                self.stack(StackAt::AfterPreamp, JCM800, treble, mid, bass, 10.0);
+                // the lead's vocal upper mid, a firm low end from the 6L6s
+                self.post(&[
+                    Filter::Peak {
+                        f: 1100.0,
+                        q: 0.9,
+                        db: 2.5,
+                    },
+                    Filter::LowShelf { f: 110.0, db: 5.0 },
+                ]);
+                self.power(
+                    Curve::Tanh,
+                    0.55 + 3.0 * audio_taper(master),
+                    8.0 * pres,
+                    3.0,
+                    7500.0,
+                );
+                self.cut.set(rate2, 16000.0);
+                self.level.target = db_to_gain(-16.5);
+            }
+            Voice::Tangerine => {
+                // the Orange dirty channel as its panel reads: Volume (the master), Treble, Middle, Bass, Gain
+                let (master, treble, mid, bass, g) = (
+                    unit10(v[0]),
+                    unit10(v[1]),
+                    unit10(v[2]),
+                    unit10(v[3]),
+                    unit10(v[4]),
+                );
+                self.pre(&[Filter::HighPass { f: 50.0, q: 0.6 }]);
+                self.nstages = 3;
+                self.stages[0].tune(
+                    rate2,
+                    2.5 + 30.0 * audio_taper(g),
+                    Curve::Asym(0.65),
+                    0.18,
+                    7000.0,
+                    35.0,
+                );
+                self.stages[1].tune(rate2, 9.0, Curve::Asym(0.7), 0.15, 5000.0, 60.0);
+                self.stages[2].tune(rate2, 1.0, Curve::Soft, 0.0, 14000.0, 10.0);
+                self.stages[0].cathode(rate2, 140.0, 0.55);
+                self.stages[1].cathode(rate2, 200.0, 0.5);
+                self.stages[2].cathode(rate2, 100.0, 1.0);
+                self.stack(StackAt::AfterPreamp, JCM800, treble, mid, bass, 10.0);
+                // thick low mids, a darker, furrier top than a Marshall: its fuzzy, compressed crunch
+                self.post(&[
+                    Filter::Peak {
+                        f: 450.0,
+                        q: 0.8,
+                        db: 4.0,
+                    },
+                    Filter::HighShelf { f: 3500.0, db: -3.0 },
+                    Filter::LowShelf { f: 110.0, db: 2.0 },
+                ]);
+                self.power(Curve::Tanh, 0.7 + 3.0 * audio_taper(master), 0.0, 2.0, 7000.0);
+                self.cut.set(rate2, 15000.0);
+                self.level.target = db_to_gain(-15.5 - 2.0 * g);
+            }
+            Voice::Surrey => {
+                // the DR103's panel: Normal and Brilliant volumes (both channels jumpered, as most players use it),
+                // Bass, Treble, Middle, Presence, Master
+                let (normal, brilliant, bass, treble, mid, pres, master) = (
+                    unit10(v[0]),
+                    unit10(v[1]),
+                    unit10(v[2]),
+                    unit10(v[3]),
+                    unit10(v[4]),
+                    unit10(v[5]),
+                    unit10(v[6]),
+                );
+                let vol = (normal + brilliant).min(1.4);
+                let bright = brilliant / (normal + brilliant).max(0.05);
+                // the Brilliant channel's bright cap: more top as it takes over, less as the volume goes up
+                self.pre(&[
+                    Filter::HighPass { f: 40.0, q: 0.6 },
+                    Filter::HighShelf {
+                        f: 2500.0,
+                        db: 7.0 * bright * (1.0 - 0.4 * vol.min(1.0)),
+                    },
+                ]);
+                self.nstages = 3;
+                // a low-gain, high-headroom preamp: clean far up, then a firm, punchy breakup
+                self.stages[0].tune(rate2, 2.0, Curve::Asym(0.8), 0.1, 14000.0, 25.0);
+                self.stages[1].tune(
+                    rate2,
+                    0.5 + 9.0 * audio_taper(vol / 1.4),
+                    Curve::Asym(0.8),
+                    0.1,
+                    11000.0,
+                    30.0,
+                );
+                self.stages[2].tune(rate2, 1.0, Curve::Soft, 0.0, 16000.0, 10.0);
+                self.stages[0].cathode(rate2, 120.0, 0.8);
+                self.stages[1].cathode(rate2, 150.0, 0.8);
+                self.stages[2].cathode(rate2, 100.0, 1.0);
+                self.stack(StackAt::AfterPreamp, JTM45, treble, mid, bass, 9.0);
+                // the mids forward and even: it cuts without fizz
+                self.post(&[Filter::Peak {
+                    f: 800.0,
+                    q: 0.6,
+                    db: 2.0,
+                }]);
+                // four EL34s into a big transformer: lots of clean headroom
+                self.power(
+                    Curve::Tanh,
+                    0.3 + 1.6 * audio_taper(master),
+                    7.0 * pres,
+                    2.0,
+                    9500.0,
+                );
+                self.cut.set(rate2, 18000.0);
+                self.level.target = db_to_gain(-5.0 - 5.0 * vol);
+            }
         }
         // the back panel: (front knobs, the amp's own power tube in `catalog::TUBES`)
         let (front, stock) = match self.voice {
-            Voice::Clean => (6, 1),
+            Voice::Clean => (9, 1),
             Voice::Tweed => (3, 4),
             Voice::Chime => (5, 3),
             Voice::Crunch | Voice::Lead => (6, 0),
-            Voice::Modern => (7, 1),
-            Voice::Bass => (6, 2),
+            Voice::Modern => (8, 1),
+            Voice::Bass => (8, 2),
+            Voice::B15 => (5, 4),
+            Voice::BassSs => (7, 1),
+            Voice::BassTube => (5, 0),
+            Voice::Cali => (11, 1),
+            Voice::Snake => (6, 1),
+            Voice::Tangerine => (5, 0),
+            Voice::Surrey => (7, 0),
         };
         self.back_panel(v, front, stock);
     }
 
     fn reset(&mut self) {
         self.input_hp.reset();
-        for b in self.pre.iter_mut().chain(self.post.iter_mut()) {
+        for b in self
+            .pre
+            .iter_mut()
+            .chain(self.post.iter_mut())
+            .chain(self.geq.iter_mut())
+        {
             b.reset();
         }
         for s in &mut self.stages {
@@ -950,6 +1459,11 @@ impl Pedal for Amp {
         self.sag_env = 0.0;
         self.drive.snap();
         self.level.snap();
+        if let Some(e) = self.extra.as_mut() {
+            e.spring.reset();
+            e.trem.phase = 0.0;
+            e.trem_depth.snap();
+        }
     }
 }
 

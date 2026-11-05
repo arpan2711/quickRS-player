@@ -31,7 +31,7 @@ use qrs_ui::units::px;
 use qrs_ui::widgets::{ButtonStyle, button, interact};
 
 use super::tab::TabView;
-use super::{COUNTDOWN, LOOP_LEAD_IN, PlayerView};
+use super::{LOOP_LEAD_IN, PlayerView};
 use crate::library::{caps, txt};
 use crate::state::AppState;
 
@@ -247,6 +247,16 @@ impl Session {
     pub fn listening(&self) -> bool {
         self.listen.is_some()
     }
+    #[cfg(test)]
+    /// The speed it's being listened back at (chart seconds a second), while it is.
+    pub fn listen_speed(&self) -> Option<f64> {
+        self.listen.as_ref().map(|l| l.speed)
+    }
+
+    /// Whether there's a take to listen back to.
+    pub fn has_input(&self) -> bool {
+        self.input.is_some()
+    }
 
     /// The analysis' progress (0..1) while analysing.
     pub fn progress(&self) -> Option<f32> {
@@ -348,8 +358,8 @@ impl PlayerView {
     pub(super) fn take_begin(&mut self, a: f64, b: f64, lesson: bool) -> bool {
         if !self.has_input() {
             self.say(
-                "A take needs the guitar: ",
-                "no guitar input (Settings, F2 > Audio input / output)",
+                "A take needs your instrument: ",
+                "no input (Settings, F2 > Audio input / output)",
             );
             return false;
         }
@@ -369,7 +379,7 @@ impl PlayerView {
         s.label = bars_label(&s.arr, a, b);
         self.take = Some(s);
         self.seek((a - LOOP_LEAD_IN).max(0.0));
-        self.countdown_until = Some(Instant::now() + Duration::from_secs_f32(COUNTDOWN));
+        self.count_in();
         self.run_scored = false;
         true
     }
@@ -392,8 +402,20 @@ impl PlayerView {
             self.loop_a = Some(a);
             self.loop_b = Some(b);
         }
+        let nbn = self.nbn;
         if self.take_begin(a, b, false) {
-            self.say("Take: ", "a count-in, then the loop once  ·  Ctrl R stops it");
+            if nbn {
+                // (a take is played through: note by note waits until it's over, D121)
+                self.say_for(
+                    "Take: ",
+                    "the loop once, played through (note by note waits until it's over)  ·  Ctrl R stops it",
+                    3.0,
+                );
+            } else if self.countdown_on {
+                self.say("Take: ", "a count-in, then the loop once  ·  Ctrl R stops it");
+            } else {
+                self.say("Take: ", "the loop once  ·  Ctrl R stops it");
+            }
         }
     }
 
@@ -664,7 +686,7 @@ impl PlayerView {
 
     // -- listening back ------------------------------------------------------------------------------------------
 
-    /// B: the take over the song (at the same place and speed), or stop it.
+    /// B: the take over the song (at the same place, at the speed set now: D120), or stop it.
     pub(super) fn take_listen(&mut self) {
         let Some(s) = self.take.as_ref() else {
             self.say("No take to listen to: ", "record one first");
@@ -674,15 +696,49 @@ impl PlayerView {
             self.take_listen_stop();
             return;
         }
-        let Some(input) = s.input.clone() else {
+        if s.input.is_none() {
             self.say("No take to listen to yet", "");
             return;
-        };
+        }
+        self.take_listen_from(None);
+        self.say("Listening back: ", "the take over the song  \u{b7}  B stops it");
+    }
+
+    /// The speed changed while listening back: again from where it had got to, at the new speed.
+    pub(super) fn take_listen_again(&mut self) {
+        let at = self.take_listen_pos();
+        self.take_listen_stop();
+        self.take_listen_from(at);
+    }
+
+    /// Listen back from chart time `from` (none: the take's start) at the speed set now: the song's stretch at it,
+    /// the take stretched from the speed it was played at to it.
+    fn take_listen_from(&mut self, from: Option<f64>) {
+        let Some(s) = self.take.as_ref() else { return };
+        let Some(input) = s.input.clone() else { return };
         let timing = input.timing.clone();
-        let samples = input;
-        let speed = s.speed;
-        let t0 = timing.chart_time(0.0);
-        let t1 = timing.chart_time(samples.samples.len() as f64);
+        let played_at = s.speed;
+        let speed = self.speed();
+        let n = input.samples.len();
+        // the first sample at or after `from` (the take's chart times only go up)
+        let i0 = match from {
+            Some(t) => {
+                let (mut lo, mut hi) = (0usize, n);
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    if timing.chart_time(mid as f64) < t {
+                        lo = mid + 1;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                lo.min(n)
+            }
+            None => 0,
+        };
+        let t0 = timing.chart_time(i0 as f64);
+        let t1 = timing.chart_time(n as f64);
+        let samples: Vec<f32> = input.samples[i0..].to_vec();
         self.stop_synth();
         if self.transport.playing() {
             self.transport.pause();
@@ -695,6 +751,7 @@ impl PlayerView {
         let _ = std::thread::Builder::new()
             .name("take-listen".into())
             .spawn(move || {
+                let samples = restretch_take(&samples, rate, speed / played_at);
                 let clip = match song {
                     Some(song) => {
                         // (the song's stretch from where the take starts, the take's length long)
@@ -704,12 +761,12 @@ impl PlayerView {
                         track.extend(qrs_audio::synth::track_clip(&song, a.max(0.0), b, speed, semis));
                         Clip {
                             rate: song.rate,
-                            samples: mix(&samples.samples, rate, Some(&track), song.rate),
+                            samples: mix(&samples, rate, Some(&track), song.rate),
                         }
                     }
                     None => Clip {
                         rate,
-                        samples: mix(&samples.samples, rate, None, rate),
+                        samples: mix(&samples, rate, None, rate),
                     },
                 };
                 let _ = tx.send(clip);
@@ -723,7 +780,6 @@ impl PlayerView {
             });
             s.overlay = s.report.is_some();
         }
-        self.say("Listening back: ", "the take over the song  ·  B stops it");
     }
 
     pub(super) fn take_listen_stop(&mut self) {
@@ -920,7 +976,10 @@ impl PlayerView {
             r: Some(12.0),
             ..Default::default()
         };
-        let (label, primary) = if going {
+        // (once it's recorded, the key stops the analysis, as the lesson's take key says: P37.4b)
+        let (label, primary) = if going && matches!(s.phase, Phase::Analysing(_)) {
+            ("Stop the analysis", false)
+        } else if going {
             ("Stop the take", false)
         } else {
             ("Record again", !done)
@@ -1252,6 +1311,19 @@ impl PlayerView {
         self.tab.jump = true;
         self.states = self.scorer.groups.iter().map(|g| g.state).collect();
     }
+}
+
+/// A take played at one speed made to sound at another: `k` = the new speed over the one it was played at (1:
+/// as it is).
+pub fn restretch_take(mono: &[f32], rate: u32, k: f64) -> Vec<f32> {
+    if (k - 1.0).abs() < 1e-6 || mono.is_empty() {
+        return mono.to_vec();
+    }
+    let stereo: Vec<f32> = mono.iter().flat_map(|&v| [v, v]).collect();
+    qrs_audio::stretch::stretch_clip(&stereo, rate, k, 0.0)
+        .chunks_exact(2)
+        .map(|f| f[0])
+        .collect()
 }
 
 /// "Bars 5-11" for the stretch [a, b] of a part ("Bar 5", "The loop").

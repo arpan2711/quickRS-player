@@ -25,6 +25,16 @@ fn spec(id: &str) -> Option<face::Spec> {
         .or_else(|| consoles::of(id))
 }
 
+/// Whether a model has its own drawn pedal face.
+pub(super) fn has_spec(id: &str) -> bool {
+    spec(id).is_some()
+}
+
+/// Whether a pedal has its own drawn face (else the legacy one).
+pub(super) fn designed(b: &Block) -> bool {
+    spec(b.def().id).is_some()
+}
+
 pub(super) fn layout(b: &Block, r: Rect, detail: Detail) -> Layout {
     match spec(b.def().id) {
         Some(s) => face::layout(&s, r),
@@ -36,6 +46,14 @@ pub(super) fn layout(b: &Block, r: Rect, detail: Detail) -> Layout {
 pub(super) fn body(b: &Block, r: Rect, l: &Layout, ppp: f32) -> Image {
     match spec(b.def().id) {
         Some(s) => face::body(&s, r, ppp),
+        None => super::legacy_body(b, r, l, ppp),
+    }
+}
+
+/// A miniature's body: a designed face without its knobs (they're dots there, P37.12).
+pub(super) fn mini_body(b: &Block, r: Rect, l: &Layout, ppp: f32) -> Image {
+    match spec(b.def().id) {
+        Some(s) => face::body_bare(&s, r, ppp),
         None => super::legacy_body(b, r, l, ppp),
     }
 }

@@ -105,12 +105,12 @@ the pack sets them* puts the mix back.
 
 ### Notes don't count
 
-* Run *Set up your guitar* in Settings > *Audio input / output*. It checks
+* Run *Set up your guitar* in Settings > *Sound*. It checks
   the input, the level and the open strings, and calibrates. See
   [AUDIO-SETUP](AUDIO-SETUP.md#the-guided-setup).
 * Or check the input by hand: the meter by the guitar input in Settings >
-  *Audio input / output* should move when you play.
-* Calibrate it: Settings > *Audio input / output* > *INPUT LEVEL* >
+  *Sound* should move when you play.
+* Calibrate it: Settings > *Sound* > *INPUT LEVEL* >
   *Calibrate*. See [AUDIO-SETUP](AUDIO-SETUP.md#calibrating-your-input).
 * On an interface, check the channel: *INPUT CHANNEL*, or let quickRS find it
   by playing a few clear notes.
@@ -161,7 +161,7 @@ music, move *Audio / notes sync* with `,` and `.`.
 
 ### Clicks or crackles
 
-Make the buffer bigger: Settings > *Audio input / output* > *Buffer*. On Windows, if your
+Make the buffer bigger: Settings > *Sound* > *Buffer*. On Windows, if your
 interface has an ASIO driver, try it; otherwise try turning *Low-latency
 output* off.
 

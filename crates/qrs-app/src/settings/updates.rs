@@ -1,5 +1,6 @@
-//! The Updates page (P20.1, D36; new in quickRS): this version, the check on start, Check for updates, Update now.
-//! The work is `crate::update`'s; this page draws its phase and queues `update:<what>` actions.
+//! The About page (P20.1, D36; the Updates page until P35.3, D92; new in quickRS): this version, the check on start,
+//! Check for updates, Update now (the work is `crate::update`'s; this page draws its phase and queues `update:<what>`
+//! actions), Report a bug and the log file, the first-time setup again and Reset all settings… (asks first).
 
 use eframe::egui;
 use egui::{Align2, Rect, Ui, pos2, vec2};
@@ -13,7 +14,7 @@ use super::{SettingsView, caption_lines, snap};
 use crate::state::AppState;
 use crate::update::{self, Phase, Version};
 
-const BUG: &str = "Something wrong, or an idea? Report a bug opens a new issue on quickRS's GitHub page in your     browser, with this version and your system filled in: say what happened and what you did just before. If quickRS     crashed or showed an error, attach the log file (Show the log file). Nothing is sent without you.";
+const BUG: &str = "Something wrong, or an idea? Report a bug opens a new issue on quickRS's GitHub page in your browser, with this version and your system filled in: say what happened and what you did just before. If quickRS crashed or showed an error, attach the log file (Show the log file). Nothing is sent without you.";
 
 const ABOUT: &str = "Update now downloads the new version from quickRS's GitHub releases, checks it against the \
     release's SHA256SUMS.txt (a download that doesn't match is refused), puts the new program files in place of the \
@@ -21,7 +22,7 @@ const ABOUT: &str = "Update now downloads the new version from quickRS's GitHub 
     quickRS's folder can't be written to, the release page opens in your browser instead.";
 
 impl SettingsView {
-    pub(super) fn draw_updates(&mut self, ui: &mut Ui, st: &mut AppState, body: Rect) -> f32 {
+    pub(super) fn draw_about(&mut self, ui: &mut Ui, st: &mut AppState, body: Rect) -> f32 {
         let th = t();
         let p = ui.painter().clone();
         let ctx = ui.ctx().clone();
@@ -197,6 +198,56 @@ impl SettingsView {
             );
             bx += bw + px(10.0);
         }
-        card3.max.y
+        // the first-time setup again (P23.14; at the panel's top before P35.3) and Reset all (P35.7), side by side
+        let top = card3.max.y + gap;
+        let setup_words = "The welcome's steps again: the look, your guitar, low-latency output, the note widget, \
+                           your folders and keys. Nothing changes until you change it.";
+        let reset_words = "Every page but your tone back to its defaults. Kept: your song folders, RS's keys, \
+                           scores, your tones and each input's level check. It asks first.";
+        let sl = text::wrap(&ctx, setup_words, cap, wd);
+        let rl = text::wrap(&ctx, reset_words, cap, wd);
+        let h = 2.0 * pad + hh + sl.len().max(rl.len()) as f32 * px(19.0) + px(14.0) + bh;
+        for (i, (title, words, n, label, action, danger)) in [
+            (
+                "FIRST-TIME SETUP",
+                setup_words,
+                sl.len(),
+                "Run the first-time setup again",
+                "firstsetup",
+                false,
+            ),
+            (
+                "RESET",
+                reset_words,
+                rl.len(),
+                "Reset all settings\u{2026}",
+                "reset:all",
+                true,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let card = Rect::from_min_size(pos2(body.min.x + i as f32 * (colw + gap), top), vec2(colw, h));
+            paint::card(&p, card, 24.0, false);
+            let cx = card.min.x + pad;
+            let cy = self.heading(&p, title, cx, card.min.y + pad, None, "", "");
+            caption_lines(&p, words, cx, cy, wd, 13.0, n);
+            let bw = widgets::button_width(&ctx, label, "", 14.0, false);
+            self.button(
+                ui,
+                Rect::from_min_size(pos2(cx, card.max.y - pad - bh), vec2(bw, bh)),
+                label,
+                "",
+                action,
+                ButtonStyle {
+                    size: 14.0,
+                    r: Some(14.0),
+                    danger,
+                    ..Default::default()
+                },
+            );
+        }
+        top + h
     }
 }

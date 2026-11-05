@@ -57,6 +57,12 @@ const CAB_TIPS: &[KnobTip] = &[
         (6000.0, 9000.0),
         "about 7-8 kHz for distortion; higher for cleans",
     ),
+    t(
+        "mic_model",
+        "A named mic in place of the Mic type: a 57-style dynamic (lean lows, a bright bite), a 121-style ribbon (full          and smooth), a 421-style dynamic (fuller, a broad upper-mid lift) or an 87-style condenser (even, open top).          As type keeps the Mic type's sound.",
+        (0.0, 2.0),
+        "a 57 for rock; the 121 ribbon to tame fizz",
+    ),
 ];
 
 const CAB_STARTS: &[Start] = &[
@@ -396,6 +402,18 @@ pub static ABOUT: &[About] = &[
                 "How fast it closes once you stop: short is tight and choppy, long lets chords fade naturally.",
                 (40.0, 150.0),
                 "short for riffs, longer for ringing chords",
+            ),
+            t(
+                "range",
+                "How far it turns the sound down when closed. A gentle -30 dB leaves a breath of the room; Full is                  dead silence for stop-start riffs.",
+                (-60.0, -24.0),
+                "-30 for crunch, -60 for high gain",
+            ),
+            t(
+                "key",
+                "What it listens to. Input: your guitar as it comes in, so the gate can sit after the amp and fade the                  amp's hiss and sustain together. Here: what reaches it, as gates always did.",
+                (0.0, 0.0),
+                "Input",
             ),
         ],
         starts: &[
@@ -1414,8 +1432,9 @@ pub static ABOUT: &[About] = &[
         plain: "an early-90s American high-gain head",
         year: 1991,
         facts: "1991 \u{b7} American \u{b7} 100 W high-gain head",
-        what: "The American high-gain head of 90s and 2000s metal: saturated, tight and with a huge, deep low end. \
-               Its EQ is powerful, and the classic mistake is scooping the mids until the guitar disappears.",
+        what: "The American high-gain head of 90s and 2000s metal: saturated, with a big, loose low end under the \
+               chug. Its EQ is powerful, and the classic mistake is scooping the mids until the guitar disappears. \
+               Turned down it's a gritty crunch, not a clean: for clean parts, use a clean amp.",
         heard: &[
             h("Enter Sandman", "Metallica", 1991),
             h("Blood and Thunder", "Mastodon", 2004),
@@ -2885,6 +2904,802 @@ pub static ABOUT: &[About] = &[
             ),
         ],
     },
+    // the file models (P31, D80): what they run is the user's, so the card is about the format
+    About {
+        id: "amp_nam",
+        real: "a Neural Amp Modeler capture",
+        plain: "a Neural Amp Modeler capture",
+        year: 2023,
+        facts: "a capture you load \u{b7} a real amp, pedal or rig",
+        what: "A neural network trained on a real amp (or a pedal, or a whole rig with its cab), so it reacts to your \
+               picking the way that unit does. A capture is one setting of the real knobs: for another sound, pick \
+               another capture. Load a .nam file or pick one on TONE3000.",
+        heard: &[],
+        try_for: &["Any style the capture is of"],
+        tips: &[
+            t(
+                "input",
+                "Drives the capture harder or softer, like the guitar's volume into the real amp.",
+                (-3.0, 3.0),
+                "0 is the capture's own calibration",
+            ),
+            t(
+                "output",
+                "Its level after the capture, to match your other sounds.",
+                (-3.0, 3.0),
+                "captures are brought to one loudness first",
+            ),
+        ],
+        starts: &[
+            s("As captured", &[("input", 0.0), ("output", 0.0)]),
+            s("Pushed", &[("input", 6.0), ("output", -4.0)]),
+            s("Backed off", &[("input", -6.0), ("output", 3.0)]),
+        ],
+    },
+    About {
+        id: "pedal_nam",
+        real: "a Neural Amp Modeler capture of a pedal",
+        plain: "a Neural Amp Modeler capture of a pedal",
+        year: 2023,
+        facts: "a pedal capture you load \u{b7} before the amp",
+        what: "A real drive, boost or fuzz pedal captured with Neural Amp Modeler, at one setting of its knobs. It \
+               plays in front of the amp; with a NAM amp on, it's on and our drives are off, and the other way round.",
+        heard: &[],
+        try_for: &["Any style the pedal is for"],
+        tips: &[
+            t(
+                "input",
+                "Hits the pedal harder or softer, like the guitar's volume into it.",
+                (-3.0, 3.0),
+                "0 is as captured",
+            ),
+            t(
+                "output",
+                "The pedal's level into the amp: up pushes the amp harder.",
+                (-3.0, 3.0),
+                "as captured, it keeps the pedal's own level",
+            ),
+        ],
+        starts: &[
+            s("As captured", &[("input", 0.0), ("output", 0.0)]),
+            s("Boost the amp", &[("input", 0.0), ("output", 4.0)]),
+            s("Gentler", &[("input", -6.0), ("output", 2.0)]),
+        ],
+    },
+    About {
+        id: "cab_ir",
+        real: "an impulse response of a speaker cab",
+        plain: "an impulse response of a speaker cab",
+        year: 2005,
+        facts: "an IR you load \u{b7} a real cab and mic",
+        what: "The sound of a real speaker cab and microphone, measured: put it after a NAM capture of an amp alone \
+               (a capture with its cab in it needs none). Load a .wav or pick one on TONE3000.",
+        heard: &[],
+        try_for: &["After an amp-only capture"],
+        tips: &[
+            t(
+                "level",
+                "Its level, to match your other sounds.",
+                (-3.0, 3.0),
+                "IRs are evened out first",
+            ),
+            t(
+                "low_cut",
+                "Takes away rumble under the guitar's range.",
+                (60.0, 100.0),
+                "higher for a tighter low end",
+            ),
+            t(
+                "high_cut",
+                "Takes away fizz above the speaker's range.",
+                (7000.0, 12000.0),
+                "lower for a darker, smoother top",
+            ),
+        ],
+        starts: &[
+            s(
+                "As measured",
+                &[("level", 0.0), ("low_cut", 20.0), ("high_cut", 20000.0)],
+            ),
+            s("Tight", &[("low_cut", 100.0), ("high_cut", 9000.0)]),
+            s("Dark", &[("low_cut", 60.0), ("high_cut", 6000.0)]),
+        ],
+    },
+    // -- P37.2: the bass gear --------------------------------------------------------------------------------------------
+    About {
+        id: "opto_comp",
+        real: "Teletronix LA-2A (and Ampeg's Opto Comp)",
+        plain: "an early-60s American light-cell studio compressor",
+        year: 1962,
+        facts: "1962 \u{b7} American \u{b7} optical compressor",
+        what: "A compressor whose gain is set by a lamp and a light cell: it grabs gently and lets go slowly after a \
+               long loud phrase, quickly after a single note. Smooth, even and never grabby: the fingerstyle and \
+               Motown bass sound, and a vocal-like lead.",
+        heard: &[],
+        try_for: &["Motown bass", "Fingerstyle bass", "Dub", "Smooth clean leads"],
+        tips: &[
+            t(
+                "peak",
+                "How much it compresses: up evens out every note, down only catches the loud ones.",
+                (4.0, 7.0),
+                "a few dB of squeeze on the loudest notes",
+            ),
+            t(
+                "gain",
+                "The level after it: match the sound with it off.",
+                (4.5, 6.0),
+                "about noon",
+            ),
+            t(
+                "mode",
+                "Compress: gentle, about 3:1. Limit: about 10:1, a hard ceiling.",
+                (0.0, 0.0),
+                "Compress for bass",
+            ),
+            t(
+                "mix",
+                "Blends the dry signal back in (parallel compression): the attack stays, the sustain grows.",
+                (60.0, 100.0),
+                "all wet, or 70% to keep the pluck",
+            ),
+        ],
+        starts: &[
+            s("Even fingerstyle", &[("peak", 5.0), ("gain", 5.0), ("mode", 0.0)]),
+            s("Motown squeeze", &[("peak", 7.0), ("gain", 5.5), ("mode", 0.0)]),
+            s("Parallel punch", &[("peak", 8.0), ("gain", 5.5), ("mix", 60.0)]),
+            s("Limiter", &[("peak", 6.0), ("gain", 5.0), ("mode", 1.0)]),
+        ],
+    },
+    About {
+        id: "bass_grind",
+        real: "Darkglass Microtubes B7K",
+        plain: "a late-2000s Finnish bass preamp and overdrive",
+        year: 2009,
+        facts: "2009 \u{b7} Finnish \u{b7} bass overdrive, 4-band EQ",
+        what: "The modern metal and rock bass sound: a gritty, aggressive drive blended with the clean bass, so the \
+               low end stays solid while the mids and top snarl. Grunt sets the low end going into the drive, Attack \
+               the top; the EQ after it shapes the result.",
+        heard: &[],
+        try_for: &["Metal bass", "Modern rock bass", "Djent"],
+        tips: &[
+            t(
+                "drive",
+                "How much grind. Low is a warm edge, high a roaring distortion.",
+                (4.0, 7.0),
+                "for growl that stays tight",
+            ),
+            t(
+                "blend",
+                "How much of the drive against the clean bass. Half and half is the classic setting.",
+                (40.0, 70.0),
+                "about half",
+            ),
+            t(
+                "level",
+                "The output: match it with the pedal off.",
+                (4.0, 6.0),
+                "about unity",
+            ),
+            t(
+                "bass",
+                "The low end after the drive (100 Hz).",
+                (-3.0, 3.0),
+                "flat; a little cut if the clean low end is enough",
+            ),
+            t(
+                "lo_mid",
+                "The low mids, at the Lo-mid freq: cut for a scooped modern sound, boost to be heard in a dense mix.",
+                (-3.0, 3.0),
+                "flat to start",
+            ),
+            t(
+                "hi_mid",
+                "The upper mids, at the Hi-mid freq: the snarl and the pick.",
+                (-2.0, 4.0),
+                "a little boost to cut through guitars",
+            ),
+            t(
+                "treble",
+                "The top (5 kHz): the fizz of the drive. Cut to tame it.",
+                (-6.0, 2.0),
+                "a little cut",
+            ),
+            t(
+                "grunt",
+                "The low end going into the drive. Fat: thick and saturated. Flat. Raw: tight, the lows mostly clean.",
+                (0.0, 1.0),
+                "Fat or Flat",
+            ),
+            t(
+                "attack",
+                "The top going into the drive. Cut: smooth. Flat. Boost: aggressive, more pick.",
+                (1.0, 2.0),
+                "Flat; Boost for a pick",
+            ),
+            t(
+                "lo_freq",
+                "Where the Lo-mid knob works: 250 Hz, 500 Hz or 1 kHz.",
+                (0.0, 1.0),
+                "500 Hz",
+            ),
+            t(
+                "hi_freq",
+                "Where the Hi-mid knob works: 750 Hz, 1.5 kHz or 3 kHz.",
+                (1.0, 2.0),
+                "1.5 kHz",
+            ),
+            t(
+                "clean_low",
+                "Keeps the bass under this frequency only clean, whatever the Blend: the fundamental stays solid.",
+                (0.0, 2.0),
+                "Off, or 120 Hz for a tight low end",
+            ),
+        ],
+        starts: &[
+            s(
+                "Modern metal",
+                &[("drive", 6.0), ("blend", 50.0), ("grunt", 0.0), ("attack", 2.0)],
+            ),
+            s("Rock growl", &[("drive", 4.0), ("blend", 60.0), ("hi_mid", 3.0)]),
+            s(
+                "Tight djent",
+                &[
+                    ("drive", 7.0),
+                    ("blend", 50.0),
+                    ("grunt", 2.0),
+                    ("clean_low", 2.0),
+                    ("lo_mid", -4.0),
+                ],
+            ),
+            s("Subtle edge", &[("drive", 2.5), ("blend", 35.0)]),
+        ],
+    },
+    About {
+        id: "bass_muff",
+        real: "Electro-Harmonix Bass Big Muff Pi",
+        plain: "a late-2000s American bass fuzz",
+        year: 2008,
+        facts: "2008 \u{b7} American \u{b7} bass fuzz",
+        what: "The famous wall-of-fuzz with the lows kept: a Bass Boost and the clean bass blended back in, so the \
+               fuzz sits on top of a solid low end instead of hollowing it out.",
+        heard: &[],
+        try_for: &["Fuzz bass", "Stoner rock", "Garage rock"],
+        tips: &[
+            t("sustain", "How much fuzz.", (5.0, 8.0), "most of it"),
+            t(
+                "tone",
+                "Dark and woolly to bright and cutting; the middle is the famous scoop.",
+                (4.0, 6.0),
+                "about noon",
+            ),
+            t(
+                "volume",
+                "The output: match it with the pedal off.",
+                (4.0, 6.0),
+                "about unity",
+            ),
+            t(
+                "blend",
+                "How much fuzz against the clean bass.",
+                (50.0, 80.0),
+                "about 70%: fuzz on top, the low end clean",
+            ),
+            t("bass_boost", "A low-end lift after the fuzz.", (1.0, 1.0), "On"),
+            t(
+                "clean_low",
+                "Keeps the bass under this frequency only clean.",
+                (0.0, 2.0),
+                "Off; 120 Hz if the low end blurs",
+            ),
+        ],
+        starts: &[
+            s(
+                "Fuzz on top",
+                &[("sustain", 6.0), ("blend", 70.0), ("bass_boost", 1.0)],
+            ),
+            s("All fuzz", &[("sustain", 9.0), ("blend", 100.0), ("tone", 6.0)]),
+            s("Tight", &[("sustain", 6.0), ("blend", 80.0), ("clean_low", 2.0)]),
+        ],
+    },
+    About {
+        id: "amp_b15",
+        real: "Ampeg B-15 Portaflex",
+        plain: "an early-60s American tube bass combo",
+        year: 1960,
+        facts: "1960 \u{b7} American \u{b7} 25 W tube bass amp",
+        what: "The small tube bass amp heard on countless Motown and studio records: round, warm and woody, breaking \
+               up softly when you dig in. Two tone knobs, an input for more or less gain.",
+        heard: &[
+            h("What's Going On", "Marvin Gaye", 1971),
+            h("My Girl", "The Temptations", 1964),
+        ],
+        try_for: &["Motown", "Soul", "Vintage bass", "Indie bass"],
+        tips: &[
+            t(
+                "volume",
+                "How hard the preamp works: clean and round low, a warm fuzzy edge up high.",
+                (3.0, 6.0),
+                "about 4 for clean with a little bloom",
+            ),
+            t("bass", "The low end.", (5.0, 7.0), "a little up"),
+            t(
+                "treble",
+                "The top and the string sound; down for the old flatwound thump.",
+                (3.0, 6.0),
+                "4 or so",
+            ),
+            t(
+                "input",
+                "Lo: about half the gain into the first tube. Hi: what most players use.",
+                (1.0, 1.0),
+                "Hi",
+            ),
+            t(
+                "master",
+                "The power stage: up for the small amp turned up.",
+                (4.0, 7.0),
+                "about noon",
+            ),
+        ],
+        starts: &[
+            s("Motown", &[("volume", 3.5), ("bass", 6.0), ("treble", 4.0)]),
+            s(
+                "Warm grit",
+                &[("volume", 7.0), ("bass", 6.0), ("treble", 5.0), ("master", 7.0)],
+            ),
+            s(
+                "Thump",
+                &[("volume", 3.0), ("bass", 7.0), ("treble", 2.0), ("input", 0.0)],
+            ),
+        ],
+    },
+    About {
+        id: "amp_bass_ss",
+        real: "Gallien-Krueger 800RB",
+        plain: "an early-80s American solid-state bass head",
+        year: 1983,
+        facts: "1983 \u{b7} American \u{b7} solid-state bass head",
+        what: "A clean, punchy solid-state bass head with lots of headroom, an active EQ with a sweepable mid and a \
+               Contour switch that scoops the mids: the bright, aggressive slap and modern rock sound. Turned up, \
+               its boost clips hard.",
+        heard: &[h("Give It Away", "Red Hot Chili Peppers", 1991)],
+        try_for: &["Slap", "Funk", "Modern rock bass", "Punk"],
+        tips: &[
+            t(
+                "gain",
+                "Preamp gain: clean low, a hard-edged growl when turned up.",
+                (2.0, 5.0),
+                "clean, around 3",
+            ),
+            t(
+                "bass",
+                "Low shelf, 60 Hz.",
+                (-3.0, 5.0),
+                "a little boost for slap",
+            ),
+            t(
+                "mid",
+                "Boost or cut at the Freq.",
+                (-6.0, 4.0),
+                "a cut for slap, a boost to cut through",
+            ),
+            t(
+                "freq",
+                "Where the Mid knob works.",
+                (300.0, 1200.0),
+                "about 500 Hz for a scoop, 800 Hz to cut",
+            ),
+            t(
+                "treble",
+                "High shelf, 5 kHz: the string and slap snap.",
+                (-2.0, 5.0),
+                "a little up",
+            ),
+            t(
+                "contour",
+                "A deep scoop around 500 Hz: the slap sound.",
+                (0.0, 1.0),
+                "On for slap, off for fingers",
+            ),
+            t("master", "The power stage's drive.", (4.0, 6.0), "about noon"),
+        ],
+        starts: &[
+            s(
+                "Slap",
+                &[("gain", 3.0), ("bass", 3.0), ("treble", 4.0), ("contour", 1.0)],
+            ),
+            s(
+                "Clean and punchy",
+                &[("gain", 2.5), ("mid", 2.0), ("freq", 800.0)],
+            ),
+            s(
+                "Hard growl",
+                &[("gain", 7.0), ("mid", 3.0), ("freq", 1000.0), ("treble", 2.0)],
+            ),
+            s(
+                "Funk",
+                &[("gain", 3.0), ("mid", -4.0), ("freq", 500.0), ("treble", 3.0)],
+            ),
+        ],
+    },
+    About {
+        id: "amp_bass_tube",
+        real: "Orange AD200B",
+        plain: "an early-2000s British all-tube bass head",
+        year: 2001,
+        facts: "2001 \u{b7} British \u{b7} 200 W tube bass head",
+        what: "A big, simple all-tube bass head: thick low mids, a warm round bottom and a gritty growl when it's \
+               turned up. Three tone knobs and gain.",
+        heard: &[],
+        try_for: &["Rock bass", "Stoner rock", "Indie bass"],
+        tips: &[
+            t(
+                "gain",
+                "How hard the preamp works: warm and round low, a thick growl up high.",
+                (3.0, 7.0),
+                "4-6",
+            ),
+            t("bass", "The low end.", (5.0, 7.0), "a little up"),
+            t(
+                "mid",
+                "The low mids: the amp's character.",
+                (5.0, 7.0),
+                "a little up",
+            ),
+            t("treble", "The top.", (4.0, 6.0), "about noon"),
+            t(
+                "master",
+                "The power stage: up for power-tube grit.",
+                (4.0, 7.0),
+                "about noon",
+            ),
+        ],
+        starts: &[
+            s(
+                "Warm",
+                &[("gain", 4.0), ("bass", 6.0), ("mid", 6.0), ("treble", 5.0)],
+            ),
+            s("Growl", &[("gain", 7.0), ("mid", 7.0), ("treble", 6.0)]),
+            s(
+                "Doom",
+                &[
+                    ("gain", 9.0),
+                    ("bass", 7.0),
+                    ("mid", 7.0),
+                    ("treble", 4.0),
+                    ("master", 8.0),
+                ],
+            ),
+        ],
+    },
+    About {
+        id: "cab_4x10",
+        real: "Eden D410XST (and Ampeg 410HLF)",
+        plain: "a 4x10 bass cab with a horn",
+        year: 1995,
+        facts: "four 10-inch speakers \u{b7} a horn \u{b7} closed and ported",
+        what: "Tight and punchy, with a clear upper mid and a horn for the top: the slap, funk and modern rock \
+               bass cab.",
+        heard: &[],
+        try_for: &["Slap", "Funk", "Modern rock bass"],
+        tips: CAB_TIPS,
+        starts: BASS_CAB_STARTS,
+    },
+    About {
+        id: "cab_2x10",
+        real: "a ported 2x10 bass cab",
+        plain: "a ported 2x10 bass cab",
+        year: 1990,
+        facts: "two 10-inch speakers \u{b7} ported",
+        what: "A small, quick bass cab: less low end than a 4x10, a clear mid that sits well in a busy band.",
+        heard: &[],
+        try_for: &["Rock bass", "Practice", "Punk"],
+        tips: CAB_TIPS,
+        starts: BASS_CAB_STARTS,
+    },
+    About {
+        id: "cab_4x15",
+        real: "a vintage 4x15 bass cab",
+        plain: "a vintage 4x15 bass cab",
+        year: 1970,
+        facts: "four 15-inch speakers \u{b7} closed",
+        what: "Huge, deep and dark: the old-school bass wall for dub, doom and anything that wants the floor to move.",
+        heard: &[],
+        try_for: &["Dub", "Doom", "Vintage bass"],
+        tips: CAB_TIPS,
+        starts: BASS_CAB_STARTS,
+    },
+    // (P41.2, D167: the experts' new voices)
+    About {
+        id: "amp_cali",
+        real: "Mesa/Boogie Mark IIC+",
+        plain: "an early-80s Californian cascading-gain lead combo",
+        year: 1983,
+        facts: "1983-85 \u{b7} Californian \u{b7} 60/100 W lead amp with a 5-band graphic EQ",
+        what: "The Californian lead amp that stacked preamp stages one into the next for singing, endless sustain, its \
+               tone stack early so the distortion stays tight and mid-heavy. The five-slider graphic EQ is half its \
+               sound: the classic V setting (lows and highs up, 750 down) is the 80s thrash rhythm.",
+        heard: &[
+            h("Master of Puppets", "Metallica", 1986),
+            h("Pull Me Under", "Dream Theater", 1992),
+        ],
+        try_for: &["Thrash", "Progressive metal", "Fusion leads", "Hard rock"],
+        tips: &[
+            t(
+                "gain",
+                "The lead drive: the cascade's gain. It saturates early; past 7 it's all sustain.",
+                (5.0, 8.0),
+                "6-7 for rhythm, up for leads",
+            ),
+            t(
+                "treble",
+                "Top end, before the gain: on this amp it also sets how much the distortion bites.",
+                (6.0, 8.5),
+                "high, as most players run it",
+            ),
+            t(
+                "bass",
+                "Low end before the gain. It is strong: keep it low or the chug turns to mush.",
+                (1.5, 4.0),
+                "2-3; let the 80 Hz slider add the lows",
+            ),
+            t(
+                "mid",
+                "The mids into the cascade: the amp's punch.",
+                (3.5, 6.5),
+                "about noon",
+            ),
+            t("master", "The overall level.", (4.0, 6.0), "set the level"),
+            t(
+                "presence",
+                "Upper treble in the power amp: air and edge.",
+                (4.0, 6.5),
+                "lower if it fizzes",
+            ),
+            band(
+                "eq80",
+                "The lowest slider: the chug's thump, after the gain, so it stays tight.",
+                "+2 to +4 dB",
+            ),
+            band(
+                "eq240",
+                "The low mids: body; cut for a tighter, clearer rhythm.",
+                "0, or a little down",
+            ),
+            band(
+                "eq750",
+                "The mids' centre: down for the classic V scoop, up for a vocal lead.",
+                "-3 to -6 dB for rhythm, 0 to +3 for leads",
+            ),
+            band(
+                "eq2200",
+                "The upper mids: pick attack and presence in a band.",
+                "0 to +2 dB",
+            ),
+            band(
+                "eq6600",
+                "The top: sizzle and air; too much and it fizzes.",
+                "+1 to +3 dB",
+            ),
+        ],
+        starts: &[
+            s(
+                "Thrash V",
+                &[
+                    ("gain", 7.0),
+                    ("bass", 2.0),
+                    ("eq80", 4.0),
+                    ("eq240", 0.0),
+                    ("eq750", -6.0),
+                    ("eq2200", 0.0),
+                    ("eq6600", 3.0),
+                ],
+            ),
+            s(
+                "Singing lead",
+                &[
+                    ("gain", 8.5),
+                    ("mid", 6.0),
+                    ("eq80", 0.0),
+                    ("eq750", 3.0),
+                    ("eq6600", 0.0),
+                ],
+            ),
+            s(
+                "Tight crunch",
+                &[("gain", 4.5), ("bass", 2.5), ("eq750", 0.0), ("eq80", 2.0)],
+            ),
+            s(
+                "Flat (EQ off)",
+                &[
+                    ("eq80", 0.0),
+                    ("eq240", 0.0),
+                    ("eq750", 0.0),
+                    ("eq2200", 0.0),
+                    ("eq6600", 0.0),
+                ],
+            ),
+        ],
+    },
+    About {
+        id: "amp_snake",
+        real: "Soldano SLO-100 (and the Peavey/EVH 5150 it led to)",
+        plain: "a late-80s American hot-rodded lead head",
+        year: 1987,
+        facts: "1987 \u{b7} American \u{b7} 100 W two-channel head, four 6L6-type power tubes",
+        what: "A hand-built American head that took the hot-rodded British circuit to four preamp stages: thick, \
+               smooth, singing saturation with a firm low end and a vocal upper mid, and very little fizz. Its \
+               overdrive channel became the template for the 90s high-gain heads.",
+        heard: &[h("Bad Love", "Eric Clapton", 1989)],
+        try_for: &["Hard rock", "80s rock", "Metal", "Blues-rock leads"],
+        tips: &[
+            t(
+                "gain",
+                "The overdrive channel's preamp gain: smooth at every setting, saturated past 6.",
+                (5.0, 8.0),
+                "6-7; it has more than the 800",
+            ),
+            t(
+                "bass",
+                "Low end; it stays tight even turned up.",
+                (4.0, 6.5),
+                "about noon",
+            ),
+            t(
+                "mid",
+                "Mids, its voice: up for a vocal lead, a touch down for rhythm.",
+                (5.0, 7.5),
+                "6 or more",
+            ),
+            t("treble", "Top end and bite.", (5.0, 7.0), "by ear with the cab"),
+            t("master", "The overall level.", (4.0, 6.0), "set the level"),
+            t(
+                "presence",
+                "Upper treble in the power amp.",
+                (4.0, 6.0),
+                "lower with lots of gain",
+            ),
+        ],
+        starts: &[
+            s("Lead", &[("gain", 7.5), ("mid", 7.0), ("presence", 5.0)]),
+            s("Rhythm", &[("gain", 6.0), ("bass", 6.0), ("mid", 5.0)]),
+            s("Hot crunch", &[("gain", 4.0), ("mid", 6.5), ("treble", 6.5)]),
+        ],
+    },
+    About {
+        id: "amp_tangerine",
+        real: "Orange Rockerverb 50 MkII (and the OR50 / OR100)",
+        plain: "a British all-tube head with a cream panel",
+        year: 2003,
+        facts: "2003 (the brand from 1968) \u{b7} British \u{b7} 50 W, two EL34s",
+        what: "A British head with a sound of its own: thick, furry low mids and a darker, rounder top than the \
+               other British stacks, a crunch that turns to fat fuzz-like saturation. Played loud through a closed \
+               4x12 it is the stoner and doom rock wall.",
+        heard: &[],
+        try_for: &["Stoner rock", "Doom", "Indie", "Britpop", "Hard rock"],
+        tips: &[
+            t(
+                "master",
+                "The overall level (the panel's Volume).",
+                (4.0, 6.0),
+                "set the level",
+            ),
+            t(
+                "treble",
+                "Top end; it's a dark amp, so up a little more than usual.",
+                (5.0, 7.0),
+                "5-6",
+            ),
+            t(
+                "mid",
+                "The low mids it's known for.",
+                (5.0, 7.5),
+                "6; down for a scooped fuzz",
+            ),
+            t(
+                "bass",
+                "Low end; with the mids up it gets huge.",
+                (4.5, 7.0),
+                "5-6",
+            ),
+            t(
+                "gain",
+                "Drive: a fat crunch low down, a woolly saturation up high.",
+                (4.0, 8.0),
+                "5 for crunch, 8 for the wall",
+            ),
+        ],
+        starts: &[
+            s("Fat crunch", &[("gain", 5.0), ("mid", 6.5), ("bass", 6.0)]),
+            s(
+                "Doom wall",
+                &[("gain", 8.5), ("bass", 7.0), ("mid", 6.0), ("treble", 5.0)],
+            ),
+            s(
+                "Britpop",
+                &[("gain", 4.0), ("treble", 6.5), ("mid", 6.0), ("bass", 5.0)],
+            ),
+        ],
+    },
+    About {
+        id: "amp_surrey",
+        real: "Hiwatt DR103 Custom 100",
+        plain: "a late-60s British 100-watt clean-headroom head",
+        year: 1968,
+        facts: "late 1960s \u{b7} British \u{b7} 100 W, four EL34s, hand-wired",
+        what: "A military-grade, hand-wired British head with a huge output transformer: loud, clean and articulate \
+               where the other 100-watt heads were already crunching, with firm lows and even mids. It breaks up \
+               late, into a punchy, harmonically rich roar, and takes pedals beautifully.",
+        heard: &[
+            h("Won't Get Fooled Again", "The Who", 1971),
+            h("Comfortably Numb", "Pink Floyd", 1979),
+        ],
+        try_for: &["Classic rock", "Prog", "Clean leads", "Pedal platform"],
+        tips: &[
+            t(
+                "gain",
+                "The Normal channel's volume: warm and full. With Brilliant, how hard the preamp works.",
+                (3.0, 7.0),
+                "4-6",
+            ),
+            t(
+                "brilliant",
+                "The Brilliant channel's volume: the same with a bright cap, blended in. Up for sparkle and bite.",
+                (2.0, 6.0),
+                "about half the Normal",
+            ),
+            t(
+                "bass",
+                "Low end; firm, it doesn't flub.",
+                (4.0, 6.5),
+                "about noon",
+            ),
+            t("treble", "Top end.", (5.0, 7.0), "by ear"),
+            t(
+                "mid",
+                "Mids: the even, forward voice that cuts without fizz.",
+                (5.0, 7.0),
+                "6",
+            ),
+            t(
+                "presence",
+                "Upper treble in the power amp.",
+                (3.0, 6.0),
+                "lower than you'd think",
+            ),
+            t(
+                "master",
+                "The power stage: up for the late, punchy breakup at the top.",
+                (4.0, 8.0),
+                "5 clean, 8 for the roar",
+            ),
+        ],
+        starts: &[
+            s(
+                "Loud clean",
+                &[("gain", 4.0), ("brilliant", 2.0), ("master", 5.0)],
+            ),
+            s("Rock roar", &[("gain", 8.0), ("brilliant", 6.0), ("master", 8.0)]),
+            s(
+                "Pedal platform",
+                &[("gain", 5.0), ("brilliant", 3.0), ("mid", 6.5)],
+            ),
+        ],
+    },
+    About {
+        id: "cab_4x10_open",
+        real: "Fender Bassman / Super Reverb 4x10",
+        plain: "a late-50s American open-back 4x10 combo",
+        year: 1958,
+        facts: "1958 \u{b7} American \u{b7} open-back 4x10",
+        what: "Four 10-inch speakers in an open-backed box: quick, bright and punchy, with an airy low end rather than \
+               a closed cab's thump. The tweed 4x10 combo is the sound of Chicago and Texas blues and early rock \
+               and roll.",
+        heard: &[],
+        try_for: &["Blues", "Texas blues", "Rockabilly", "Rock and roll"],
+        tips: CAB_TIPS,
+        starts: CAB_STARTS,
+    },
 ];
 
 // -- behind the panel (P21.5, D45): the amps' back panel and the drives' diodes -------------------------------------------
@@ -2950,6 +3765,36 @@ pub(super) static BACK: &[(&str, &[KnobTip])] = &[
         "amp_bass",
         amp_back!(3.5, 2.0, 1.0, "the real amp's: six 6550s, close to KT88s"),
     ),
+    ("amp_b15", amp_back!(6.0, 4.0, 0.0, "the real amp's: two 6V6s")),
+    (
+        "amp_cali",
+        amp_back!(3.0, 1.0, 1.0, "the real amp's: 6L6s (simul-class on many)"),
+    ),
+    (
+        "amp_snake",
+        amp_back!(4.0, 1.0, 1.0, "the real amp's: four 5881s, a 6L6 type"),
+    ),
+    (
+        "amp_tangerine",
+        amp_back!(4.5, 0.0, 1.0, "the real amp's: two EL34s"),
+    ),
+    (
+        "amp_surrey",
+        amp_back!(2.0, 0.0, 1.0, "the real amp's: four EL34s"),
+    ),
+    (
+        "amp_bass_ss",
+        amp_back!(
+            1.0,
+            1.0,
+            1.0,
+            "a solid-state head: the tubes here only colour the power stage"
+        ),
+    ),
+    (
+        "amp_bass_tube",
+        amp_back!(5.0, 0.0, 1.0, "the real amp's: 6550s; EL34s are its voice here"),
+    ),
     (
         "green",
         &[t("diodes", DIODES, (0.0, 0.0), "the pedal's own: a silicon pair")],
@@ -2988,5 +3833,238 @@ pub(super) static BACK: &[(&str, &[KnobTip])] = &[
             (0.0, 0.0),
             "the pedal's own: silicon; LEDs make it the louder variant",
         )],
+    ),
+];
+
+// -- P37.2: the controls added to the models above (D105-D108), by model, then for any model ----------------------------
+
+const BLEND: &str = "How much of the effect against your dry signal. 100% is the pedal as it always was; on a bass, \
+                     about half keeps the low end solid under the grit.";
+const CLEAN_LOW: &str = "Keeps everything under this frequency only clean, whatever the Blend: a bass's fundamental \
+                         stays solid while the effect works on the rest. Off: the dry is full range.";
+
+pub(super) static NEW_TIPS: &[(&str, &[KnobTip])] = &[
+    // (P37.6c: the real units' signature controls, D140)
+    (
+        "amp_clean",
+        &[
+            t(
+                "reverb",
+                "The Twin's own spring reverb tank: a touch thickens a clean part, past 5 it is surf.",
+                (1.5, 4.0),
+                "2-3 for a clean part; 6+ for surf",
+            ),
+            t(
+                "speed",
+                "How fast the vibrato channel's tremolo pulses (it does nothing with Intensity at 0).",
+                (3.0, 6.0),
+                "4-5, or to the song's beat",
+            ),
+            t(
+                "intensity",
+                "How deep the tremolo goes. 0 is off.",
+                (0.0, 5.0),
+                "off; 3-5 for a pulsing part",
+            ),
+        ],
+    ),
+    (
+        "amp_modern",
+        &[t(
+            "mode",
+            "The channel's Raw / Vintage / Modern switch: Raw for open crunch, Vintage for smooth classic rock and \
+             leads, Modern for the tight, saturated metal sound.",
+            (1.0, 2.0),
+            "Modern for metal; Vintage for leads",
+        )],
+    ),
+    (
+        "metal",
+        &[t(
+            "mid_freq",
+            "Where the Mid knob cuts or boosts: low (300-500 Hz) for body, high (1.5-3 kHz) for bite.",
+            (500.0, 1500.0),
+            "about 900 Hz; sweep it with Mid boosted to find the spot",
+        )],
+    ),
+    (
+        "flanger",
+        &[t(
+            "manual",
+            "The shortest delay the sweep reaches: up for a lower, deeper jet, down for a high sizzle.",
+            (0.2, 1.0),
+            "0.3 ms, as it always was",
+        )],
+    ),
+    (
+        "amp_nam",
+        &[
+            t(
+                "bass",
+                "A low shelf after the capture (100 Hz). 0 is the capture as it was made.",
+                (-3.0, 3.0),
+                "0, as captured",
+            ),
+            t(
+                "mid",
+                "A mid band after the capture (650 Hz). 0 is as captured.",
+                (-3.0, 3.0),
+                "0, as captured",
+            ),
+            t(
+                "treble",
+                "A high shelf after the capture (3 kHz): cut to tame fizz, boost for sparkle. 0 is as captured.",
+                (-4.0, 2.0),
+                "0, or a little cut on high gain",
+            ),
+            t(
+                "gate",
+                "A noise gate in front of the capture: it silences hiss between notes. At the bottom it is off. The strip's \n                 gate at the foot of the room gates the whole chain: use one or the other, not both.",
+                (-90.0, -55.0),
+                "off for cleans; about -60 dB for high gain",
+            ),
+            t(
+                "gain",
+                "Steps through this unit's captures in your library, each one a real setting of its gain (below 0: \
+                 the one you loaded). The sound changes to the next capture, crossfaded.",
+                (-1.0, 10.0),
+                "the capture you loaded, or the next step up for more drive",
+            ),
+        ],
+    ),
+    (
+        "pedal_nam",
+        &[
+            t(
+                "blend",
+                BLEND,
+                (50.0, 100.0),
+                "100% for guitar; about half for bass",
+            ),
+            t(
+                "clean_low",
+                CLEAN_LOW,
+                (0.0, 2.0),
+                "Off for guitar; 120 Hz for bass",
+            ),
+            t(
+                "gain",
+                "Steps through this pedal's captures in your library, each a real setting of its drive (below 0: the \
+                 one you loaded).",
+                (-1.0, 10.0),
+                "the capture you loaded",
+            ),
+        ],
+    ),
+    (
+        "amp_bass",
+        &[
+            t(
+                "ultra_lo",
+                "The SVT's Ultra Lo: a deep mid scoop and a little more bottom, the classic rock fridge sound.",
+                (0.0, 1.0),
+                "off; on for a scooped sound",
+            ),
+            t(
+                "ultra_hi",
+                "The SVT's Ultra Hi: a treble lift at the input, for pick attack and string clank.",
+                (0.0, 1.0),
+                "off; on for a pick",
+            ),
+        ],
+    ),
+    (
+        "octaver",
+        &[t(
+            "sub2",
+            "A second octave down (the OC-2's Oct 2): a huge synth-like sub. Best on single low notes.",
+            (0.0, 5.0),
+            "off, or a little under the Sub",
+        )],
+    ),
+    (
+        "chorus",
+        &[t(
+            "low_cut",
+            "Keeps everything under this frequency dry, as a bass chorus does: the low end stays solid and centred.",
+            (0.0, 3.0),
+            "Off for guitar; 200 Hz for bass",
+        )],
+    ),
+    (
+        "env_filter",
+        &[
+            t(
+                "range",
+                "Hi: the sweep from about 220 Hz to 3.5 kHz (guitar). Lo: about 120 Hz to 1.5 kHz (bass).",
+                (0.0, 1.0),
+                "Hi for guitar, Lo for bass",
+            ),
+            t(
+                "direction",
+                "Up: the filter opens as you pick harder (the classic quack). Down: it closes, a darker, rubbery \
+                 sound.",
+                (0.0, 0.0),
+                "Up",
+            ),
+            t(
+                "mix",
+                "Blends the dry signal back in under the filter: keeps the note's body.",
+                (60.0, 100.0),
+                "70% on bass",
+            ),
+            t(
+                "boost",
+                "Level after the filter: it can come out quieter than the dry.",
+                (0.0, 6.0),
+                "match it with the pedal off",
+            ),
+        ],
+    ),
+    (
+        "cab_ir",
+        &[t(
+            "di",
+            "The direct signal (before the cab) blended with the IR, as bass is usually recorded: DI and mic together.",
+            (0.0, 50.0),
+            "0 for guitar; 30-50% for bass",
+        )],
+    ),
+    (
+        "*",
+        &[
+            t(
+                "blend",
+                BLEND,
+                (50.0, 100.0),
+                "100% for guitar; about half for bass",
+            ),
+            t(
+                "clean_low",
+                CLEAN_LOW,
+                (0.0, 2.0),
+                "Off for guitar; 120 Hz for bass",
+            ),
+            t(
+                "sync",
+                "Sets the repeats to a note value at the song's tempo (the Time knob is then ignored): 1/4, a dotted \
+                 eighth (the U2 sound), an eighth, a quarter-note triplet, a sixteenth, a half.",
+                (0.0, 2.0),
+                "Off to set Time yourself; 1/8. for rhythmic delay",
+            ),
+            t(
+                "horn",
+                "The cab's horn (tweeter): the string and slap snap above the speakers.",
+                (0.0, 6.0),
+                "off for vintage; 4-6 for slap and modern",
+            ),
+            t(
+                "di",
+                "The direct signal (before the cab) blended with the mic, as bass is usually recorded: more DI is \
+                 clearer and deeper, more mic growls.",
+                (20.0, 60.0),
+                "30-50%",
+            ),
+        ],
     ),
 ];

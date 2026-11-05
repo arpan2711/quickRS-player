@@ -598,6 +598,124 @@ impl DcBlock {
     }
 }
 
+/// A Linkwitz-Riley 4th-order low-pass or high-pass (two Butterworth sections): an `Lr4` pair splits a signal into
+/// bands that sum back flat in level (an all-pass), the crossover the bass blends and the chorus's low cut use.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Lr4 {
+    s: [Biquad; 2],
+}
+
+impl Lr4 {
+    pub fn low(rate: f32, f: f32) -> Lr4 {
+        let mut l = Lr4::default();
+        l.set_low(rate, f);
+        l
+    }
+    pub fn high(rate: f32, f: f32) -> Lr4 {
+        let mut l = Lr4::default();
+        l.set_high(rate, f);
+        l
+    }
+    pub fn set_low(&mut self, rate: f32, f: f32) {
+        for b in &mut self.s {
+            b.set(
+                rate,
+                Filter::LowPass {
+                    f,
+                    q: std::f32::consts::FRAC_1_SQRT_2,
+                },
+            );
+        }
+    }
+    pub fn set_high(&mut self, rate: f32, f: f32) {
+        for b in &mut self.s {
+            b.set(
+                rate,
+                Filter::HighPass {
+                    f,
+                    q: std::f32::consts::FRAC_1_SQRT_2,
+                },
+            );
+        }
+    }
+    #[inline]
+    pub fn tick(&mut self, x: f32) -> f32 {
+        let t = self.s[0].tick(x);
+        self.s[1].tick(t)
+    }
+    pub fn reset(&mut self) {
+        for b in &mut self.s {
+            b.reset();
+        }
+    }
+}
+
+/// The "Clean low" choices (`catalog::CLEAN_LOW`) as crossover frequencies; 0 is off (the dry is full band).
+pub const CLEAN_LOW_HZ: [f32; 5] = [0.0, 80.0, 120.0, 180.0, 250.0];
+
+/// A drive's clean blend (P37.2, the bass player's Blend and "Clean low"): `blend` of the effect, the rest the dry
+/// input; with a crossover the lows under it are only ever the dry signal (the effect's high-passed, the dry split
+/// in two), as the Darkglass and Parallax pedals keep a bass's fundamental clean.
+#[derive(Clone, Copy, Debug)]
+pub struct Blend {
+    rate: f32,
+    mix: Smooth,
+    f: f32,
+    dry_lo: Lr4,
+    dry_hi: Lr4,
+    wet_hi: Lr4,
+}
+
+impl Blend {
+    pub fn new(rate: f32) -> Blend {
+        Blend {
+            rate,
+            mix: Smooth::new(rate, 25.0, 1.0),
+            f: 0.0,
+            dry_lo: Lr4::default(),
+            dry_hi: Lr4::default(),
+            wet_hi: Lr4::default(),
+        }
+    }
+    /// `blend` 0..1 of the effect; `clean_low` an index into `CLEAN_LOW_HZ`.
+    pub fn set(&mut self, blend: f32, clean_low: f32) {
+        self.mix.target = blend.clamp(0.0, 1.0);
+        let f = CLEAN_LOW_HZ[(clean_low.round().max(0.0) as usize).min(CLEAN_LOW_HZ.len() - 1)];
+        if f != self.f {
+            self.f = f;
+            if f > 0.0 {
+                self.dry_lo.set_low(self.rate, f);
+                self.dry_hi.set_high(self.rate, f);
+                self.wet_hi.set_high(self.rate, f);
+            }
+        }
+    }
+    /// Whether it changes anything (all effect, no crossover, not gliding: the caller skips it, so the path is
+    /// exactly what it was before the knobs came).
+    #[inline]
+    pub fn active(&self) -> bool {
+        self.f > 0.0 || self.mix.target < 1.0 || self.mix.value < 1.0
+    }
+    #[inline]
+    pub fn tick(&mut self, wet: f32, dry: f32) -> f32 {
+        let m = self.mix.tick();
+        if self.f > 0.0 {
+            let lo = self.dry_lo.tick(dry);
+            let dh = self.dry_hi.tick(dry);
+            let wh = self.wet_hi.tick(wet);
+            lo + wh * m + dh * (1.0 - m)
+        } else {
+            wet * m + dry * (1.0 - m)
+        }
+    }
+    pub fn reset(&mut self) {
+        self.mix.snap();
+        self.dry_lo.reset();
+        self.dry_hi.reset();
+        self.wet_hi.reset();
+    }
+}
+
 /// A knob position 0..10 as 0..1.
 #[inline]
 pub fn unit10(v: f32) -> f32 {

@@ -1,4 +1,4 @@
-//! Rocksmith 2014 XML arrangement parser (the unencrypted format used in custom-song projects). Port of
+//! RS2014 XML arrangement parser (the unencrypted format used in custom-song projects). Port of
 //! rsplay/xml_arr.py.
 //!
 //! `<song>` holds `<title>`, `<arrangement>`, `<tuning string0..5>`, `<capo>`, `<ebeats>`, `<phrases>`,
@@ -126,7 +126,7 @@ pub fn parse_xml(source: &[u8], mastery: f64) -> Result<Arrangement> {
     }
     if tag != "song" {
         return Err(Error::Arrangement(format!(
-            "not a Rocksmith arrangement (root element <{tag}>)"
+            "not an RS arrangement (root element <{tag}>)"
         )));
     }
 

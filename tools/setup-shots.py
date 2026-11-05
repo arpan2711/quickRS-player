@@ -4,7 +4,7 @@
 
 Use the shared build (`cargo build --release -p qrs-app --no-default-features --target-dir target/share`): no
 brand names, no MG-300. It makes a scratch data folder (never your own: QUICKRS_DATA points at it) whose library is
-the synthetic test feedpaks, with neutral folders for songs and recordings and Rocksmith's dlc folders left out, runs
+the synthetic test feedpaks, with neutral folders for songs and recordings and RS's dlc folders left out, runs
 `quickrs --screenshots` there with the stand-in guitar named "Rocksmith Guitar Adapter", crops what each page is
 about, and saves the crops small (an adaptive palette). Look at every picture after making them.
 """
@@ -27,14 +27,14 @@ OUT = ROOT / "assets/setup"
 CROPS = [
     # the calibration's sliders (Settings > Audio's guitar setup, step 6)
     ("guitar", "95e3_setup_settings", "graphite", (386, 496, 1310, 756), 620),
-    # the output card's switches: Hear guitar, Low-latency output (its FAST badge), Note widget, Buffer
-    ("latency", "20d_settings_low_latency", "graphite", (852, 150, 1316, 438), 464),
+    # Settings > Timing > Reduce delay (P35.4; lower since P36: the Calibrate timing and Screen cards above it): Low-latency output (its FAST badge), the buffer, the latency chip
+    ("latency", "20d_settings_low_latency", "graphite", (386, 580, 1310, 760), 620),
     # the note widget on its own
     ("widget", "41_note_widget", "graphite", (667, 120, 1400, 320), 620),
     # Settings > Directories' song folders (the keys' "looked in" line, with this PC's paths, left out)
     ("folders", "91_settings_library_folders", "graphite", (386, 130, 1166, 400), 600),
-    # the amp room's rig (its units' "after ..." lines left out)
-    ("room", "94_room", "graphite", (196, 160, 1250, 532), 620),
+    # the amp room as one screen (P37.1, P38.1): the chain and the open unit
+    ("room", "94_room", "graphite", (20, 85, 1420, 590), 620),
     # each theme: the sidebar and Home's first card
     ("theme-midnight", "00_home", "midnight", (28, 25, 700, 470), 400),
     ("theme-graphite", "00_home", "graphite", (28, 25, 700, 470), 400),

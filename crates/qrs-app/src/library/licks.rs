@@ -90,7 +90,7 @@ impl LibView {
         self.sel = self.sel.min(self.lick_items.len().saturating_sub(1));
     }
 
-    fn lick_visible_rows(&self, area: Rect) -> usize {
+    pub(super) fn lick_visible_rows(&self, area: Rect) -> usize {
         let n = (ipx(self.list_rect(area).height()) / ipx(px(ROW_H))).floor();
         (n as i64).max(1) as usize
     }
@@ -120,7 +120,7 @@ impl LibView {
         let e = st.song(g);
         if e.needs_keys {
             st.say(format!(
-                "{} needs Rocksmith's keys: add them in Settings > Directories",
+                "{} needs RS's keys: add them in Settings > Directories",
                 l.title
             ));
             return;
@@ -186,6 +186,7 @@ impl LibView {
             Key::Home if ctrl => self.sel = 0,
             Key::End if ctrl => self.sel = n.saturating_sub(1),
             Key::Enter => self.open_lick(st),
+            Key::R if ctrl => self.random(st, area),
             Key::Delete => self.delete_lick(st),
             Key::F5 => self.act(st, area, "rescan"),
             _ => return false,
@@ -226,6 +227,10 @@ impl LibView {
         let [c_art, c_name, c_part, c_time, c_saved] = Self::lick_columns(r);
         let hy = well.min.y + px(10.0) + px(17.0);
         caps(&p, "LICK", pos2(c_name, hy), 11.0, Align2::LEFT_CENTER, None);
+        // the Random key over the covers, just left of LICK (P37.10)
+        let rk = Rect::from_center_size(pos2(c_art + px(20.0), hy), vec2(px(36.0), px(28.0)));
+        let random = !self.lick_items.is_empty()
+            && super::random_key(ui, rk, "lick-random", &self.random_tip()).clicked();
         caps(&p, "PART", pos2(c_part, hy), 11.0, Align2::LEFT_CENTER, None);
         caps(&p, "TIME", pos2(c_time, hy), 11.0, Align2::LEFT_CENTER, None);
         caps(&p, "SAVED", pos2(c_saved, hy), 11.0, Align2::RIGHT_CENTER, None);
@@ -432,6 +437,9 @@ impl LibView {
             if double {
                 self.open_lick(st);
             }
+        }
+        if random {
+            self.random(st, area);
         }
         for a in acts {
             self.act(st, area, a);

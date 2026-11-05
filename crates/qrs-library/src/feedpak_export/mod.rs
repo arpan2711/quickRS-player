@@ -1,20 +1,20 @@
-//! Write one song from a Rocksmith 2014 .psarc as a feedpak (spec 1.19.0, got-feedback.github.io/feedpak-spec):
+//! Write one song from an RS 2014 .psarc as a feedpak (spec 1.19.0, got-feedback.github.io/feedpak-spec):
 //! the port of rsfeedpak/export.py (P9.3). What goes where:
 //!
 //!   manifest.yaml           title, artist, album, year, duration, the parts (tuning, capo, cent offset, type),
 //!                           the stems and side-file pointers, and a `rocksmith` block (the source file and song
 //!                           key, sort names, average tempo) that other readers ignore
-//!   arrangements/<id>.json  every part at full difficulty, plus `phrases` with every level of Rocksmith's
+//!   arrangements/<id>.json  every part at full difficulty, plus `phrases` with every level of RS's
 //!                           difficulty ladder, the chord templates, anchors, hand shapes and tone changes
 //!   song_timeline.json      beats and the main part's sections (a part keeps its own under `rocksmith` when they
 //!                           differ)
 //!   stems/full.ogg          the song, rewrapped from Wwise Vorbis without re-encoding (qrs_formats::wem)
-//!   preview.ogg             Rocksmith's 30-second song-list preview
+//!   preview.ogg             RS's 30-second song-list preview
 //!   lyrics.json             the vocals chart; Japanese songs also get a romaji track (lyric_tracks)
 //!   vocal_pitch.json        only when the vocals carry a real melody
 //!   cover.png               the 256 px album art
 //!
-//! Rocksmith maps onto feedpak's note fields as in Rocksmith2014.NET and feedBack's own import: a single note's
+//! RS maps onto feedpak's note fields as in Rocksmith2014.NET and feedBack's own import: a single note's
 //! fret-hand mute is `mt`, a chord-wide one `fhm` on each chord note; chord-wide palm mute, accent and ignore go
 //! on each chord note; bends (`bn`, `bnv`) are in semitones. The text is written as the Python exporter writes it,
 //! so the two give the same pack (bar the converter's name). Audio that can't be rewrapped would need re-encoding,
@@ -120,7 +120,7 @@ fn bend_intent(curve: &[(f64, f64)], continues_bend: bool) -> i64 {
     if released { 4 } else { 0 }
 }
 
-/// Fill bn / bnv / bt (Rocksmith's bend steps are half steps: semitones). Returns the bend at the note's end.
+/// Fill bn / bnv / bt (RS's bend steps are half steps: semitones). Returns the bend at the note's end.
 fn add_bend(
     d: &mut Vec<(&'static str, Value)>,
     onset: f64,
@@ -141,7 +141,7 @@ fn add_bend(
     if pts.is_empty() {
         return peak;
     }
-    // Rocksmith bends from the unbent pitch unless the first point sits on the note's start (a pre-bend)
+    // RS bends from the unbent pitch unless the first point sits on the note's start (a pre-bend)
     let curve: Vec<(f64, f64)> = if pts[0].0 <= 0.0005 {
         pts
     } else {
@@ -221,7 +221,7 @@ fn note(n: &SngNote, ctx: &mut BendContext) -> Value {
     }
     set_flags(&mut d, &flags);
     if n.pick_direction > 0 {
-        // Rocksmith only marks upstrokes; unmarked means unset, not "down"
+        // RS only marks upstrokes; unmarked means unset, not "down"
         d.push(("pkd", json!(1)));
     }
     if (0..=4).contains(&n.left_hand) {
@@ -592,7 +592,7 @@ fn vocal_pitch(vocals: &[sng::SngVocal]) -> Option<Value> {
     }))
 }
 
-/// Display names as Rocksmith shows them: the represented part is "Lead", others "Alt. Lead" or "Bonus Lead"
+/// Display names as RS shows them: the represented part is "Lead", others "Alt. Lead" or "Bonus Lead"
 /// (numbered when there are several).
 fn part_names(infos: &[ArrangementInfo], attrs: &[Map<String, Value>]) -> Vec<String> {
     let mut names = vec![String::new(); infos.len()];
@@ -1015,7 +1015,7 @@ pub fn build(pkg: &mut Package, source_name: &str, multi: bool, converter: &str)
                 "bonus": info.bonus,
                 "represent": is_one(props.get("represent")),
                 "chart": chart_paths(info).0.unwrap_or_default(),
-                // (an extension key: Rocksmith's highway density per level, for a highway that scrolls as the game's)
+                // (an extension key: RS's highway density per level, for a highway that scrolls as the game's)
                 "visualDensity": at.get("DynamicVisualDensity").cloned().unwrap_or(Value::Array(Vec::new())),
             }),
         );
@@ -1154,7 +1154,7 @@ pub fn build(pkg: &mut Package, source_name: &str, multi: bool, converter: &str)
     rs.insert("converter".into(), json!(converter));
     m.insert("rocksmith".into(), Value::Object(rs));
     let header = format!(
-        "{artist} - {title}\nConverted from Rocksmith 2014 ({source_name}) by {converter}.\n\
+        "{artist} - {title}\nConverted from RS2014 ({source_name}) by {converter}.\n\
          The `rocksmith` blocks are an rsplay extension; other readers ignore them."
     );
     files.insert(

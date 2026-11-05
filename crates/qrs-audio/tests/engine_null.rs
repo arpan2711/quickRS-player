@@ -55,11 +55,18 @@ fn transport_on_the_silent_timer() {
     e.load_song(song(1.0));
     sleep(30);
     assert_eq!(e.position(), 0.0);
+    let t0 = std::time::Instant::now();
     e.play(None);
     assert!(e.playing());
     sleep(300);
     let p = e.position();
-    assert!((0.2..0.45).contains(&p), "position after 300 ms: {p}");
+    // (against the time that really passed: on a loaded machine the sleep overshoots; P37.4)
+    let slept = t0.elapsed().as_secs_f64().min(1.0);
+    assert!(
+        p > 0.2 && p < slept + 0.15,
+        "position after {:.0} ms: {p}",
+        slept * 1000.0
+    );
     e.pause();
     let p1 = e.position();
     sleep(100);
@@ -519,4 +526,49 @@ fn a_recording_is_as_long_as_it_ran() {
     let peak = s.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0);
     assert!(peak > 4000, "the song is in it: peak {peak}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A tone of NAM captures (P33): the guitar path's plucks are found as with any tone (the scorer hears the dry input,
+/// before the tone), at their song times, and the captures' sound is monitored.
+#[test]
+fn a_nam_board_leaves_the_plucks_alone() {
+    use qrs_audio::board::{Block, Board, nam};
+    use qrs_audio::tone::ToneSpec;
+    let tiny = r#"{"version": "0.5.4", "architecture": "WaveNet", "sample_rate": 48000,
+        "config": {"layers": [{"input_size": 1, "condition_size": 1, "channels": 1, "head_size": 1,
+            "kernel_size": 1, "dilations": [1], "activation": "Tanh", "gated": false, "head_bias": false}],
+            "head": null, "head_scale": 1.0},
+        "weights": [1.0, 2.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0]}"#;
+    nam::register_nam(7701, tiny).unwrap();
+    nam::register_nam(7702, tiny).unwrap();
+    let mut pedal = Block::of("pedal_nam").unwrap();
+    pedal.asset = 7701;
+    let mut amp = Block::of("amp_nam").unwrap();
+    amp.asset = 7702;
+    let e = Engine::new();
+    e.open(Route {
+        input: Some(InputRoute {
+            device: null("null:sine"),
+            channel: 0,
+        }),
+        output: Some(null("null")),
+        exclusive: false,
+        buffer: BufferSize::Frames(128),
+        base_channel: 0,
+    });
+    assert!(e.settle(SETTLE));
+    e.set_tone(ToneSpec::Board {
+        board: Board::new(vec![pedal, amp]),
+    });
+    e.load_song(song(5.0));
+    sleep(20);
+    e.take_onsets();
+    e.play(Some(0.0));
+    let onsets = wait_onsets(&e, 2300);
+    assert!((2..=3).contains(&onsets.len()), "{} onsets", onsets.len());
+    for o in &onsets {
+        assert!(o.song_time.expect("song time while playing") < 3.0);
+    }
+    assert!(max_output_peak(&e, 1100) > 0.05, "the captures are heard");
+    check_gaps(e.stats().monitor_gaps, &e.stats());
 }

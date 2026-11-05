@@ -27,6 +27,18 @@ pub fn px(n: f32) -> f32 {
     ((n as f64 * s).trunc() / s) as f32
 }
 
+/// `px` for a line's width: never under one physical pixel (`px` truncates, so at a scale under 0.83 `px(1.2)` was 0
+/// and thin lines vanished: the theory page's chord boxes had no grid in a small window, P37.4).
+pub fn px_line(n: f32) -> f32 {
+    let s = scale();
+    let v = px(n);
+    if s > 0.0 && (v as f64 * s) < 1.0 {
+        (1.0 / s) as f32
+    } else {
+        v
+    }
+}
+
 /// `int(round(n * s))` (`neu.px`), in points: Python rounds halves to even.
 pub fn pxr(n: f32) -> f32 {
     let s = scale();
@@ -88,6 +100,11 @@ mod tests {
         set_scale(1.0);
         assert_eq!(pxr(2.5), 2.0); // round half to even, as Python
         assert_eq!(pxr(3.5), 4.0);
+        // a line's width never truncates to nothing (P37.4): at 1100 x 700 (scale 0.786) px(1.2) is 0
+        set_scale(0.786);
+        assert_eq!(px(1.2), 0.0);
+        assert!((px_line(1.2) as f64 * 0.786 - 1.0).abs() < 1e-4);
+        assert_eq!(px_line(4.0), px(4.0));
         set_scale(0.0);
         assert_eq!(px(16.5), 16.5);
     }

@@ -56,6 +56,7 @@ pub fn delete_saved(cfg: &mut Config, name: &str) {
 }
 
 /// A name for a new saved board that isn't taken ("My board", "My board 2", ...).
+#[allow(dead_code)] // (P37.6c: the board view's Save as moved to the amp room, D142)
 pub fn fresh_name(cfg: &Config, base: &str) -> String {
     let taken: Vec<String> = saved(cfg).into_iter().map(|(n, _)| n.to_lowercase()).collect();
     if !taken.contains(&base.to_lowercase()) {
@@ -115,6 +116,17 @@ pub fn follow(cfg: &Config) -> bool {
 
 pub fn set_follow(cfg: &mut Config, on: bool) {
     cfg.set("board_follow", on);
+}
+
+/// "Always my sound" (P41.1, the gigging guitarist's #6): your own sound plays on every song and part, not only until
+/// the next one (config.json `board_always_mine`, off unless set). Following the song or holding one of its tones
+/// turns it off.
+pub fn always_mine(cfg: &Config) -> bool {
+    cfg.bool("board_always_mine", false)
+}
+
+pub fn set_always_mine(cfg: &mut Config, on: bool) {
+    cfg.set("board_always_mine", on);
 }
 
 /// Words that mark an input as an amp modeller (its own amps and effects: hear it "as is").
@@ -257,16 +269,21 @@ impl SongRig {
             return None;
         }
         let kept = rigs(ud, sid, part);
+        let song = crate::captures::auto::SongHint::new(&arr.artist, &arr.title);
         let mut tones: Vec<ToneSlot> = arr
             .rig
             .iter()
             .map(|t| {
                 let edit = kept.and_then(|k| k.get(&t.key)).map(Board::from_json);
+                let edited = edit.is_some();
+                let mut board = edit.unwrap_or_else(|| crate::captures::song_board_in(t, &song));
+                // (P38.2: a capture whose file is gone plays the model of ours beside it, never dry)
+                crate::captures::heal(&mut board);
                 ToneSlot {
                     key: t.key.clone(),
                     label: t.label(),
-                    edited: edit.is_some(),
-                    board: edit.unwrap_or_else(|| board::rocksmith::board_for(t)),
+                    edited,
+                    board,
                 }
             })
             .collect();
@@ -346,7 +363,10 @@ impl SongRig {
             return;
         };
         if let Some(t) = arr.rig.iter().find(|t| t.key == slot.key) {
-            slot.board = board::rocksmith::board_for(t);
+            slot.board = crate::captures::song_board_in(
+                t,
+                &crate::captures::auto::SongHint::new(&arr.artist, &arr.title),
+            );
         }
         slot.edited = false;
         let mut changed = false;
@@ -405,15 +425,21 @@ mod tests {
         assert_eq!(rig.at(0.0), 0);
         assert_eq!(rig.at(45.0), 1);
         assert_eq!(rig.at(61.0), 0);
-        assert_eq!(rig.tones[1].board.blocks[0].def().id, "amp_lead");
+        // (the amp after the gentle gate a driven tone gets, P38.2)
+        let amp = rig.tones[1]
+            .board
+            .blocks
+            .iter()
+            .position(|x| x.def().id == "amp_lead")
+            .expect("amp_lead");
         // change the dist tone, load again: the change is kept
         let mut b = rig.tones[1].board.clone();
-        b.blocks[0].set("gain", 9.0);
+        b.blocks[amp].set("gain", 9.0);
         rig.keep(1, &b, &mut ud);
         let ud2 = UserData::load(dir.join("userdata.json"));
         let rig2 = SongRig::new(&arr, "song|key", "Lead", &ud2).unwrap();
         assert!(rig2.tones[1].edited);
-        assert_eq!(rig2.tones[1].board.blocks[0].get("gain"), Some(9.0));
+        assert_eq!(rig2.tones[1].board.blocks[amp].get("gain"), Some(9.0));
         rig.reset(1, &arr, &mut ud);
         let ud3 = UserData::load(dir.join("userdata.json"));
         assert!(!SongRig::new(&arr, "song|key", "Lead", &ud3).unwrap().tones[1].edited);

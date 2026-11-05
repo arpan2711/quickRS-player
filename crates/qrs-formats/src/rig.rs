@@ -1,6 +1,6 @@
-//! A Rocksmith tone's rig: the amp, cab, pedals and racks (with their knob values) that a song's manifest lists
+//! An RS tone's rig: the amp, cab, pedals and racks (with their knob values) that a song's manifest lists
 //! for each tone of a part (`Attributes.Tones` in a .psarc manifest; feedpak keeps the same objects under the
-//! arrangement's `tones.definitions`). The pedalboard turns them into boards (qrs-audio `board::rocksmith`).
+//! arrangement's `tones.definitions`). The pedalboard turns them into boards (qrs-audio `board::rs_gear`).
 
 use serde_json::Value;
 
@@ -32,13 +32,13 @@ pub struct RigTone {
     pub name: String,
     /// "CLEAN", "LEAD", "DISTORTION"... (the localisation id taken off).
     pub descriptors: Vec<String>,
-    /// Rocksmith's loudness trim for the tone, dB (0 when missing).
+    /// RS's loudness trim for the tone, dB (0 when missing).
     pub volume_db: f32,
     /// In signal order: pre pedals, amp, post (loop) pedals, cab, racks.
     pub gear: Vec<Gear>,
 }
 
-/// Rocksmith's slots in signal order.
+/// RS's slots in signal order.
 pub const SLOTS: [&str; 11] = [
     "PrePedal1",
     "PrePedal2",

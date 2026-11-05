@@ -6,7 +6,7 @@ use egui::{Align2, Color32, CursorIcon, Painter, Pos2, Rect, Response, Sense, St
 use qrs_ui::keys::{self, CapOn, keycap, keycap_width};
 use qrs_ui::paint::{self, Fill};
 use qrs_ui::text::{self, Style};
-use qrs_ui::theme::{IVORY_INK, t};
+use qrs_ui::theme::t;
 use qrs_ui::units::px;
 use qrs_ui::widgets::interact;
 
@@ -82,11 +82,11 @@ pub fn key(
     let ink = match look {
         KeyLook::Ivory => {
             keys::key_face(p, r, Some(rad), false, down);
-            IVORY_INK
+            keys::key_ink(false)
         }
         KeyLook::Amber => {
             keys::key_face(p, r, Some(rad), true, down);
-            th.on_accent
+            keys::key_ink(true)
         }
         KeyLook::Rec => {
             paint::glow(p, r, th.miss, 10.0, Some(0.35), Some(rad));
@@ -140,6 +140,9 @@ pub fn key(
     } else {
         keycap_width(ctx, cap, 10.0) + px(7.0)
     };
+    // (a label longer than the key is cut with an ellipsis, never drawn past its edges)
+    let room_for = (r.width() - px(20.0) - iw - kw).max(px(8.0));
+    let tw = tw.min(room_for);
     let mut x = r.center().x - (tw + iw + kw) / 2.0;
     let cy = r.center().y;
     if let Some(f) = icon {
@@ -147,7 +150,7 @@ pub fn key(
         x += iw;
     }
     if !label.is_empty() {
-        text::draw(p, label, pos2(x, cy), Align2::LEFT_CENTER, st, None);
+        text::draw(p, label, pos2(x, cy), Align2::LEFT_CENTER, st, Some(room_for));
         x += tw + px(7.0);
     }
     if !cap.is_empty() {
@@ -212,7 +215,7 @@ pub fn chip(
             );
         }
     }
-    let ink = if on { IVORY_INK } else { th.text_2 };
+    let ink = if on { keys::key_ink(false) } else { th.text_2 };
     let mut x = r.min.x + px(9.0);
     if let Some(c) = dot {
         p.circle_filled(pos2(x + px(3.5), r.center().y), px(3.5), c);
@@ -333,32 +336,6 @@ pub fn chain_icons(p: &Painter, b: &qrs_audio::board::Board, x: f32, cy: f32, h:
     x
 }
 
-/// A soft round glow (a radial gradient to nothing): a lamp's light on the wall.
-pub fn radial_glow(p: &Painter, c: Pos2, radius: egui::Vec2, color: Color32, alpha: f32) {
-    let mut m = egui::Mesh::default();
-    let inner = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (alpha * 255.0) as u8);
-    let mid = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (alpha * 0.35 * 255.0) as u8);
-    m.colored_vertex(c, inner);
-    let n = 48;
-    for ring in [0.55f32, 1.0] {
-        for i in 0..n {
-            let a = std::f32::consts::TAU * i as f32 / n as f32;
-            m.colored_vertex(
-                pos2(c.x + ring * radius.x * a.cos(), c.y + ring * radius.y * a.sin()),
-                if ring < 1.0 { mid } else { Color32::TRANSPARENT },
-            );
-        }
-    }
-    let n = n as u32;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        m.add_triangle(0, 1 + i, 1 + j);
-        m.add_triangle(1 + i, 1 + n + i, 1 + j);
-        m.add_triangle(1 + j, 1 + n + i, 1 + n + j);
-    }
-    p.add(m);
-}
-
 // -- tiny icons, drawn (centre, size, colour) --------------------------------------------------------------------
 
 fn arc(p: &Painter, c: Pos2, r: f32, a0: f32, a1: f32, w: f32, col: Color32) -> Vec<Pos2> {
@@ -379,6 +356,21 @@ fn head(p: &Painter, tip: Pos2, dir: egui::Vec2, s: f32, w: f32, col: Color32) {
     p.line_segment([tip, tip - d * s - n * s * 0.8], Stroke::new(w, col));
 }
 
+/// A 2 x 2 grid of rounded squares (the Catalogue).
+pub fn icon_grid(p: &Painter, c: Pos2, s: f32, col: Color32) {
+    let q = s * 0.3;
+    let g = s * 0.08;
+    for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        let m = c + vec2(dx * (q / 2.0 + g), dy * (q / 2.0 + g));
+        p.rect_stroke(
+            Rect::from_center_size(m, vec2(q, q)),
+            q * 0.25,
+            Stroke::new(s * 0.1, col),
+            egui::StrokeKind::Middle,
+        );
+    }
+}
+
 /// ↶ undo.
 pub fn icon_undo(p: &Painter, c: Pos2, s: f32, col: Color32) {
     let w = s * 0.13;
@@ -390,26 +382,18 @@ pub fn icon_undo(p: &Painter, c: Pos2, s: f32, col: Color32) {
 /// ↷ redo.
 pub fn icon_redo(p: &Painter, c: Pos2, s: f32, col: Color32) {
     let w = s * 0.13;
-    let pts = arc(p, c + vec2(0.0, s * 0.08), s * 0.36, -0.54, 2.24, w, col);
+    // (undo mirrored: from the upper right over the top to the lower left, the head on the right pointing down)
+    let pts = arc(
+        p,
+        c + vec2(0.0, s * 0.08),
+        s * 0.36,
+        std::f32::consts::PI + 2.6,
+        std::f32::consts::PI - 0.9,
+        w,
+        col,
+    );
     let tip = pts[0];
     head(p, tip, tip - pts[2], s * 0.22, w, col);
-}
-
-/// Two crossing arrows (Shuffle).
-pub fn icon_shuffle(p: &Painter, c: Pos2, s: f32, col: Color32) {
-    let w = s * 0.12;
-    let h = s * 0.32;
-    let (l, r) = (c.x - s * 0.45, c.x + s * 0.45);
-    p.line_segment(
-        [pos2(l, c.y - h), pos2(r - s * 0.05, c.y + h)],
-        Stroke::new(w, col),
-    );
-    p.line_segment(
-        [pos2(l, c.y + h), pos2(r - s * 0.05, c.y - h)],
-        Stroke::new(w, col),
-    );
-    head(p, pos2(r, c.y + h), vec2(1.0, 0.6), s * 0.22, w, col);
-    head(p, pos2(r, c.y - h), vec2(1.0, -0.6), s * 0.22, w, col);
 }
 
 /// A floppy disk (Save).
@@ -434,15 +418,6 @@ pub fn icon_save(p: &Painter, c: Pos2, s: f32, col: Color32) {
         s * 0.04,
         col,
     );
-}
-
-/// A die (Randomise).
-pub fn icon_dice(p: &Painter, c: Pos2, s: f32, col: Color32) {
-    let r = Rect::from_center_size(c, vec2(s * 0.8, s * 0.8));
-    p.rect_stroke(r, s * 0.16, Stroke::new(s * 0.1, col), egui::StrokeKind::Middle);
-    for (dx, dy) in [(-0.2, -0.2), (0.2, 0.2), (0.0, 0.0), (0.2, -0.2), (-0.2, 0.2)] {
-        p.circle_filled(c + vec2(dx * s, dy * s), s * 0.07, col);
-    }
 }
 
 /// A chevron, left (`dir` -1) or right (1).
@@ -475,4 +450,74 @@ pub fn caret(p: &Painter, x: f32, cy: f32, h: f32, col: Color32) {
     }
     p.ctx()
         .request_repaint_after(std::time::Duration::from_millis(250));
+}
+
+/// The compare switch (P37.13; P41.3 named it in words, D172: "A Now / B Saved" were unexplained letters): a dark
+/// well under a small COMPARE, split in two, "Now" (what you're changing) and what it's compared with ("Last saved",
+/// or a song's "Original"), the side you hear lit. Returns its response.
+pub fn ab_switch(ui: &Ui, r: Rect, id: impl egui::AsId, b_word: &str, on_b: bool) -> Response {
+    let resp = interact(ui, r, id, Sense::click());
+    let p = ui.painter();
+    let th = t();
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    let rad = px(12.0);
+    paint::inset(p, r, Some(rad), 2.0, Fill::Base);
+    if resp.hovered() {
+        p.rect_stroke(
+            r.shrink(1.0),
+            rad,
+            Stroke::new(1.0, th.accent.gamma_multiply(0.5)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    text::caps(
+        p,
+        "COMPARE",
+        pos2(r.center().x, r.min.y + px(9.0)),
+        7.5,
+        th.caption,
+        Align2::CENTER_CENTER,
+        None,
+    );
+    let half = r.width() / 2.0;
+    let body = Rect::from_min_max(pos2(r.min.x, r.min.y + px(14.0)), r.max);
+    for (k, word) in ["Now", b_word].iter().enumerate() {
+        let hr = Rect::from_min_size(
+            pos2(r.min.x + half * k as f32, body.min.y),
+            vec2(half, body.height()),
+        );
+        let lit = (k == 1) == on_b;
+        if lit {
+            p.rect_filled(
+                hr.shrink2(vec2(px(5.0), px(4.0))),
+                px(8.0),
+                th.accent.gamma_multiply(0.22),
+            );
+        }
+        let ink = if lit { th.accent_ink } else { th.caption };
+        text::draw(
+            p,
+            word,
+            hr.center(),
+            Align2::CENTER_CENTER,
+            Style::new(11.0, 800, ink),
+            None,
+        );
+    }
+    p.line_segment(
+        [
+            pos2(r.center().x, body.min.y + px(6.0)),
+            pos2(r.center().x, r.max.y - px(8.0)),
+        ],
+        Stroke::new(1.0, th.divider),
+    );
+    resp
+}
+
+/// The compare switch's width for its second word.
+pub fn ab_w(ctx: &egui::Context, b_word: &str) -> f32 {
+    let half = |w: &str| text::width(ctx, w, Style::new(11.0, 800, Color32::WHITE)) + px(22.0);
+    2.0 * half("Now").max(half(b_word))
 }

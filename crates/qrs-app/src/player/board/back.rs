@@ -36,6 +36,10 @@ fn tube_counts(id: &str) -> (usize, usize) {
         "amp_tweed" => (2, 2),
         "amp_chime" => (3, 4),
         "amp_modern" => (5, 4),
+        "amp_cali" => (5, 4),
+        "amp_snake" => (5, 4),
+        "amp_tangerine" => (4, 2),
+        "amp_surrey" => (4, 4),
         "amp_bass" => (3, 6),
         _ => (3, 4),
     }
@@ -766,7 +770,10 @@ impl Rack {
             self.board_commit(st);
             return hov;
         }
-        let mine = self.board.drag.is_some_and(|d| d.uid == blk.uid && d.knob == k);
+        let mine = self
+            .board
+            .drag
+            .is_some_and(|d| d.tag == "back" && d.uid == blk.uid && d.knob == k);
         if resp.is_pointer_button_down_on()
             && !mine
             && let Some(pos) = resp.interact_pointer_pos()
@@ -779,6 +786,7 @@ impl Rack {
                 self.set_knob(st, blk.uid, k, kd.from_u(u0));
             }
             self.board.drag = Some(KnobDrag {
+                tag: "back",
                 uid: blk.uid,
                 knob: k,
                 start: pos,
@@ -788,11 +796,12 @@ impl Rack {
             });
         }
         if let Some(d) = self.board.drag
+            && d.tag == "back"
             && d.uid == blk.uid
             && d.knob == k
         {
-            if resp.is_pointer_button_down_on() || resp.dragged() {
-                if let Some(pos) = resp.interact_pointer_pos() {
+            if ctx.input(|i| i.pointer.any_down()) {
+                if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
                     let moved = if d.across {
                         pos.x - d.start.x
                     } else {
@@ -1031,18 +1040,22 @@ impl Rack {
             title(xs[col], kd.label);
             let size = (ctl_h - px(28.0)).min(ws[col] * 0.5).clamp(px(30.0), px(56.0));
             let c = pos2(xs[col] + ws[col] / 2.0, ctl_top + size / 2.0 + px(4.0));
-            kn::knob(
+            let hit = Rect::from_center_size(c, Vec2::splat(size + px(14.0)));
+            let hov = self.back_drag(ui, st, blk, k, hit, None);
+            if hov {
+                hot = Some(k);
+            }
+            // (the dark themes' baked knobs show hover and a hold)
+            let held = self.board.drag.is_some_and(|d| d.uid == blk.uid && d.knob == k);
+            kn::knob_in(
                 &p,
                 c,
                 size,
                 kd.to_u(blk.v[k]),
                 Scale::default(),
                 Some(KnobStyle::Chrome),
+                qrs_ui::glass::State::of(hov, held),
             );
-            let hit = Rect::from_center_size(c, Vec2::splat(size + px(14.0)));
-            if self.back_drag(ui, st, blk, k, hit, None) {
-                hot = Some(k);
-            }
             value_pill(pos2(c.x, c.y + size / 2.0 + px(14.0)), &kd.text(blk.v[k]));
             let ls = Style::new(10.0, 700, th.caption);
             if !lo.is_empty() {

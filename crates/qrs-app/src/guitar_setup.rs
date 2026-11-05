@@ -19,24 +19,28 @@ pub const KEY: &str = "guitar_setup";
 pub enum Step {
     Input,
     Output,
-    Level,
+    /// What's plugged in, and whether it's a guitar or a bass (before Level: its advice depends on both, P36.6).
     Kind,
+    Level,
     Calibrate,
     /// What calibration recommends, as sliders to adjust while you play (P23.10).
     Settings,
     Notes,
+    /// The timing tool (P36.2): guitar timing and screen timing.
+    Timing,
     Done,
 }
 
 impl Step {
-    pub const ALL: [Step; 8] = [
+    pub const ALL: [Step; 9] = [
         Step::Input,
         Step::Output,
-        Step::Level,
         Step::Kind,
+        Step::Level,
         Step::Calibrate,
         Step::Settings,
         Step::Notes,
+        Step::Timing,
         Step::Done,
     ];
 
@@ -53,6 +57,7 @@ impl Step {
             Step::Calibrate => "calibrate",
             Step::Settings => "settings",
             Step::Notes => "notes",
+            Step::Timing => "timing",
             Step::Done => "done",
         }
     }
@@ -70,7 +75,9 @@ impl Step {
             Step::Kind => "What's plugged in?",
             Step::Calibrate => "Calibrate",
             Step::Settings => "Your input settings",
-            Step::Notes => "Check the notes",
+            Step::Notes => "Check the open strings",
+            // (the play-along, P38.4: its Advanced is the click tool, titled on its own in the guide)
+            Step::Timing => "Can you play this?",
             Step::Done => "All set",
         }
     }
@@ -85,6 +92,7 @@ impl Step {
             Step::Calibrate => "Calibration",
             Step::Settings => "Settings",
             Step::Notes => "Notes",
+            Step::Timing => "Timing",
             Step::Done => "Done",
         }
     }
@@ -103,14 +111,14 @@ pub enum Mark {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Flow {
     pub step: Step,
-    pub marks: [Mark; 8],
+    pub marks: [Mark; 9],
 }
 
 impl Default for Flow {
     fn default() -> Self {
         Flow {
             step: Step::Input,
-            marks: [Mark::Todo; 8],
+            marks: [Mark::Todo; 9],
         }
     }
 }
@@ -176,7 +184,7 @@ const WAIT_S: f64 = 5.0;
 /// What the level check says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
-    /// No guitar input is listening.
+    /// No input is listening.
     NoInput,
     /// Listening, nothing played yet.
     Waiting,
@@ -226,6 +234,46 @@ impl Level {
 
     pub fn ok(self) -> bool {
         matches!(self, Level::Good | Level::Hot)
+    }
+
+    /// `words`, for the kind of input (P36.6): an amp modeller has a USB level, not a gain knob; a microphone has
+    /// a distance and its own gain.
+    pub fn words_for(self, kind: crate::calibrate::Kind) -> (&'static str, &'static str) {
+        use crate::calibrate::Kind;
+        match (self, kind) {
+            (Level::Silent, Kind::Modeller) => (
+                "Nothing is coming in",
+                "Check the modeller is on and its USB audio is the input picked in step 1 (and its channel: often \
+                 2 on a modeller), and that its master volume and USB level aren't at zero.",
+            ),
+            (Level::Quiet, Kind::Modeller) => (
+                "Very quiet",
+                "Raise the modeller's USB (record) level in its app or menu, or its patch's level. Calibrate can add \
+                 24 dB, no more.",
+            ),
+            (Level::Hot | Level::Clipping, Kind::Modeller) => (
+                if self == Level::Hot {
+                    "A little hot"
+                } else {
+                    "Very hot: at the top of the scale"
+                },
+                "A modeller often sends at full scale: Calibrate turns it down to fit. Lower its USB (record) level \
+                 if it has one.",
+            ),
+            (Level::Quiet, Kind::Mic) => (
+                "Very quiet",
+                "Move the microphone closer (20-30 cm from the 12th fret) or turn its gain up.",
+            ),
+            (Level::Hot | Level::Clipping, Kind::Mic) => (
+                if self == Level::Hot {
+                    "A little hot"
+                } else {
+                    "Too loud: it's clipping"
+                },
+                "Move the microphone a little further away, or turn its gain down.",
+            ),
+            _ => self.words(),
+        }
     }
 }
 
@@ -297,16 +345,44 @@ impl LevelWatch {
 pub const OPEN: [i32; 6] = [40, 45, 50, 55, 59, 64];
 pub const OPEN_NAMES: [&str; 6] = ["E", "A", "D", "G", "B", "e"];
 
+/// A bass's open strings (P36.6): E1 A1 D2 G2, and a 5-string's low B0 first.
+pub const OPEN_BASS: [i32; 4] = [28, 33, 38, 43];
+pub const OPEN_BASS5: [i32; 5] = [23, 28, 33, 38, 43];
+pub const OPEN_BASS_NAMES: [&str; 4] = ["E", "A", "D", "G"];
+pub const OPEN_BASS5_NAMES: [&str; 5] = ["B", "E", "A", "D", "G"];
+
+/// The open strings (MIDI, low to high) and their names for what's played.
+pub fn open_strings(inst: qrs_analysis::instrument::Instrument) -> (&'static [i32], &'static [&'static str]) {
+    use qrs_analysis::instrument::Instrument;
+    match inst {
+        Instrument::Guitar => (&OPEN, &OPEN_NAMES),
+        Instrument::Bass5 => (&OPEN_BASS5, &OPEN_BASS5_NAMES),
+        _ => (&OPEN_BASS, &OPEN_BASS_NAMES),
+    }
+}
+
 /// The open string a note (MIDI, fractional) is, within a quarter tone.
+#[cfg(test)]
 pub fn open_string(midi: f64) -> Option<usize> {
-    OPEN.iter().position(|&m| (midi - m as f64).abs() < 0.5)
+    open_string_of(&OPEN, midi)
+}
+
+/// The same among `strings`.
+pub fn open_string_of(strings: &[i32], midi: f64) -> Option<usize> {
+    strings.iter().position(|&m| (midi - m as f64).abs() < 0.5)
 }
 
 /// What the note check says, from how many strings it has heard.
+#[cfg(test)]
 pub fn notes_words(heard: usize, any_note: bool) -> &'static str {
+    notes_words_of(heard, 6, any_note)
+}
+
+/// The same with `of` strings.
+pub fn notes_words_of(heard: usize, of: usize, any_note: bool) -> &'static str {
     match heard {
-        6 => "All six strings heard: notes are detected.",
-        3..=5 => "Notes are detected. Play the rest if you like.",
+        n if n >= of && of > 0 => "Every string heard: notes are detected.",
+        n if n >= 3 => "Notes are detected. Play the rest if you like.",
         1 | 2 => "Heard you. Play the other open strings.",
         _ if any_note => "Notes are coming through. Play each open string.",
         _ => "Play each open string, one at a time, and let it ring.",
@@ -340,7 +416,7 @@ mod tests {
         f.next();
         assert_eq!((f.step, f.mark(Step::Input)), (Step::Output, Mark::Done));
         f.skip();
-        assert_eq!((f.step, f.mark(Step::Output)), (Step::Level, Mark::Skipped));
+        assert_eq!((f.step, f.mark(Step::Output)), (Step::Kind, Mark::Skipped));
         assert!(f.back());
         f.next(); // done after all
         assert_eq!(f.mark(Step::Output), Mark::Done);
@@ -400,6 +476,13 @@ mod tests {
         for l in [Level::Silent, Level::Quiet, Level::Clipping] {
             assert!(!l.words().1.is_empty());
         }
+        // never a gain knob for a modeller (P36.6)
+        use crate::calibrate::Kind;
+        for l in [Level::Silent, Level::Quiet, Level::Hot, Level::Clipping] {
+            assert!(!l.words_for(Kind::Modeller).1.contains("gain knob"), "{l:?}");
+        }
+        assert!(Level::Quiet.words_for(Kind::Mic).1.contains("closer"));
+        assert_eq!(Level::Good.words_for(Kind::Modeller), Level::Good.words());
     }
 
     #[test]
@@ -408,7 +491,14 @@ mod tests {
         assert_eq!(open_string(63.7), Some(5));
         assert_eq!(open_string(52.0), None); // a fretted note
         assert_eq!(open_string(45.6), None); // too far off
-        assert!(notes_words(6, true).starts_with("All six"));
+        assert!(notes_words(6, true).starts_with("Every string"));
+        // a bass: E1 A1 D2 G2, a 5-string's low B0 too
+        use qrs_analysis::instrument::Instrument;
+        let (b, names) = open_strings(Instrument::Bass);
+        assert_eq!((b, names.len()), (&OPEN_BASS[..], 4));
+        assert_eq!(open_string_of(b, 28.2), Some(0));
+        assert_eq!(open_string_of(open_strings(Instrument::Bass5).0, 23.1), Some(0));
+        assert_eq!(notes_words_of(4, 4, true), notes_words(6, true));
         assert!(notes_words(0, false).starts_with("Play each"));
     }
 

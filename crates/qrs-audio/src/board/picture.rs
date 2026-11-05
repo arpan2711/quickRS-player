@@ -7,6 +7,7 @@ use super::amp::{self, Stack};
 use super::dsp::{Biquad, Curve, Filter, audio_taper, sweep, unit10};
 use super::{Block, Face, Kind, Unit, cab};
 
+#[derive(Clone, Debug)]
 pub enum Picture {
     /// (Hz, dB) from 20 Hz to 20 kHz.
     Response(Vec<(f32, f32)>),
@@ -54,7 +55,9 @@ fn amp_stack(b: &Block) -> Option<(Stack, f32, f32, f32)> {
         "amp_chime" => Some((amp::AC30, t, 0.5, l)),
         "amp_crunch" => Some((amp::JTM45, t, m, l)),
         "amp_lead" => Some((amp::JCM800, t, m, l)),
-        "amp_modern" => Some((amp::MESA, t, m, l)),
+        "amp_modern" | "amp_cali" => Some((amp::MESA, t, m, l)),
+        "amp_snake" | "amp_tangerine" => Some((amp::JCM800, t, m, l)),
+        "amp_surrey" => Some((amp::JTM45, t, m, l)),
         "amp_bass" => Some((amp::AMPEG, t, 0.5, l)),
         _ => None,
     }
@@ -62,6 +65,13 @@ fn amp_stack(b: &Block) -> Option<(Stack, f32, f32, f32)> {
 
 pub fn picture(b: &Block) -> Picture {
     let def = b.def();
+    // (a capture or IR: measured from its file; flat until it's loaded)
+    if def.file {
+        return super::nam::picture(b.asset).unwrap_or_else(|| match def.kind {
+            Kind::Amp | Kind::Drive => Picture::Transfer(vec![(-1.0, -1.0), (1.0, 1.0)]),
+            _ => Picture::Response(freqs().map(|f| (f, 0.0)).collect()),
+        });
+    }
     let v = &b.v;
     match def.kind {
         Kind::Amp => match amp_stack(b) {
@@ -437,6 +447,16 @@ pub fn picture(b: &Block) -> Picture {
 
 /// What the picture is of, in a few words, for its title.
 pub fn caption(b: &Block) -> (&'static str, &'static str) {
+    match (b.def().file, b.def().kind) {
+        (true, Kind::Amp | Kind::Drive) => {
+            return (
+                "BREAKUP",
+                "the capture's output over one cycle of a low note: squarer breaks up more",
+            );
+        }
+        (true, _) => return ("FREQUENCY RESPONSE", "the impulse response, measured"),
+        _ => {}
+    }
     match b.def().kind {
         Kind::Amp => (
             "TONE STACK",

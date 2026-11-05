@@ -53,6 +53,10 @@ pub enum Icon {
     Highway,
     /// Invert the strings: an arrow up beside an arrow down.
     Invert,
+    /// The highway's background (Live, Still, Plain): an eye.
+    Eye,
+    /// A random pick (new in quickRS, P37.10): two arrows crossing, as a music player's shuffle.
+    Shuffle,
 }
 
 impl Icon {
@@ -95,6 +99,8 @@ impl Icon {
             "shrink" => Icon::Shrink,
             "highway" => Icon::Highway,
             "invert" => Icon::Invert,
+            "eye" => Icon::Eye,
+            "shuffle" => Icon::Shuffle,
             _ => return None,
         })
     }
@@ -371,6 +377,32 @@ pub fn icon_image(icon: Icon, size: u32, color: Color32) -> crate::raster::Image
             p.stroke(&[(16.0, 4.0), (16.0, 20.0)], 2.2);
             p.stroke(&[(12.5, 16.5), (16.0, 20.0), (19.5, 16.5)], 2.2);
         }
+        Icon::Eye => {
+            // the lids as two arcs meeting at the corners, and a solid iris
+            for side in [-1.0, 1.0] {
+                let lid: Vec<(f64, f64)> = (0..=24)
+                    .map(|i| {
+                        let u = i as f64 / 24.0;
+                        (2.5 + 19.0 * u, 12.0 + side * 6.8 * (PI * u).sin())
+                    })
+                    .collect();
+                p.stroke(&lid, 2.0);
+            }
+            p.circle(12.0, 12.0, 3.4, 0);
+        }
+        Icon::Shuffle => {
+            // two lines swapping places on an S-curve, each with its arrowhead at the right
+            for (y0, y1) in [(6.5, 17.5), (17.5, 6.5)] {
+                let mut pts = vec![(2.5, y0)];
+                pts.extend((0..=16).map(|i| {
+                    let u = i as f64 / 16.0;
+                    (7.0 + 9.0 * u, y0 + (y1 - y0) * u * u * (3.0 - 2.0 * u))
+                }));
+                pts.push((20.5, y1));
+                p.stroke(&pts, 2.1);
+                p.stroke(&[(17.0, y1 - 3.5), (20.5, y1), (17.0, y1 + 3.5)], 2.1);
+            }
+        }
     }
     p.s.smoothscale(size, size).image()
 }
@@ -467,7 +499,7 @@ mod tests {
         }
         // quickRS's own (no rsplay.neu dump to compare with, so not in ALL)
         assert_eq!(Icon::from_name("lesson"), Some(Icon::Lesson));
-        for n in ["width", "height", "rows", "shrink"] {
+        for n in ["width", "height", "rows", "shrink", "eye"] {
             assert!(Icon::from_name(n).is_some());
         }
         let img = icon_image(Icon::Lesson, 16, Color32::WHITE);
