@@ -38,12 +38,12 @@ AI model, no upload, and the same take always gets the same answer. See
 
 ### Download
 
-* **Windows 10 or 11 (64-bit):** `quickRS-0.5.0-windows-x64.zip` from the
+* **Windows 10 or 11 (64-bit):** `quickRS-0.5.1-windows-x64.zip` from the
   [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
   There is no installer: unzip it and run `quickrs.exe`.
 * **macOS 11 or later (beta):** `quickRS-0.3.0-macos-universal.dmg` (or the
   `.zip`) from the [0.3.0 release](https://github.com/arpan2711/quickRS-player/releases/tag/v0.3.0);
-  a Mac build of 0.5.0 may follow. One app for Apple silicon and Intel
+  a newer Mac build may follow. One app for Apple silicon and Intel
   Macs. It is tested on one Mac so far and not notarised by Apple, so the
   first start takes an extra step. See [docs/INSTALL.md](docs/INSTALL.md#macos).
   On a Mac, the keys written Ctrl in these docs are Cmd (a take is `Cmd+R`).
@@ -105,6 +105,11 @@ Easy to miss, and some of the best parts. `F1` in a song lists every key.
 * **Sounds late?** `,` and `.` nudge the sync, `Ctrl+,` and `Ctrl+.` your
   guitar's timing.
 
+
+### What's new in 0.5.1
+
+* **Bass notes read far better**: repeated plucks count, a low note's wobble no longer marks notes early, and fast riffs
+  score fairly. See the [0.5.1 release notes](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.1).
 
 ### What's new in 0.5.0 (the bass release)
 

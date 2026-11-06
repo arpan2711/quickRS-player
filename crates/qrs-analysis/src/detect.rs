@@ -274,6 +274,7 @@ impl Level {
         repeat: bool,
         second: bool,
         sharp: bool,
+        sharp_before: bool,
     ) -> bool {
         let f = midi_to_hz(m as f64);
         let at = |v: &[f64], f: f64| {
@@ -297,7 +298,17 @@ impl Level {
         if let Some(prev) = prev
             && !repeat
         {
-            let q = peak(prev, binhz, f, 0.03).max(h2(prev));
+            // (a bass, D176: the note before's skirt, a whole tone away and inside the window's main lobe, isn't this
+            // note having rung already)
+            let q = if sharp_before {
+                sharp_peak(prev, binhz, f, 0.03).max(if second {
+                    sharp_peak(prev, binhz, 2.0 * f, 0.03)
+                } else {
+                    0.0
+                })
+            } else {
+                peak(prev, binhz, f, 0.03).max(h2(prev))
+            };
             if p < 1.2 * q {
                 return false;
             }
@@ -314,7 +325,7 @@ impl Level {
         repeat: bool,
         second: bool,
     ) -> bool {
-        self.present_as(mag, binhz, m, prev, repeat, second, false)
+        self.present_as(mag, binhz, m, prev, repeat, second, false, false)
     }
 }
 
@@ -467,18 +478,36 @@ impl Verdict {
 /// The group's pitches that are present (and got louder, unless a repeat), as `group_matches_in` counts them: for
 /// a chord each must be a real peak.
 pub fn group_present_in(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>) -> Vec<i32> {
-    group_present_as(mag, binhz, g, prev, g.midis.len() >= 2)
+    group_present_as(mag, binhz, g, prev, g.midis.len() >= 2, false)
 }
 
 /// `group_present_in`, each pitch a real peak when `chord` (a chord's test; a bass's for every note).
-fn group_present_as(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>, chord: bool) -> Vec<i32> {
+fn group_present_as(
+    mag: &[f64],
+    binhz: f64,
+    g: &NoteGroup,
+    prev: Option<&[f64]>,
+    chord: bool,
+    sharp_before: bool,
+) -> Vec<i32> {
     match Level::of(mag, binhz) {
         None => vec![],
         Some(level) => g
             .midis
             .iter()
             .copied()
-            .filter(|&m| level.present_as(mag, binhz, m, prev, g.repeats.contains(&m), true, chord))
+            .filter(|&m| {
+                level.present_as(
+                    mag,
+                    binhz,
+                    m,
+                    prev,
+                    g.repeats.contains(&m),
+                    true,
+                    chord,
+                    sharp_before,
+                )
+            })
             .collect(),
     }
 }
@@ -503,7 +532,7 @@ pub fn explain_bass(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>
 }
 
 fn explain_as(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>, strict: bool) -> Verdict {
-    let present = group_present_as(mag, binhz, g, prev, strict || g.midis.len() >= 2);
+    let present = group_present_as(mag, binhz, g, prev, strict || g.midis.len() >= 2, strict);
     let foreign = if strict || g.midis.len() >= 2 {
         foreign_impl(mag, binhz, &g.midis, &g.ringing, prev)
     } else {
@@ -540,6 +569,8 @@ pub fn window_for_inst(g: &NoteGroup, rate: u32, inst: Instrument) -> usize {
 
 /// A bass note's window over E2 (s).
 pub const BASS_WINDOW: f64 = 0.12;
+/// The shortest a bass note's window gets for a next note close behind it (s).
+pub const BASS_WINDOW_MIN: f64 = 0.08;
 
 /// The guitar recording, addressed by absolute sample index (the engine's capture ring implements this).
 pub trait SampleSource {
@@ -675,9 +706,40 @@ impl Scorer {
         self.inst
     }
 
-    /// The analysis window for group `gi`.
+    /// The analysis window for group `gi`. On a bass it stops before the next note starts (D176: the next note in a
+    /// long low window is a foreign note, and a fast riff's right notes failed on it), down to `BASS_WINDOW_MIN`.
     fn window(&self, gi: usize, rate: u32) -> usize {
-        window_for_inst(&self.groups[gi], rate, self.inst)
+        let n = window_for_inst(&self.groups[gi], rate, self.inst);
+        if !self.inst.is_bass() {
+            return n;
+        }
+        let Some(next) = self.groups.get(gi + 1) else {
+            return n;
+        };
+        let room = ((next.t - self.groups[gi].t - ATTACK_SKIP).max(BASS_WINDOW_MIN) * rate as f64) as usize;
+        n.min(room)
+    }
+
+    /// A bass (D176): a group already called early that this pluck is closer to than the one that judged it. A false
+    /// pluck (or a pluck meant for the note before) took it, and the real pluck then took the next note early too,
+    /// and so on down the riff: the closer pluck has it back.
+    fn early_to_retake(&self, st: f64, nearest: Option<usize>) -> Option<usize> {
+        if !self.inst.is_bass() {
+            return None;
+        }
+        let lo = self.times.partition_point(|&t| t < st - PERFECT);
+        let hi = self.times.partition_point(|&t| t <= st + PERFECT);
+        let gi = (lo..hi)
+            .filter(|&i| self.groups[i].state == Some(Judgement::Early))
+            .min_by(|&a, &b| {
+                (self.groups[a].t - st)
+                    .abs()
+                    .total_cmp(&(self.groups[b].t - st).abs())
+            })?;
+        let d = (self.groups[gi].t - st).abs();
+        nearest
+            .is_none_or(|n| d <= (self.groups[n].t - st).abs())
+            .then_some(gi)
     }
 
     /// Whether `x` (with `before`) plays group `g`; a bass on a guitar part may play it an octave down.
@@ -950,6 +1012,17 @@ impl Scorer {
             return Place::None;
         }
         let cands = self.candidates(p.song_time);
+        if let Some(gi) = self.early_to_retake(p.song_time, cands.first().copied()) {
+            match self.check(gi, p.index, src) {
+                Check::Yes => {
+                    self.used.insert(p.index);
+                    self.judge(gi, p.song_time - self.groups[gi].t, now_wall);
+                    return Place::Judged;
+                }
+                Check::Wait => return Place::Wait,
+                _ => {}
+            }
+        }
         if cands.is_empty() {
             self.used.insert(p.index);
             return Place::None;
@@ -1577,6 +1650,70 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// D176: a fast riff (a note every 150 ms, E1 under a 5th and a 7th fret): each note's window stops before the
+    /// next, so the right notes are hits; before, the next note in the window failed them.
+    #[test]
+    fn a_fast_bass_riff_is_scored() {
+        let frets = [0, 0, 5, 7, 0, 0, 0, 0];
+        let chart: Vec<(f64, i32, i32)> = (0..24)
+            .map(|k| (1.0 + 0.15 * k as f64, 0, frets[k % 8]))
+            .collect();
+        let a = bass_part(&chart, 0);
+        let opens = a.open_string_midi();
+        let right: Vec<(f64, f64)> = chart
+            .iter()
+            .map(|&(t, st, f)| ((opens[st as usize] + f) as f64, t))
+            .collect();
+        for ks in [true, false] {
+            let got = score_played(&a, Instrument::Bass, &right, 0.1, ks);
+            let hits = got.iter().filter(|g| **g == Some(Judgement::Hit)).count();
+            assert!(hits >= 22, "ks {ks}: {got:?}");
+        }
+    }
+
+    /// D176: a false pluck before a repeated note calls it early; the real pluck has it back, not the next note
+    /// early and so on down the riff. A guitar's judgements stay as they were.
+    #[test]
+    fn a_false_pluck_does_not_push_a_riff_early() {
+        let rate = 48000;
+        let chart: Vec<(f64, i32, i32)> = (0..8).map(|k| (1.0 + 0.3 * k as f64, 0, 0)).collect();
+        let a = bass_part(&chart, 0);
+        let mut x = testsig::hiss(rate as usize * 6, 0.0002, 4);
+        for k in 0..8 {
+            let at = ((1.0 + 0.3 * k as f64) * rate as f64) as usize;
+            testsig::mix_at(&mut x, at, &testsig::ks_pluck(28.0, rate, 1.0, 0.1, 0.75, k));
+        }
+        let mut plucks: Vec<f64> = chart.iter().map(|c| c.0).collect();
+        plucks.push(1.0 + 0.3 * 2.0 - 0.15);
+        plucks.sort_by(f64::total_cmp);
+        let src = Rec { rate, x };
+        let play = |inst: Instrument| {
+            let mut s = Scorer::new(&a);
+            s.set_instrument(inst);
+            for &t in &plucks {
+                s.feed([Pluck {
+                    index: (t * rate as f64) as u64,
+                    song_time: t,
+                }]);
+                let live = Live {
+                    source: &src,
+                    level: 0.1,
+                    latency: 0.0,
+                };
+                s.update(t, Some(&live), t);
+            }
+            let live = Live {
+                source: &src,
+                level: 0.1,
+                latency: 0.0,
+            };
+            s.update(6.0, Some(&live), 6.0);
+            s.counts()
+        };
+        let c = play(Instrument::Bass);
+        assert_eq!((c.hit, c.early, c.miss), (8, 0, 0), "{c:?}");
     }
 
     /// A guitar can play a bass part (an octave up, on its low strings): hits, as before. A bass on a guitar part

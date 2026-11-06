@@ -3362,7 +3362,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qrs-analysis"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "qrs-formats",
  "realfft",
@@ -3371,7 +3371,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-app"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3397,7 +3397,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-audio"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "cpal",
  "crossbeam-channel",
@@ -3420,7 +3420,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3437,7 +3437,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-convert"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "eframe",
  "image",
@@ -3450,7 +3450,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-formats"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "aes",
  "flate2",
@@ -3465,7 +3465,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-library"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "directories",
@@ -3478,7 +3478,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-ui"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "egui",
  "harfrust",

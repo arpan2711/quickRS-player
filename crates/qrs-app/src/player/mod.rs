@@ -2666,6 +2666,9 @@ impl PlayerView {
         }
         // the guitar: plucks to the scorer, the pitch to the tuner
         let e = self.engine().cloned();
+        if let Some(e) = &e {
+            e.set_onset_bass(inst.is_bass());
+        }
         if let Some(e) = e
             && e.status().input.is_some()
             && !crate::timing_cal::onsets_held()

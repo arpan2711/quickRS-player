@@ -312,6 +312,8 @@ pub enum InCmd {
     InputGain(f32),
     /// Minimum onset energy (raised for microphones).
     OnsetFloor(f32),
+    /// The input is a bass: its own pluck detector (D176).
+    OnsetBass(bool),
     /// Hand the guitar (dry and toned) to the output even with monitoring off (for the looper and Rewind).
     Feed(bool),
 }

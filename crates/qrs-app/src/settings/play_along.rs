@@ -120,6 +120,7 @@ struct Run {
 
 impl Run {
     fn start(engine: Arc<Engine>, inst: Instrument) -> Run {
+        engine.set_onset_bass(inst.is_bass());
         let arr = pc::arrangement(inst);
         let mut scorer = Scorer::new(&arr);
         scorer.set_instrument(inst);

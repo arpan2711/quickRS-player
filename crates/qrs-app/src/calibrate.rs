@@ -316,6 +316,7 @@ pub fn apply(st: &AppState) {
         .unwrap_or_default();
     a.engine.set_input_gain_db(cal.trim_db);
     a.engine.set_onset_floor(cal.onset_or_default(mic));
+    a.engine.set_onset_bass(st.instrument().is_bass());
     // (P41.1, D163: the gates' threshold from this input's measured noise, after the input boost)
     qrs_audio::board::set_noise_floor(cal.floor_db.map(|f| f + cal.trim_db));
 }

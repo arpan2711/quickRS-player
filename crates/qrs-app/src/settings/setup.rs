@@ -1606,6 +1606,7 @@ fn set_instrument(st: &mut AppState, inst: qrs_analysis::instrument::Instrument)
         calibrate::save(&mut st.config, &id, &c);
     }
     st.save_config();
+    calibrate::apply(st);
 }
 
 fn guitar_status(st: &AppState) -> (String, bool) {

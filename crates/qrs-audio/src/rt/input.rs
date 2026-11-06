@@ -70,6 +70,7 @@ pub struct InputConfig {
     pub feed: bool,
     pub input_gain: f32,
     pub onset_floor: f32,
+    pub onset_bass: bool,
     pub max_block: usize,
 }
 
@@ -85,6 +86,7 @@ impl InputSide {
     ) -> InputSide {
         let mut detector = OnsetDetector::new(cfg.rate);
         detector.min_energy = cfg.onset_floor;
+        detector.bass = cfg.onset_bass;
         shared.capture.set_rate(cfg.rate);
         let cap = cfg.max_block.max(64);
         InputSide {
@@ -152,6 +154,7 @@ impl InputSide {
                 InCmd::Feed(f) => self.feed = f,
                 InCmd::InputGain(g) => self.input_gain = g,
                 InCmd::OnsetFloor(f) => self.detector.min_energy = f,
+                InCmd::OnsetBass(b) => self.detector.bass = b,
             }
         }
     }

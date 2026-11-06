@@ -56,6 +56,9 @@ pub struct OnsetDetector {
     /// calibration made at a louder input (the interface turned down since) can't hide every pluck.
     loud: f32,
     flux: Flux,
+    /// The input is a bass (D176): plucks come from `BassPlucks` alone.
+    pub bass: bool,
+    bass_plucks: BassPlucks,
 }
 
 /// The threshold in use is at most this share of the loudest recent playing (-12 dB under it)...
@@ -109,6 +112,150 @@ struct Flux {
     /// the spectrum for good (onsets.rs: "a new pitch must stay"), not ripple.
     specs: Vec<f32>,
     width: usize,
+}
+
+/// A bass's plucks (D176; new in quickRS). A hop or a flux frame is shorter than a low note's period, so the level of
+/// a ringing E1 swings by itself (false plucks, which then take the next note as "early"), while the same string
+/// plucked again hardly raises its overall level (missed plucks). So: the energy over a smooth (Hann) span longer than
+/// the lowest note's period (`BASS_SPAN`, no ripple), against the same span just before it, overall and above 150 Hz,
+/// where a pluck renews partials that die quickly. Its rise peaks `BASS_LAG` after the pluck. No allocation.
+struct BassPlucks {
+    /// The high-pass's coefficient, its last input and output per stage.
+    a: f32,
+    x1: [f32; 2],
+    y1: [f32; 2],
+    /// The block being summed, and the rings of whole blocks (energy overall and above the corner).
+    n: usize,
+    sum: f32,
+    sum_hi: f32,
+    all: [f32; BASS_RING],
+    hi: [f32; BASS_RING],
+    blocks: u64,
+    span: usize,
+    weights: [f32; BASS_RING],
+    /// The rise's peak so far (0: not in a rise), the capture index and the RMS there.
+    best: f32,
+    best_at: u64,
+    best_e: f32,
+    /// A pluck was just found: the rise must end before the next can start.
+    settled: bool,
+    last: i64,
+    min_gap: i64,
+    lag: u64,
+}
+
+const BASS_BLOCK: usize = 64;
+const BASS_RING: usize = 128;
+/// Nearly two periods of a low B, over two of an E (s).
+const BASS_SPAN: f64 = 0.056;
+/// From a pluck to the peak of its rise, as a share of the span (measured on synthetic strings).
+const BASS_LAG: f64 = 1.1;
+/// The rise that makes a pluck (dB), overall and above the corner.
+const BASS_RISE_ALL: f32 = 0.8;
+const BASS_RISE_HI: f32 = 1.0;
+/// How far under its peak (dB) a rise is over.
+const BASS_FALL: f32 = 1.0;
+
+impl BassPlucks {
+    fn new(rate: u32) -> BassPlucks {
+        let span =
+            ((BASS_SPAN * rate as f64 / BASS_BLOCK as f64).round() as usize).clamp(4, BASS_RING / 2 - 1);
+        let mut weights = [0.0; BASS_RING];
+        for (k, w) in weights.iter_mut().take(span).enumerate() {
+            *w = 0.5 - 0.5 * (std::f32::consts::TAU * (k as f32 + 0.5) / span as f32).cos();
+        }
+        BassPlucks {
+            a: (-std::f32::consts::TAU * 150.0 / rate as f32).exp(),
+            x1: [0.0; 2],
+            y1: [0.0; 2],
+            n: 0,
+            sum: 0.0,
+            sum_hi: 0.0,
+            all: [0.0; BASS_RING],
+            hi: [0.0; BASS_RING],
+            blocks: 0,
+            span,
+            weights,
+            best: 0.0,
+            best_at: 0,
+            best_e: 0.0,
+            settled: true,
+            last: -1_000_000_000,
+            min_gap: (0.06 * rate as f64) as i64,
+            lag: (span as f64 * BASS_LAG * BASS_BLOCK as f64) as u64,
+        }
+    }
+
+    /// Smoothed energy per sample of the `span` blocks ending `back` blocks ago.
+    fn mean(&self, ring: &[f32; BASS_RING], back: usize) -> f32 {
+        let mut s = 0.0;
+        for k in 0..self.span {
+            let at = (self.blocks as usize + BASS_RING * 2 - 1 - back - k) % BASS_RING;
+            s += self.weights[k] * ring[at];
+        }
+        2.0 * s / (self.span * BASS_BLOCK) as f32
+    }
+
+    /// The rise that peaked just ended: its pluck, unless it's too close to the last.
+    fn take(&mut self) -> Option<(u64, f32)> {
+        let i = self.best_at.saturating_sub(self.lag) as i64;
+        self.best = 0.0;
+        if i - self.last < self.min_gap {
+            return None;
+        }
+        self.last = i;
+        Some((i as u64, self.best_e))
+    }
+
+    /// One sample at capture index `idx`; `gate`: the RMS a pluck must reach. A pluck found: (its index, its RMS).
+    fn push(&mut self, s: f32, idx: u64, gate: f32) -> Option<(u64, f32)> {
+        let mut v = s;
+        for k in 0..2 {
+            let y = self.a * (self.y1[k] + v - self.x1[k]);
+            self.x1[k] = v;
+            self.y1[k] = y;
+            v = y;
+        }
+        self.sum += s * s;
+        self.sum_hi += v * v;
+        self.n += 1;
+        if self.n < BASS_BLOCK {
+            return None;
+        }
+        let at = self.blocks as usize % BASS_RING;
+        self.all[at] = self.sum;
+        self.hi[at] = self.sum_hi;
+        self.blocks += 1;
+        self.n = 0;
+        self.sum = 0.0;
+        self.sum_hi = 0.0;
+        if self.blocks < 2 * self.span as u64 {
+            return None;
+        }
+        let db = |a: f32, b: f32| 10.0 * ((a + 1e-12) / (b + 1e-12)).log10();
+        let now = self.mean(&self.all, 0);
+        let rise_all = db(now, self.mean(&self.all, self.span));
+        let rise_hi = db(self.mean(&self.hi, 0), self.mean(&self.hi, self.span));
+        // (over its threshold, whichever band shows it)
+        let rise = (rise_all - BASS_RISE_ALL).max(rise_hi - BASS_RISE_HI);
+        let e = now.sqrt();
+        if rise <= 0.0 || e <= gate {
+            self.settled = true;
+            return if self.best > 0.0 { self.take() } else { None };
+        }
+        if !self.settled {
+            return None;
+        }
+        if rise > self.best {
+            self.best = rise;
+            self.best_at = idx + 1;
+            self.best_e = e;
+        } else if rise < self.best - BASS_FALL {
+            self.settled = false;
+            return self.take();
+        }
+        None
+    }
 }
 
 /// Fine-energy blocks kept (64 samples each: about 170 ms at 48 kHz).
@@ -328,6 +475,8 @@ impl OnsetDetector {
             min_energy: 0.004,
             loud: 0.0,
             flux: Flux::new(rate),
+            bass: false,
+            bass_plucks: BassPlucks::new(rate),
         }
     }
 
@@ -340,6 +489,17 @@ impl OnsetDetector {
     pub fn feed(&mut self, x: &[f32], start_idx: u64, mut emit: impl FnMut(u64, f32)) {
         if self.hop_len == 0 {
             self.hop_start = start_idx;
+        }
+        if self.bass {
+            let decay = 10f32.powf(-3.0 / (10.0 * self.rate as f32));
+            for (k, &s) in x.iter().enumerate() {
+                let gate = self.min_energy.min((PLAYING_SHARE * self.loud).max(LOUD_FLOOR));
+                if let Some((i, e)) = self.bass_plucks.push(s, start_idx + k as u64, gate) {
+                    emit(i, e);
+                }
+                self.loud = (self.loud * decay).max(s.abs() * 0.5);
+            }
+            return;
         }
         let min_gap = (0.05 * self.rate as f64) as i64;
         for (k, &s) in x.iter().enumerate() {
@@ -619,6 +779,79 @@ mod bass_tests {
             .filter(|&&a| found.iter().any(|&f| f + 1440 >= a && f <= a + 1440))
             .count();
         (hit, at.len(), found.len())
+    }
+
+    /// With the bass detector on: where in `x` it finds plucks.
+    fn bass_plucks(x: &[f32]) -> Vec<usize> {
+        let mut found = Vec::new();
+        let mut d = OnsetDetector::new(48000);
+        d.bass = true;
+        d.min_energy = 0.002;
+        for (k, c) in x.chunks(128).enumerate() {
+            d.feed(c, (k * 128) as u64, |i, _| found.push(i as usize));
+        }
+        found
+    }
+
+    /// D176 (a tester's 59% on a part RS gave 95%): the same note plucked again on a ringing string, the case the
+    /// guitar detector misses, and low notes' ripple, which it takes for plucks. Two timbres, low B to high up.
+    #[test]
+    fn the_bass_detector_finds_each_repeat_and_nothing_else() {
+        let rate = 48000u32;
+        for midi in [23.0, 28.0, 33.0, 50.0] {
+            for ks in [true, false] {
+                let gap = 0.18;
+                let at: Vec<usize> = (0..24)
+                    .map(|k| ((0.5 + k as f64 * gap) * 48000.0) as usize)
+                    .collect();
+                let mut x = testsig::hiss(48000 * 7, 0.0002, 3);
+                for (k, &a) in at.iter().enumerate() {
+                    let note = if ks {
+                        testsig::ks_pluck(midi, rate, 1.2, 0.2, 0.75, k as u32)
+                    } else {
+                        testsig::additive_pluck(midi, rate, 1.2, 0.2, &[0.4, 1.0, 0.5, 0.3, 0.1], 0.01, 1.5)
+                    };
+                    for (i, v) in x.iter_mut().skip(a).enumerate() {
+                        *v *= 1.0 - (i as f32 / 240.0).min(1.0);
+                    }
+                    testsig::mix_at(&mut x, a, &note);
+                }
+                let found = bass_plucks(&x);
+                let hit = at
+                    .iter()
+                    .filter(|&&a| found.iter().any(|&f| f + 1920 >= a && f <= a + 1920))
+                    .count();
+                assert!(hit >= 23, "{midi} ks {ks}: {hit} of 24");
+                assert!(found.len() <= 26, "{midi} ks {ks}: {} plucks for 24", found.len());
+            }
+        }
+    }
+
+    /// One long note with a fretless player's vibrato (+-30 cents at 5 Hz) and its decay: one pluck, not a stream.
+    #[test]
+    fn vibrato_is_not_a_pluck() {
+        for midi in [28.0f64, 40.0] {
+            let n = 48000 * 3;
+            let mut x = testsig::hiss(48000 * 4, 0.0002, 3);
+            let (mut ph, at) = (0.0f64, 24000);
+            for i in 0..n {
+                let t = i as f64 / 48000.0;
+                let m = midi + 0.3 * (std::f64::consts::TAU * 5.0 * t).sin();
+                ph += std::f64::consts::TAU * 440.0 * 2f64.powf((m - 69.0) / 12.0) / 48000.0;
+                let v: f64 = [0.6, 1.0, 0.5, 0.3, 0.2]
+                    .iter()
+                    .enumerate()
+                    .map(|(h, a)| a * ((h + 1) as f64 * ph).sin() * (-t * (0.8 + 0.5 * h as f64)).exp())
+                    .sum();
+                x[at + i] += (0.1 * (t / 0.005).min(1.0) * v) as f32;
+            }
+            let found = bass_plucks(&x);
+            assert!((1..=2).contains(&found.len()), "{midi}: {found:?}");
+            assert!(
+                found[0] + 1440 >= at && found[0] <= at + 1440,
+                "{midi}: {found:?}"
+            );
+        }
     }
 
     #[test]

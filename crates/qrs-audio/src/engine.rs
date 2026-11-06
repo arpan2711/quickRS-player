@@ -124,6 +124,7 @@ struct Persist {
     channel: i32,
     input_gain: f32,
     onset_floor: f32,
+    onset_bass: bool,
     tone: ToneSpec,
     jam: JamPersist,
 }
@@ -140,6 +141,7 @@ impl Default for Persist {
             channel: 0,
             input_gain: 1.0,
             onset_floor: 0.004,
+            onset_bass: false,
             tone: ToneSpec::AsIs,
             jam: JamPersist::default(),
         }
@@ -727,6 +729,16 @@ impl Engine {
     }
 
     /// Minimum pluck energy (raise for a microphone in a noisy room).
+    /// The input is a bass: plucks come from the bass detector (D176). Only sent when it changes.
+    pub fn set_onset_bass(&self, bass: bool) {
+        let mut ctl = self.inner.ctl.lock();
+        if ctl.persist.onset_bass != bass {
+            ctl.persist.onset_bass = bass;
+            drop(ctl);
+            self.inp(InCmd::OnsetBass(bass));
+        }
+    }
+
     pub fn set_onset_floor(&self, f: f32) {
         self.inner.ctl.lock().persist.onset_floor = f;
         self.inp(InCmd::OnsetFloor(f));
@@ -1347,6 +1359,7 @@ fn input_side(
             feed: persist.jam.feed(),
             input_gain: persist.input_gain,
             onset_floor: persist.onset_floor,
+            onset_bass: persist.onset_bass,
             max_block: info.max_block.max(info.block).max(4096),
         },
         inner.shared.clone(),
