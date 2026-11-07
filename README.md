@@ -1,7 +1,7 @@
 quickRS
 -------
 
-[**⬇ Download for Windows**](https://github.com/arpan2711/quickRS-player/releases/latest) · [**⬇ Download for Mac** (beta)](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.2) · [Get your songs in](docs/GETTING-SONGS.md) · [Report a bug](https://github.com/arpan2711/quickRS-player/issues) · [**☕ Support it**](https://ko-fi.com/arpanmitra)
+[**⬇ Download for Windows**](https://github.com/arpan2711/quickRS-player/releases/latest) · [**⬇ Download for Mac** (beta)](https://github.com/arpan2711/quickRS-player/releases/latest) · [Get your songs in](docs/GETTING-SONGS.md) · [Report a bug](https://github.com/arpan2711/quickRS-player/issues) · [**☕ Support it**](https://ko-fi.com/arpanmitra)
 
 quickRS is a practice player for the Rocksmith 2014 songs you already own. It
 reads your `.psarc` files (or feedpaks, an open one-file-per-song format),
@@ -41,8 +41,8 @@ AI model, no upload, and the same take always gets the same answer. See
 * **Windows 10 or 11 (64-bit):** `quickRS-0.5.4-windows-x64.zip` from the
   [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
   There is no installer: unzip it and run `quickrs.exe`.
-* **macOS 11 or later (beta):** `quickRS-0.5.2-macos-universal.dmg` (or the
-  `.zip`) from the [0.5.2 release](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.2).
+* **macOS 11 or later (beta):** `quickRS-0.5.4-macos-universal.dmg` (or the
+  `.zip`) from the [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
   One app for Apple silicon and Intel
   Macs. Its tests run on GitHub's Macs, but it hasn't been tried on a real Mac
   since 0.3.0 (reports welcome), and it isn't notarised by Apple, so the
