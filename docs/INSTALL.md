@@ -151,7 +151,7 @@ recorded takes) and `.quickrs-cache` (the library index, covers and
 `quickrs.log`; safe to delete).
 
 Recordings (`R`) go elsewhere: a `quickRS Recordings` folder in your Music
-folder, named after the song. Settings > *Directories* > *RECORDINGS*
+folder, named after the song. Settings > *Library* > *RECORDINGS*
 changes where recordings and takes go. See
 [PLAYING](PLAYING.md#recording).
 

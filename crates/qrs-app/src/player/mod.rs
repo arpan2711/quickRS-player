@@ -13,7 +13,7 @@ pub(crate) mod controls;
 mod footer_keys;
 pub(crate) mod gearinfo;
 mod highway;
-pub use highway::Backdrop;
+pub use highway::{Backdrop, GEM_SIZES, NoteColours, gem_from};
 /// The highway's note sizes, for Settings > Display (D143).
 pub mod highway_size {
     pub use super::highway::{SIZES, size_from, size_label, size_pct};
@@ -1473,6 +1473,8 @@ impl PlayerView {
         self.input_offset = st.config.f64("input_offset", 0.0);
         self.highway.backdrop = highway::Backdrop::parse(&st.config.str("hw_backdrop", "live"));
         self.highway.size = highway::size_from(&st.config);
+        self.highway.colours = highway::NoteColours::parse(&st.config.str("hw_colours", "vivid"));
+        self.highway.gem = highway::gem_from(&st.config);
         self.display_offset = st.config.f64("display_offset", 0.0);
         let old = self.nota;
         self.nota = Nota::from_config(st);

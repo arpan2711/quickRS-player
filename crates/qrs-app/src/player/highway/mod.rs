@@ -35,7 +35,7 @@ mod view;
 use qrs_ui::theme::t;
 use qrs_ui::units::px;
 use qrs_ui::widgets::interact;
-pub use skin::Backdrop;
+pub use skin::{Backdrop, GEM_SIZES, NoteColours};
 
 use super::{Chart, ipos, mid, mid_y, snap};
 use crate::library::txt;
@@ -54,6 +54,25 @@ pub const SIZES: [f32; 5] = [0.85, 1.0, 1.25, 1.5, 1.8];
 pub const SIZE_DEFAULT: usize = 1;
 
 /// The note size step in config ("hw_size": its percentage, a number or a string; any other: the nearest step).
+/// The note boxes' size from the config (`hw_gem`, a percentage, number or text; P43.3): an index in `GEM_SIZES`.
+pub fn gem_from(cfg: &qrs_library::Config) -> usize {
+    let pct = match cfg.get("hw_gem") {
+        Some(serde_json::Value::Number(n)) => n.as_f64(),
+        Some(serde_json::Value::String(s)) => s.trim().trim_end_matches('%').parse().ok(),
+        _ => None,
+    };
+    let Some(pct) = pct else {
+        return skin::GEM_DEFAULT;
+    };
+    (0..GEM_SIZES.len())
+        .min_by(|&a, &b| {
+            (GEM_SIZES[a] as f64 * 100.0 - pct)
+                .abs()
+                .total_cmp(&(GEM_SIZES[b] as f64 * 100.0 - pct).abs())
+        })
+        .unwrap_or(skin::GEM_DEFAULT)
+}
+
 pub fn size_from(cfg: &qrs_library::Config) -> usize {
     let pct = match cfg.get("hw_size") {
         Some(serde_json::Value::Number(n)) => n.as_f64(),
@@ -174,6 +193,10 @@ pub struct Highway {
     pub numerals: Option<Key>,
     /// The background: Live, Still or Plain (config "hw_backdrop", the toolbar's eye key, D).
     pub backdrop: Backdrop,
+    /// The note colours (P43.2, config "hw_colours") and the note boxes' size (P43.3, an index in `GEM_SIZES`,
+    /// config "hw_gem").
+    pub colours: NoteColours,
+    pub gem: usize,
     /// The streak readout (the player sets it each frame).
     pub hud: Hud,
     cache: Option<Cache>,
@@ -207,6 +230,8 @@ impl Highway {
             full: false,
             numerals: None,
             backdrop,
+            colours: NoteColours::default(),
+            gem: skin::GEM_DEFAULT,
             hud: Hud::default(),
             cache: None,
             judged: Vec::new(),
@@ -287,13 +312,15 @@ impl Highway {
                 (i > 0).then(|| &chart.shapes[i - 1]).filter(|s| t < s.end - 1e-3)
             };
             let any_hd = chart.chords.iter().any(|c| c.high_density);
+            let opens = chart.arr.open_string_midi();
             let mut chords: Vec<HwChord> = Vec::with_capacity(chart.chords.len());
             for (i, ch) in chart.chords.iter().enumerate() {
                 let fretted = ch.notes.iter().map(|n| n.fret).filter(|&f| f > 0);
-                // the chart's own flag (RS's high density); charts without any flags: the same chord again in the
-                // same hand shape
+                // the chart's own flag (RS's high density), but only for the same notes again (P43.1: a CDLC flagged
+                // a whole verse, C5 to G5 to F5, and the changes were drawn as empty frames); charts without any
+                // flags: the same chord again in the same hand shape
                 let repeat = if any_hd {
-                    ch.high_density
+                    ch.high_density && i > 0 && same_notes(&chart.chords[i - 1], ch)
                 } else {
                     i > 0 && {
                         let pv = &chart.chords[i - 1];
@@ -305,7 +332,11 @@ impl Highway {
                     t: ch.time,
                     lo: fretted.clone().min().unwrap_or(0),
                     hi: fretted.max().unwrap_or(0),
-                    name: name_of(&ch.name),
+                    name: name_of(&if ch.name.trim().is_empty() {
+                        name_from_notes(ch, &opens)
+                    } else {
+                        ch.name.clone()
+                    }),
                     repeat,
                     fingers: ch.fingers.clone(),
                     frets: ch.frets.clone(),
@@ -558,6 +589,10 @@ impl Highway {
         let camera = self.camera;
         let zoom = SIZES[self.size.min(SIZES.len() - 1)];
         let tex = self.tex.take().expect("loaded");
+        let (colours, gem) = (
+            self.colours,
+            skin::GEM_SIZES[self.gem.min(skin::GEM_SIZES.len() - 1)],
+        );
         let c = self.cache(chart);
         let p = ui.painter().with_clip_rect(well);
         // the camera as (fret wire at the screen's middle, frets across)
@@ -585,6 +620,8 @@ impl Highway {
                 glow,
                 clock: t_clock,
                 backdrop,
+                colours,
+                gem,
             },
         );
         self.tex = Some(tex);
@@ -964,5 +1001,85 @@ impl Cache {
     fn window_now(&self, t: f64) -> Option<(i32, i32)> {
         let k = self.switch.partition_point(|&s| s <= t + 1e-3);
         (k > 0).then(|| (self.anchors[k - 1].2, self.anchors[k - 1].3))
+    }
+}
+
+/// The same strings and frets as the chord before (P43.1): only then is a chart's "repeat" flag drawn as one.
+fn same_notes(a: &qrs_formats::model::Chord, b: &qrs_formats::model::Chord) -> bool {
+    let key = |c: &qrs_formats::model::Chord| {
+        let mut v: Vec<(i32, i32)> = c.notes.iter().map(|n| (n.string, n.fret)).collect();
+        v.sort_unstable();
+        v
+    };
+    key(a) == key(b)
+}
+
+/// A chart chord with no name, named from its notes (P43.1: a CDLC's unnamed power chords left the highway without a
+/// label at each change); empty when they make no chord (one note, or its octaves).
+fn name_from_notes(c: &qrs_formats::model::Chord, opens: &[i32]) -> String {
+    let heard: Vec<chordname::HeardNote> = c
+        .notes
+        .iter()
+        .filter_map(|n| {
+            let open = *opens.get(n.string as usize)?;
+            Some(chordname::HeardNote {
+                midi: open + n.fret,
+                strength: 1.0,
+            })
+        })
+        .collect();
+    chordname::name(&heard).map_or_else(String::new, |g| g.name())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qrs_formats::model::{Chord, Note};
+
+    fn chord(notes: &[(i32, i32)], hd: bool) -> Chord {
+        Chord {
+            time: 0.0,
+            chord_id: 0,
+            name: String::new(),
+            notes: notes.iter().map(|&(s, f)| Note::new(0.0, s, f)).collect(),
+            techniques: Techs::default(),
+            sustain: 0.0,
+            frets: vec![-1; 6],
+            fingers: vec![-1; 6],
+            high_density: hd,
+        }
+    }
+
+    /// P43.1 (a tester's All the Small Things): a run flagged as repeats that changes shape, C5 to G5 to F5.
+    #[test]
+    fn a_changed_shape_is_never_a_repeat_and_gets_a_name() {
+        let opens = [40, 45, 50, 55, 59, 64];
+        let c5 = chord(&[(1, 3), (2, 5)], true);
+        let g5 = chord(&[(0, 3), (1, 5)], true);
+        let f5 = chord(&[(0, 1), (1, 3)], true);
+        assert!(same_notes(&c5, &c5.clone()));
+        assert!(!same_notes(&c5, &g5));
+        assert!(!same_notes(&g5, &f5));
+        assert_eq!(name_from_notes(&c5, &opens), "C5");
+        assert_eq!(name_from_notes(&g5, &opens), "G5");
+        assert_eq!(name_from_notes(&f5, &opens), "F5");
+        assert_eq!(name_from_notes(&chord(&[(0, 3)], false), &opens), "");
+    }
+
+    /// P43.2/P43.3: Vivid unless set otherwise, and the box size read as Settings writes it (text) or as a number.
+    #[test]
+    fn note_colours_and_box_size_from_the_config() {
+        let mut cfg = qrs_library::Config::default();
+        assert_eq!(
+            NoteColours::parse(&cfg.str("hw_colours", "vivid")),
+            NoteColours::Vivid
+        );
+        assert_eq!(NoteColours::parse("tube"), NoteColours::Tube);
+        assert_eq!(NoteColours::parse("nonsense"), NoteColours::Vivid);
+        assert_eq!(gem_from(&cfg), skin::GEM_DEFAULT);
+        cfg.set("hw_gem", "120");
+        assert_eq!(gem_from(&cfg), 2);
+        cfg.set("hw_gem", 100);
+        assert_eq!(gem_from(&cfg), 0);
     }
 }

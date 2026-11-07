@@ -1,7 +1,7 @@
 quickRS
 -------
 
-[**⬇ Download for Windows**](https://github.com/arpan2711/quickRS-player/releases/latest) · [**⬇ Download for Mac** (beta)](https://github.com/arpan2711/quickRS-player/releases/latest) · [Get your songs in](docs/GETTING-SONGS.md) · [Report a bug](https://github.com/arpan2711/quickRS-player/issues) · [**☕ Support it**](https://ko-fi.com/arpanmitra)
+[**⬇ Download for Windows**](https://github.com/arpan2711/quickRS-player/releases/latest) · [**⬇ Download for Mac** (beta)](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.2) · [Get your songs in](docs/GETTING-SONGS.md) · [Report a bug](https://github.com/arpan2711/quickRS-player/issues) · [**☕ Support it**](https://ko-fi.com/arpanmitra)
 
 quickRS is a practice player for the Rocksmith 2014 songs you already own. It
 reads your `.psarc` files (or feedpaks, an open one-file-per-song format),
@@ -38,11 +38,11 @@ AI model, no upload, and the same take always gets the same answer. See
 
 ### Download
 
-* **Windows 10 or 11 (64-bit):** `quickRS-0.5.2-windows-x64.zip` from the
+* **Windows 10 or 11 (64-bit):** `quickRS-0.5.3-windows-x64.zip` from the
   [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
   There is no installer: unzip it and run `quickrs.exe`.
 * **macOS 11 or later (beta):** `quickRS-0.5.2-macos-universal.dmg` (or the
-  `.zip`) from the [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
+  `.zip`) from the [0.5.2 release](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.2).
   One app for Apple silicon and Intel
   Macs. Its tests run on GitHub's Macs, but it hasn't been tried on a real Mac
   since 0.3.0 (reports welcome), and it isn't notarised by Apple, so the
@@ -107,6 +107,12 @@ Easy to miss, and some of the best parts. `F1` in a song lists every key.
   guitar's timing.
 
 
+### What's new in 0.5.3
+
+* **A clearer highway**: Vivid note colours by default, bigger note boxes (Settings > Display > Highway notes), wider
+  sustains, bends that show their amount, and chord changes that some charts hid now show with their names. See the
+  [0.5.3 release notes](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.3).
+
 ### What's new in 0.5.2
 
 * **Bass notes judged on real bass**: a right note is no longer refused for its own overtones, and fewer plucks are
@@ -127,8 +133,6 @@ Easy to miss, and some of the best parts. `F1` in a song lists every key.
 * **The amp room**: one screen, a catalogue of every unit with an *i* card (what it's inspired by, who played it),
   song tones on our own amps for every song, level-matched, four new amp voices, goal buttons (*More crunch*,
   *Less harsh*...), and a gate that closes after the amp.
-* **Neural Amp Modeler (optional)**: Settings > *Neural Amp Modeler*. Captures through your own TONE3000 account,
-  suggestions for your songs' gear, a download card with progress, and our model kept beside every capture.
 * **Practice that works together**: a selection is the loop, speed applies everywhere, one count-in switch
   (`Shift+C`), restart and review keys by the transport, low-latency output in Controls.
 * **Library**: a difficulty for every part, "Good to start with" on Home, score badges, Random, a Parts column.
@@ -168,14 +172,14 @@ Setting up
   level check that says what to turn, what's plugged in (guitar, amp
   modeller or microphone), calibration the Rocksmith way (knobs up, hands
   off, then strum as hard as you can), and a check of the open strings.
-* Keys pasted in Settings > *Directories*, `keys.json.txt` read too, and songs
+* Keys pasted in Settings > *Library*, `keys.json.txt` read too, and songs
   read as soon as the keys arrive: no restart, no `F5`.
 * Song folders listed with *Add folder...* and *Remove*; a switch to read
   only your feedpaks; each song marked `feedpak`, `psarc` or both.
 * quickRS updates itself (it asks first), and Settings > *About* > *Report
   a bug* opens a GitHub issue with your version and system filled in.
 * Settings sections renamed: *Audio input / output*, *Raw guitar tone*,
-  *Directories*.
+  *Library*.
 * A Mac version (beta).
 
 Practising
@@ -286,11 +290,11 @@ tone to try.
 
 A first-time setup on the first start (the look, your guitar, low latency,
 the note widget, keys and folders), and the song folders and keys in
-Settings > Directories.
+Settings > Library.
 
 ![The first-time setup](screenshots/setup.png)
 
-![Settings > Directories, labelled](screenshots/settings-library-labelled.png)
+![Settings > Library, labelled](screenshots/settings-library-labelled.png)
 
 #### Also
 
@@ -311,7 +315,7 @@ feedpak.
    (a couple of minutes), and add keys and folders. Every page can be
    skipped. ([INSTALL](docs/INSTALL.md#the-first-start))
 4. If songs say *needs keys*, paste Rocksmith's two keys into the setup's
-   *Keys and folders* page, or Settings (`F2`) > *Directories*, and press
+   *Keys and folders* page, or Settings (`F2`) > *Library*, and press
    *Save keys*. Feedpaks need no keys.
    ([GETTING-SONGS](docs/GETTING-SONGS.md))
 5. Pick a song, press `Space`, and play. ([PLAYING](docs/PLAYING.md))

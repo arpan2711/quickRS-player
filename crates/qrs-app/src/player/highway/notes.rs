@@ -164,6 +164,7 @@ pub(super) fn draw(pen: &Pen, c: &Cache, marks: &[Option<(Judgement, f32)>]) -> 
 /// coloured by string; `a` opacity, `lit` 0..1 (hot after a hit).
 fn gem(pen: &Pen, at: V3, roll: f32, s: usize, a: f32, lit: f32, size: f32) {
     let v = pen.v;
+    let size = size * pen.gem;
     let (hw, hh, hd) = (GEM_W / 2.0 * size, GEM_H / 2.0 * size, GEM_D / 2.0 * size);
     let (sn, cs) = roll.sin_cos();
     let r = |x: f32, y: f32| (x * cs - y * sn, x * sn + y * cs);
@@ -273,7 +274,7 @@ fn icons(pen: &Pen, at: V3, tech: Techs, s: usize, a: f32) {
     let Some(c) = v.pt(v3(at.x, at.y, at.z - GEM_D / 2.0)) else {
         return;
     };
-    let k = v.scale(at);
+    let k = v.scale(at) * pen.gem;
     let (w, h) = (GEM_W * k, GEM_H * k);
     // (from 3.5 px: at 5 the marks only showed in the last moment before the strings at 1440 x 900, P37.6d)
     if h < 3.5 {
@@ -374,12 +375,12 @@ fn icons(pen: &Pen, at: V3, tech: Techs, s: usize, a: f32) {
 /// Bend chevrons stacked just above a gem, one per half step (02 §4).
 fn chevrons(pen: &Pen, at: V3, n: usize, s: usize, a: f32) {
     let v = pen.v;
-    let k = v.scale(at);
-    let (hw, ch) = (GEM_W * 0.3 * k, GEM_H * 0.25 * k);
+    let k = v.scale(at) * pen.gem;
+    let (hw, ch) = (GEM_W * 0.36 * k, GEM_H * 0.32 * k);
     if ch < 1.5 {
         return;
     }
-    let Some(top) = v.pt(v3(at.x, at.y + GEM_H / 2.0, at.z - GEM_D / 2.0)) else {
+    let Some(top) = v.pt(v3(at.x, at.y + GEM_H * pen.gem / 2.0, at.z - GEM_D / 2.0)) else {
         return;
     };
     for i in 0..n.min(4) {
@@ -389,13 +390,18 @@ fn chevrons(pen: &Pen, at: V3, n: usize, s: usize, a: f32) {
             top + vec2(0.0, y - top.y),
             top + vec2(hw, y - top.y + ch),
         ];
+        // (P43.3: a dark edge, then the string's colour lifted, then a white core: bolder than face_bot + white)
         pen.p.add(egui::Shape::line(
             pts.clone(),
-            Stroke::new(ch * 0.7, alpha(pen.pal.face_bot[s], a)),
+            Stroke::new(ch * 0.95, alpha(rgb(10, 10, 14), 0.75 * a)),
+        ));
+        pen.p.add(egui::Shape::line(
+            pts.clone(),
+            Stroke::new(ch * 0.7, alpha(mix(pen.pal.str_game[s], Color32::WHITE, 0.2), a)),
         ));
         pen.p.add(egui::Shape::line(
             pts,
-            Stroke::new(ch * 0.38, alpha(Color32::WHITE, a)),
+            Stroke::new(ch * 0.3, alpha(Color32::WHITE, a)),
         ));
     }
 }
@@ -465,7 +471,31 @@ fn note(pen: &Pen, c: &Cache, n: &HwNote, marks: &[Option<(Judgement, f32)>]) {
     icons(pen, at, n.tech, s, a);
     if n.bend > 0.0 {
         chevrons(pen, at, n.bend.round().max(1.0) as usize, s, a);
+        bend_label(pen, at, n.bend, a);
     }
+}
+
+/// A bend's amount beside its chevrons (P43.3, a tester: bends were hard to see): ¼, ½, full, 1½, 2 steps.
+fn bend_label(pen: &Pen, at: V3, bend: f64, a: f32) {
+    let steps = (bend * 2.0).round() / 4.0;
+    let txt = match (steps * 4.0) as i32 {
+        ..=1 => "¼".to_string(),
+        2 => "½".to_string(),
+        4 => "full".to_string(),
+        q if q % 4 == 0 => format!("{}", q / 4),
+        q if q % 4 == 2 => format!("{}½", q / 4),
+        _ => format!("{steps}"),
+    };
+    let x = at.x + GEM_W * 0.5 * pen.gem + 0.15;
+    let y = at.y + GEM_H * 0.5 * pen.gem;
+    pen.text(
+        &txt,
+        v3(x, y, at.z),
+        1.6 * pen.gem,
+        Align2::LEFT_BOTTOM,
+        800,
+        alpha(Color32::WHITE, a),
+    );
 }
 
 /// An open string: a thin tapered bar across the hand's window on a translucent cyan plate (02 §5).
@@ -600,7 +630,8 @@ fn tail(pen: &Pen, c: &Cache, n: &HwNote, played: bool) {
     let mut left = Vec::with_capacity(n_seg + 1);
     let mut right = Vec::with_capacity(n_seg + 1);
     let mut fades = Vec::with_capacity(n_seg + 1);
-    let hw = 0.425;
+    // (P43.3: wider than RS's 0.85 and with the note boxes' size, a tester found sustains hard to see)
+    let hw = 0.5 * pen.gem;
     for i in 0..=n_seg {
         let z = z0 + (z1 - z0) * i as f32 / n_seg as f32;
         let tt = v.now + v.secs(z) - n.t;
@@ -644,8 +675,8 @@ fn tail(pen: &Pen, c: &Cache, n: &HwNote, played: bool) {
             pen.line(
                 e[i],
                 e[i + 1],
-                0.08,
-                0.03,
+                0.11,
+                0.04,
                 alpha(rail, fades[i]),
                 alpha(rail, fades[i + 1]),
                 1.0,

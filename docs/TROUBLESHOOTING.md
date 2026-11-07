@@ -43,7 +43,7 @@ yourself; the log is `.quickrs-cache\quickrs.log` in the
 The psarc songs can't be read because quickRS has no keys, or the keys are
 wrong.
 
-1. Open Settings (`F2`) > *Directories* and look at *ROCKSMITH KEYS*. It says
+1. Open Settings (`F2`) > *Library* and look at *RS KEYS*. It says
    whether keys were found, which file they came from or where it looked, and
    what is wrong with a file that doesn't read.
 2. Paste the two keys into their boxes and press *Save keys*. The waiting
@@ -69,7 +69,7 @@ Rocksmith's dlc folder*. See [GETTING-SONGS](GETTING-SONGS.md#song-folders).
 quickRS didn't find your `dlc` folder. That happens when Rocksmith isn't in a
 Steam library, or Steam is somewhere unusual.
 
-Settings > *Directories* > *Add folder...*, and pick the folder with your `.psarc`
+Settings > *Library* > *Add folder...*, and pick the folder with your `.psarc`
 or `.feedpak` files. Or drag that folder onto the quickRS window.
 
 
@@ -77,7 +77,7 @@ or `.feedpak` files. Or drag that folder onto the quickRS window.
 
 * Press `F5` in the library to read the folders again. New files are picked
   up.
-* Check the folder is listed in Settings > *Directories* > *SONG FOLDERS*.
+* Check the folder is listed in Settings > *Library* > *SONG FOLDERS*.
   Subfolders are read, so adding the top folder is enough.
 * If you turned off *Search Rocksmith's dlc folder*, the psarcs in Rocksmith's
   `dlc` folder (and `songs.psarc`) are skipped on purpose.
@@ -88,7 +88,7 @@ or `.feedpak` files. Or drag that folder onto the quickRS window.
 ### A song is listed twice, or the wrong copy plays
 
 A song you have as both a psarc and a feedpak is listed once and marked
-`feedpak + psarc` (the first one named plays). Settings > *Directories* > *SONGS
+`feedpak + psarc` (the first one named plays). Settings > *Library* > *SONGS
 IN BOTH FORMATS* picks which copy plays.
 
 If it's listed twice, the two copies differ (title, artist or length), so
@@ -105,13 +105,13 @@ the pack sets them* puts the mix back.
 
 ### Notes don't count
 
-* Run *Set up your guitar* in Settings > *Sound*. It checks
+* Run *Set up my guitar* (or *Set up my bass*) in Settings > *Sound*. It checks
   the input, the level and the open strings, and calibrates. See
   [AUDIO-SETUP](AUDIO-SETUP.md#the-guided-setup).
 * Or check the input by hand: the meter by the guitar input in Settings >
   *Sound* should move when you play.
 * Calibrate it: Settings > *Sound* > *INPUT LEVEL* >
-  *Calibrate*. See [AUDIO-SETUP](AUDIO-SETUP.md#calibrating-your-input).
+  *Check level*. See [AUDIO-SETUP](AUDIO-SETUP.md#calibrating-your-input).
 * On an interface, check the channel: *INPUT CHANNEL*, or let quickRS find it
   by playing a few clear notes.
 * Tune up. The tuner tile targets the song's tuning and follows any guitar
@@ -146,7 +146,7 @@ mid-recording, the next start puts what was recorded in the folder, marked
 *(recovered)*.
 
 Recordings from a song start with the song's name
-(`<song> - quickRS <date> <time>.wav`). Settings > *Directories* >
+(`<song> - quickRS <date> <time>.wav`). Settings > *Library* >
 *RECORDINGS* says where they go and has *Open*. See
 [PLAYING](PLAYING.md#recording).
 

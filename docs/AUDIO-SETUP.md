@@ -110,12 +110,12 @@ Rocksmith's does: quickRS listens to your loudest playing and sets the level
 from it, so nothing clips and soft notes still count.
 
 It's step 5 of the [guided setup](#the-guided-setup), or on its own:
-Settings > *Sound* > *INPUT LEVEL* > *Calibrate*.
+Settings > *Sound* > *INPUT LEVEL* > *Check level*.
 
 1. Set your interface's gain so its light never goes red on your hardest
    strum. If it clips, turn the gain down.
 2. Turn your guitar's volume and tone knobs all the way up.
-3. Press *Calibrate* (or `C`).
+3. Press *Check level* (or `C`).
 4. Take your hands off the strings. It listens to the quiet for 2 seconds.
 5. A count of 3, 2, 1, then *Go*: strum as hard as you can on all strings,
    again and again, until the bar fills.
@@ -127,8 +127,10 @@ It then recommends:
   your soft playing and above your room's noise and hum, so plucks count and
   hum doesn't.
 
-Both are shown as sliders, with meters, so you can play and adjust them;
-*Back to recommended* puts them back.
+In the guided setup both are shown as sliders, with meters, so you can play and
+adjust them; *Back to recommended* puts them back. In Settings > *Sound* the
+level is under *ADVANCED* > *Input boost by hand*, and *Back to what Check level
+found* undoes a change.
 
 If the interface clipped, or the input is very quiet, it says so and asks you
 to change the gain on the interface and calibrate again. It can add up to

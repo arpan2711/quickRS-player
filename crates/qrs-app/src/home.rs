@@ -435,7 +435,11 @@ impl HomeView {
         caps(&p, "WHAT'S NEW", pos2(x2, y), 12.0, Align2::LEFT_TOP, None);
         let ist = Style::new(14.0, 600, th.text);
         let mut iy = y + px(26.0);
-        for item in whatsnew::WHATS_NEW {
+        // (the NAM line only where NAM is built in: the shared build leaves it out, D80)
+        for item in whatsnew::WHATS_NEW
+            .into_iter()
+            .filter(|i| cfg!(feature = "nam") || !i.contains("Neural Amp Modeler"))
+        {
             let lines = text::wrap(&ctx, item, ist, w2 - px(18.0));
             if iy + lines.len() as f32 * px(20.0) > r.max.y - px(14.0) {
                 break;

@@ -48,6 +48,8 @@ pub struct Pen<'a> {
     pub pal: &'a Pal,
     /// The note material's atlas (6 gems in a row, low E first), when the skin is loaded.
     pub gems: Option<TextureId>,
+    /// The note boxes' size (P43.3: Settings > Display, 1.0 = RS's).
+    pub gem: f32,
 }
 
 impl Pen<'_> {

@@ -46,6 +46,9 @@ pub(super) struct Skin<'a> {
     pub clock: f64,
     /// Live, Still or Plain (the setting).
     pub backdrop: skin::Backdrop,
+    /// The note colours (P43.2) and the note boxes' size (P43.3), the settings.
+    pub colours: skin::NoteColours,
+    pub gem: f32,
 }
 
 pub(super) fn draw(p: &Painter, v: &View, c: &Cache, marks: &[Option<(Judgement, f32)>], sk: &Skin) {
@@ -57,8 +60,13 @@ pub(super) fn draw(p: &Painter, v: &View, c: &Cache, marks: &[Option<(Judgement,
     let pen = Pen {
         p,
         v,
-        pal: if bare { &GAME } else { c.look.pal() },
-        gems: (!bare).then(|| sk.tex.gems(c.look.material)),
+        pal: if bare { &GAME } else { c.look.pal(sk.colours) },
+        gems: if bare {
+            None
+        } else {
+            c.look.gems(sk.colours).map(|m| sk.tex.gems(m))
+        },
+        gem: sk.gem,
     };
     skin::background(p, v.well, sk.tex, &c.look, backdrop);
     // the frets whose wires show at the strings (plus one each side)
