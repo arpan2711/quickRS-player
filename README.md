@@ -41,10 +41,11 @@ AI model, no upload, and the same take always gets the same answer. See
 * **Windows 10 or 11 (64-bit):** `quickRS-0.5.2-windows-x64.zip` from the
   [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
   There is no installer: unzip it and run `quickrs.exe`.
-* **macOS 11 or later (beta):** `quickRS-0.3.0-macos-universal.dmg` (or the
-  `.zip`) from the [0.3.0 release](https://github.com/arpan2711/quickRS-player/releases/tag/v0.3.0);
-  a newer Mac build may follow. One app for Apple silicon and Intel
-  Macs. It is tested on one Mac so far and not notarised by Apple, so the
+* **macOS 11 or later (beta):** `quickRS-0.5.2-macos-universal.dmg` (or the
+  `.zip`) from the [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
+  One app for Apple silicon and Intel
+  Macs. Its tests run on GitHub's Macs, but it hasn't been tried on a real Mac
+  since 0.3.0 (reports welcome), and it isn't notarised by Apple, so the
   first start takes an extra step. See [docs/INSTALL.md](docs/INSTALL.md#macos).
   On a Mac, the keys written Ctrl in these docs are Cmd (a take is `Cmd+R`).
 
