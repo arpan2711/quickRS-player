@@ -728,22 +728,26 @@ fn guitar_sound_is_unchanged_by_the_new_controls() {
         "preset:Metal",
         "preset:Acoustic",
     ];
-    // exact where the fingerprints were blessed (x86-64 Windows); elsewhere (Apple silicon) the maths libraries round
-    // differently and the same sound comes out up to ~0.02% apart, so 0.1% there
-    let tol = if cfg!(all(target_arch = "x86_64", windows)) {
-        1e-6
-    } else {
-        1e-3
-    };
+    // exact where the fingerprints were blessed (x86-64 Windows). Elsewhere (Apple silicon) the maths library rounds
+    // filter coefficients differently and low f32 biquads (the cabs' twelve) magnify it: the same sound, energy within
+    // 0.02%, its samples up to ~1% apart, which swings the two weighted sums (near-cancelling) by far more than their
+    // own size. There: energy within 0.1%, the sums within 2% of their scale (the energy's root times the weights').
+    let exact = cfg!(all(target_arch = "x86_64", windows));
     let mut bad = Vec::new();
     for (k, want) in old.iter().filter(|(k, _)| !CHANGED.contains(&k.as_str())) {
         let Some(got) = now.get(k) else {
             bad.push(format!("{k}: gone"));
             continue;
         };
+        let e = want[0].as_f64().unwrap();
         for j in 0..3 {
             let (w, g) = (want[j].as_f64().unwrap(), got[j].as_f64().unwrap());
-            if (w - g).abs() > tol * (1.0 + w.abs()) {
+            let tol = match (exact, j) {
+                (true, _) => 1e-6 * (1.0 + w.abs()),
+                (false, 0) => 1e-3 * (1.0 + w.abs()),
+                (false, _) => 0.02 * e.sqrt() * 600.0 + 1e-3,
+            };
+            if (w - g).abs() > tol {
                 bad.push(format!("{k}[{j}]: {w} -> {g}"));
             }
         }
