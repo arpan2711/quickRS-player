@@ -51,7 +51,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Test (native arm64)
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
       - name: Build and bundle (universal)
         run: bash tools/mac/bundle.sh
