@@ -721,7 +721,9 @@ impl SettingsView {
         let (list, covered, total) = super::setup::nam_suggestions(staged, limit, st.instrument());
         let mut y = y;
         if list.is_empty() {
-            let words = if crate::gearindex::reading().is_some() {
+            let words = if !crate::captures::suggest::SHOWN {
+                "Pick any capture on TONE3000: open an amp's Captures (in the amp room or on a song's pedalboard) and press Pick on TONE3000\u{2026}"
+            } else if crate::gearindex::reading().is_some() {
                 "Reading your songs' gear\u{2026}"
             } else {
                 "No songs with RS tones yet: add your songs in Settings › Library, then look here again."
@@ -1293,6 +1295,12 @@ fn step_words(step: Step, use_nam: Option<bool>) -> &'static [&'static str] {
              id, not a password.",
             "When you pick a capture, TONE3000's own page opens in your browser and you sign in there. quickRS never \
              sees your password and keeps no sign-in.",
+        ],
+        // (the shared build lists no suggestions, real units by name: D58, D179)
+        Step::Suggest if !crate::captures::suggest::SHOWN => &[
+            "Pick captures from an amp: open its Captures (in the amp room or on a song's pedalboard) and press Pick \
+             on TONE3000\u{2026}. TONE3000's page opens: pick a capture you like and it downloads into your captures. \
+             Songs use the ones you have; the rest stay on quickRS's models.",
         ],
         Step::Suggest => &[
             "The gear your songs use most, ranked by how many songs it covers. Find on TONE3000 opens \

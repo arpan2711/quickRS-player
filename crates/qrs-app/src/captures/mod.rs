@@ -21,7 +21,7 @@ use std::sync::{Mutex, OnceLock};
 use qrs_audio::board::nam;
 use serde_json::{Map, Value, json};
 
-/// NAM captures and TONE3000 in this build (the owner's; off in the shared builds for now, D80).
+/// NAM captures and TONE3000 in this build (the owner's and, from 0.5.4, the shared one: D179).
 pub const ON: bool = cfg!(feature = "nam");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

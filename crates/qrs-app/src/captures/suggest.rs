@@ -9,6 +9,10 @@ use qrs_audio::board::rs_gear;
 
 use super::Kind;
 
+/// Whether this build lists the suggestions: they are real units by name, so only with brand names on (D58); the
+/// shared build has NAM and TONE3000 without them (any capture, picked from an amp's Captures).
+pub const SHOWN: bool = qrs_audio::board::catalog::SHOW_BRANDS;
+
 /// A real unit worth a capture.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Unit {
@@ -88,6 +92,9 @@ pub fn suggested_captures(
     inst: qrs_analysis::instrument::Instrument,
 ) -> (Vec<Suggestion>, usize, usize) {
     let songs = crate::gearindex::song_gear(inst.is_bass());
+    if !SHOWN {
+        return (Vec::new(), 0, songs.len());
+    }
     let have = |u: &Unit| {
         super::with(|l| {
             l.items

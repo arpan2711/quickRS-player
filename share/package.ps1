@@ -19,7 +19,7 @@ if (-not (Test-Path (Join-Path $root 'Cargo.toml'))) {
 }
 Push-Location $root
 try {
-    cargo build --release --target-dir target\share -p qrs-app --no-default-features -p qrs-cli -p qrs-convert
+    cargo build --release --target-dir target\share -p qrs-app --no-default-features --features qrs-app/nam -p qrs-cli -p qrs-convert
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
     $bin = Join-Path $root 'target\share\release'
     $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value

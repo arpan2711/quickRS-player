@@ -10,7 +10,7 @@
 # Based on the port that ran on the owner's Mac (2026-10-15, tools/package-mac.sh there).
 #
 #   tools/mac/bundle.sh                                     the public build (no `nux` feature)
-#   FEATURES="qrs-app/nux qrs-cli/nux" tools/mac/bundle.sh  with the NUX MG-300 tile (private repo only)
+#   FEATURES="qrs-app/nam qrs-app/nux qrs-cli/nux" tools/mac/bundle.sh  with the NUX MG-300 tile (private repo only)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 root="$(pwd)"
@@ -45,7 +45,8 @@ export LIBCLANG_PATH
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 [ -n "$version" ] || { echo "no version in Cargo.toml" >&2; exit 1; }
-features="${FEATURES:-}"
+# NAM and TONE3000 are in the shared build (D179); FEATURES= (empty) builds without them
+features="${FEATURES-qrs-app/nam}"
 echo "quickRS $version for macOS (features: ${features:-none}, macOS $MACOSX_DEPLOYMENT_TARGET+)"
 
 # both architectures, then one universal binary per program
