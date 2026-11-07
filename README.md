@@ -38,7 +38,7 @@ AI model, no upload, and the same take always gets the same answer. See
 
 ### Download
 
-* **Windows 10 or 11 (64-bit):** `quickRS-0.5.3-windows-x64.zip` from the
+* **Windows 10 or 11 (64-bit):** `quickRS-0.5.4-windows-x64.zip` from the
   [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
   There is no installer: unzip it and run `quickrs.exe`.
 * **macOS 11 or later (beta):** `quickRS-0.5.2-macos-universal.dmg` (or the
@@ -107,6 +107,11 @@ Easy to miss, and some of the best parts. `F1` in a song lists every key.
   guitar's timing.
 
 
+### What's new in 0.5.4
+
+* **Neural Amp Modeler is in the download**: 0.5.0 to 0.5.3 left it out by mistake. See the
+  [0.5.4 release notes](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.4).
+
 ### What's new in 0.5.3
 
 * **A clearer highway**: Vivid note colours by default, bigger note boxes (Settings > Display > Highway notes), wider
@@ -133,6 +138,9 @@ Easy to miss, and some of the best parts. `F1` in a song lists every key.
 * **The amp room**: one screen, a catalogue of every unit with an *i* card (what it's inspired by, who played it),
   song tones on our own amps for every song, level-matched, four new amp voices, goal buttons (*More crunch*,
   *Less harsh*...), and a gate that closes after the amp.
+* **Neural Amp Modeler (optional)**: Settings > *Neural Amp Modeler*. Captures through your own TONE3000 account
+  (a free key from tone3000.com; the setup shows how), picked from an amp's *Captures*, with our model kept beside
+  every capture. In the download from 0.5.4.
 * **Practice that works together**: a selection is the loop, speed applies everywhere, one count-in switch
   (`Shift+C`), restart and review keys by the transport, low-latency output in Controls.
 * **Library**: a difficulty for every part, "Good to start with" on Home, score badges, Random, a Parts column.

@@ -1316,7 +1316,9 @@ impl FirstSetup {
         if list.is_empty() {
             text::draw(
                 &p,
-                if crate::gearindex::reading().is_some() {
+                if !crate::captures::suggest::SHOWN {
+                    "Pick any capture on TONE3000: open an amp's Captures (in the amp room or on a song's pedalboard) and press Pick on TONE3000\u{2026}"
+                } else if crate::gearindex::reading().is_some() {
                     "Reading your songs' gear\u{2026}"
                 } else {
                     "No songs with RS tones yet: add your songs (next pages), then see Settings > Neural Amp Modeler."
@@ -1559,6 +1561,9 @@ pub(super) fn nam_suggestions(
     limit: usize,
     inst: qrs_analysis::instrument::Instrument,
 ) -> (Vec<crate::captures::suggest::Suggestion>, usize, usize) {
+    if !crate::captures::suggest::SHOWN {
+        return (Vec::new(), 0, 0);
+    }
     if staged {
         let bass = inst.is_bass();
         let songs: Vec<Vec<String>> = (0..40)

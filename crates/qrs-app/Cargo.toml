@@ -10,11 +10,11 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = []
+default = ["nam"]
 # the Lessons page and the coach: off in every build for now (D152, the owner put Lessons aside; was the owner's
 # build only, D50). `--features lessons` builds them back in
 lessons = []
-# NAM captures and TONE3000 on the pedalboard (P31, D80: the owner's build only for now)
+# NAM captures and TONE3000 on the pedalboard (P31, D80; in the shared build too from 0.5.4, D179)
 nam = []
 # the pedalboard's real brand names (off in the shared build, D58)
 brands = ["qrs-audio/brands"]

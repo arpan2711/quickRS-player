@@ -2459,7 +2459,11 @@ fn suggestions(room: &mut RoomView, ui: &Ui, r: Rect, inst: qrs_analysis::instru
     if list.is_empty() {
         text::draw(
             &p,
-            "Your songs' gear is still being read (or none is known yet): try again in a moment.",
+            if crate::captures::suggest::SHOWN {
+                "Your songs' gear is still being read (or none is known yet): try again in a moment."
+            } else {
+                "Pick any capture on TONE3000: an amp's Captures, Pick on TONE3000\u{2026}"
+            },
             r.left_center(),
             Align2::LEFT_CENTER,
             Style::new(12.0, 600, th.caption),
