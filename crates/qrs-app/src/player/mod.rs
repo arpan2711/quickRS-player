@@ -3743,7 +3743,7 @@ impl PlayerView {
             Align2::LEFT_TOP,
             Some(more_max),
         );
-        let strings = self.sounding_string_names().join(" ");
+        let strings = self.transposed_input_string_names().join(" ");
         cut_tip(
             ui,
             mr,
@@ -3760,7 +3760,7 @@ impl PlayerView {
         let follow = if pitch != 0 {
             text::width(
                 &ctx,
-                &format!("  →  {}", self.sounding_tuning_name()),
+                &format!("  →  {}", self.transposed_input_tuning_name()),
                 Style::new(14.0, 800, th.text),
             )
         } else {
@@ -3780,7 +3780,7 @@ impl PlayerView {
                 );
                 x = snap(r.max.x);
             }
-            let now = format!("  →  {}", self.sounding_tuning_name());
+            let now = format!("  →  {}", self.transposed_input_tuning_name());
             let now_max = snap(tx + tw - x).max(pixels(10.0));
             let nr = txt(
                 &p,
@@ -3796,8 +3796,9 @@ impl PlayerView {
                 ui,
                 nr,
                 &format!(
-                    "Guitar input {}: the backing track stays in {}; the tab stays as written",
+                    "Guitar input {}: sounds in {}; backing track stays in {}; tab stays as written",
                     songaudio::pitch_long(pitch),
+                    self.transposed_input_tuning_name(),
                     self.sounding_tuning_name()
                 ),
                 Style::new(14.0, 800, th.text),
@@ -3807,7 +3808,7 @@ impl PlayerView {
             x = snap(nr.max.x);
         }
         if ipx(tx + tw - x) > ipx(px(60.0)) {
-            let names = format!("   {}", self.sounding_string_names().join(" "));
+            let names = format!("   {}", self.transposed_input_string_names().join(" "));
             txt(
                 &p,
                 &names,

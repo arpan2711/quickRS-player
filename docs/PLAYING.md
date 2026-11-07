@@ -270,13 +270,16 @@ stems.)
 
 **Input transpose.** `Shift+↑` and `Shift+↓` (or *Higher* and *Lower*, or the
 `−` and `+` of *TRANSPOSE* in the header, beside the tuning) shift the guitar
-input up or down a semitone at a time, from 12 down to 12 up. *Original pitch*
+input up or down a semitone at a time, from 12 down to 12 up. *No shift*
 clears the shift. The backing track and tab stay at their original pitch.
 Scoring, the tuner, the live guitar monitor and takes follow the shifted input;
-the synth guitar still plays the chart as written. For example, shift the input
-down a semitone to play an Eb-tuned chart on an E-standard guitar without
-raising the backing track. Monitoring with a pitch shift adds a little audio
-latency.
+the header shows the resulting input tuning (E Standard → Eb Standard → D
+Standard as you shift down); the synth guitar still plays the chart as written.
+For example, shift the input down a semitone to play an Eb-tuned chart on an
+E-standard guitar without raising the backing track. Pitch-shifted monitoring
+adds about 10 ms of processing latency, plus your audio device's latency. Very
+low notes and large shifts can still sound less natural than the unshifted
+guitar.
 
 ![TRANSPOSE in the header: as written, and two semitones up](../screenshots/transpose.png)
 

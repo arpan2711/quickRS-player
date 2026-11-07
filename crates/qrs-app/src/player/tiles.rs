@@ -441,11 +441,12 @@ impl PlayerView {
                 if self.mixer.pitch == 0 {
                     format!("{} (this song)", self.chart.arr.tuning_name())
                 } else {
-                    // the guitar input is shifted for pitch matching; keep the track's tuning as the target
+                    // Show both the track tuning and the shifted input tuning; the tracker still targets the track.
                     format!(
-                        "{} (input {})",
+                        "{} (input {} → {})",
                         self.sounding_tuning_name(),
-                        super::songaudio::pitch_short(self.mixer.pitch)
+                        super::songaudio::pitch_short(self.mixer.pitch),
+                        self.transposed_input_tuning_name()
                     )
                 },
                 self.sounding_opens(),

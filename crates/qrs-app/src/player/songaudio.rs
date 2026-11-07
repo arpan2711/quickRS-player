@@ -120,10 +120,21 @@ pub fn pitch_long(p: i32) -> String {
     }
 }
 
+fn shifted_tuning_name(offsets: &[i32], is_bass: bool, semitones: i32) -> String {
+    let shifted: Vec<i32> = offsets.iter().map(|&o| o + semitones).collect();
+    qrs_formats::model::tuning_name(&shifted, is_bass)
+}
+
 impl PlayerView {
     /// The song's open strings. Input transposition does not change the track or the chart.
     pub(super) fn sounding_opens(&self) -> Vec<i32> {
         self.chart.opens.clone()
+    }
+
+    /// The tuning after the selected guitar-input shift (E Standard −1: Eb Standard).
+    pub(super) fn transposed_input_tuning_name(&self) -> String {
+        // The transpose amount is relative to E standard, not to the song's chart tuning.
+        shifted_tuning_name(&[0; 6], self.chart.arr.is_bass, self.mixer.pitch)
     }
 
     /// The tuning written in the chart and heard on the backing track.
@@ -131,13 +142,13 @@ impl PlayerView {
         qrs_formats::model::tuning_name(&self.chart.arr.tuning, self.chart.arr.is_bass)
     }
 
-    /// The open strings' names as written in the chart.
-    pub(super) fn sounding_string_names(&self) -> Vec<&'static str> {
+    /// The open-string names after the selected input transpose.
+    pub(super) fn transposed_input_string_names(&self) -> Vec<&'static str> {
         self.chart
             .arr
             .open_string_midi()
             .into_iter()
-            .map(qrs_formats::model::note_name)
+            .map(|m| qrs_formats::model::note_name(m + self.mixer.pitch))
             .collect()
     }
 
@@ -359,5 +370,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(Mixer::new(None, &saved).pitch, -3);
+    }
+
+    #[test]
+    fn standard_tuning_names_follow_the_input_transpose() {
+        let e = [0; 6];
+        assert_eq!(shifted_tuning_name(&e, false, 0), "E Standard");
+        assert_eq!(shifted_tuning_name(&e, false, -1), "Eb Standard");
+        assert_eq!(shifted_tuning_name(&e, false, -2), "D Standard");
     }
 }

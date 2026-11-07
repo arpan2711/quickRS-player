@@ -1,6 +1,8 @@
 //! The input callback's work: pick the guitar channel, meter every channel, record the guitar into the capture
 //! ring, find plucks, and shape the sound for monitoring (the tone), handing it to the output side.
 
+use std::ffi::c_void;
+use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -8,6 +10,46 @@ use super::onset::{Onset, OnsetDetector};
 use super::{InCmd, LinearResampler, MAX_IN_CHANNELS, Shared, ToneProcessor, Trash, discard};
 use crate::clock::now_ns;
 use crate::stretch::MAX_SEMITONES;
+
+const MONITOR_SHIFT_BLOCK: usize = 128;
+
+unsafe extern "C" {
+    fn quickrs_monitor_shifter_block_size() -> usize;
+    fn quickrs_monitor_shifter_new(rate: u32, semitones: f32) -> *mut c_void;
+    fn quickrs_monitor_shifter_process(shifter: *mut c_void, input: *const f32, output: *mut f32);
+    fn quickrs_monitor_shifter_delete(shifter: *mut c_void);
+}
+
+/// A preconfigured monitor shifter. Construction and destruction happen off the audio callback.
+pub struct MonitorPitchShifter {
+    handle: NonNull<c_void>,
+}
+
+unsafe impl Send for MonitorPitchShifter {}
+
+impl MonitorPitchShifter {
+    pub(crate) fn new(rate: u32, semitones: f32) -> Option<Self> {
+        if unsafe { quickrs_monitor_shifter_block_size() } != MONITOR_SHIFT_BLOCK {
+            return None;
+        }
+        let handle = unsafe { quickrs_monitor_shifter_new(rate, semitones) };
+        NonNull::new(handle).map(|handle| Self { handle })
+    }
+
+    fn process(&mut self, input: &[f32], output: &mut [f32]) {
+        debug_assert_eq!(input.len(), MONITOR_SHIFT_BLOCK);
+        debug_assert_eq!(output.len(), MONITOR_SHIFT_BLOCK);
+        unsafe {
+            quickrs_monitor_shifter_process(self.handle.as_ptr(), input.as_ptr(), output.as_mut_ptr());
+        }
+    }
+}
+
+impl Drop for MonitorPitchShifter {
+    fn drop(&mut self) {
+        unsafe { quickrs_monitor_shifter_delete(self.handle.as_ptr()) };
+    }
+}
 
 /// Where the monitored guitar goes.
 pub enum MonitorSink {
@@ -36,8 +78,13 @@ pub struct InputSide {
     feed: bool,
     input_gain: f32,
     /// Streaming pitch shifter used only on the monitor signal, never on capture/scoring samples.
-    pitch_shifter: signalsmith_stretch::Stretch,
+    pitch_shifter: Option<MonitorPitchShifter>,
     input_transpose: f32,
+    pitch_input: Vec<f32>,
+    pitch_output: Vec<f32>,
+    pitch_fill: usize,
+    pitch_out_at: usize,
+    pitch_out_ready: bool,
     tone: Option<Box<dyn ToneProcessor>>,
     /// The tone being faded out after a swap (`Some(None)`: fading out from the dry guitar), and how far.
     fading: Option<Option<Box<dyn ToneProcessor>>>,
@@ -98,12 +145,16 @@ impl InputSide {
         let input_transpose = cfg
             .input_transpose
             .clamp(-(MAX_SEMITONES as f32), MAX_SEMITONES as f32);
-        let mut pitch_shifter = signalsmith_stretch::Stretch::new(
-            1,
-            (cfg.rate as f32 * 0.2) as usize,
-            (cfg.rate as f32 * 0.05) as usize,
-        );
-        pitch_shifter.set_transpose_factor_semitones(input_transpose, Some(8000.0 / cfg.rate.max(1) as f32));
+        let pitch_shifter = if input_transpose == 0.0 {
+            None
+        } else {
+            MonitorPitchShifter::new(cfg.rate, input_transpose)
+        };
+        let input_transpose = if pitch_shifter.is_some() {
+            input_transpose
+        } else {
+            0.0
+        };
         InputSide {
             rate: cfg.rate,
             shared,
@@ -117,6 +168,11 @@ impl InputSide {
             input_gain: cfg.input_gain,
             pitch_shifter,
             input_transpose,
+            pitch_input: vec![0.0; MONITOR_SHIFT_BLOCK],
+            pitch_output: vec![0.0; MONITOR_SHIFT_BLOCK],
+            pitch_fill: 0,
+            pitch_out_at: 0,
+            pitch_out_ready: false,
             tone,
             fading: None,
             fade_pos: 0,
@@ -173,12 +229,19 @@ impl InputSide {
                 InCmd::InputGain(g) => self.input_gain = g,
                 InCmd::OnsetFloor(f) => self.detector.min_energy = f,
                 InCmd::OnsetBass(b) => self.detector.bass = b,
-                InCmd::InputTranspose(semitones) => {
-                    self.input_transpose = semitones.clamp(-(MAX_SEMITONES as f32), MAX_SEMITONES as f32);
-                    self.pitch_shifter.set_transpose_factor_semitones(
-                        self.input_transpose,
-                        Some(8000.0 / self.rate.max(1) as f32),
-                    );
+                InCmd::InputTranspose(semitones, shifter) => {
+                    if let Some(old) = self.pitch_shifter.take() {
+                        discard(&mut self.trash, Trash::InputPitch(old));
+                    }
+                    self.pitch_shifter = shifter;
+                    self.input_transpose = if self.pitch_shifter.is_some() {
+                        semitones
+                    } else {
+                        0.0
+                    };
+                    self.pitch_fill = 0;
+                    self.pitch_out_at = 0;
+                    self.pitch_out_ready = false;
                 }
             }
         }
@@ -216,7 +279,7 @@ impl InputSide {
         self.apply_commands();
         let channels = channels.max(1);
         let frames = (data.len() / channels).min(self.mono.len());
-        let sh = &self.shared;
+        let sh = self.shared.clone();
         sh.in_callbacks.fetch_add(1, Ordering::Relaxed);
         sh.last_in_ns.store(t0, Ordering::Relaxed);
         sh.in_channels.store(channels as u32, Ordering::Relaxed);
@@ -310,8 +373,16 @@ impl InputSide {
                 *d = *o;
             }
             if self.input_transpose != 0.0 {
-                self.pitch_shifter
-                    .process(&self.shaped[..frames], &mut self.shifted[..frames]);
+                pitch_monitor(
+                    &self.shaped[..frames],
+                    &mut self.shifted[..frames],
+                    &mut self.pitch_shifter,
+                    &mut self.pitch_input,
+                    &mut self.pitch_output,
+                    &mut self.pitch_fill,
+                    &mut self.pitch_out_at,
+                    &mut self.pitch_out_ready,
+                );
                 self.shaped[..frames].copy_from_slice(&self.shifted[..frames]);
             }
         }
@@ -388,6 +459,43 @@ impl InputSide {
     }
 }
 
+/// Feed arbitrary device callback sizes through the shifter's fixed STFT block without allocating.
+fn pitch_monitor(
+    input: &[f32],
+    shifted: &mut [f32],
+    pitch_shifter: &mut Option<MonitorPitchShifter>,
+    pitch_input: &mut [f32],
+    pitch_output: &mut [f32],
+    pitch_fill: &mut usize,
+    pitch_out_at: &mut usize,
+    pitch_out_ready: &mut bool,
+) {
+    let Some(shifter) = pitch_shifter.as_mut() else {
+        shifted.fill(0.0);
+        return;
+    };
+    for i in 0..input.len() {
+        shifted[i] = if *pitch_out_ready {
+            let sample = pitch_output[*pitch_out_at];
+            *pitch_out_at += 1;
+            if *pitch_out_at == MONITOR_SHIFT_BLOCK {
+                *pitch_out_at = 0;
+                *pitch_out_ready = false;
+            }
+            sample
+        } else {
+            0.0
+        };
+        pitch_input[*pitch_fill] = input[i];
+        *pitch_fill += 1;
+        if *pitch_fill == MONITOR_SHIFT_BLOCK {
+            shifter.process(pitch_input, pitch_output);
+            *pitch_fill = 0;
+            *pitch_out_ready = true;
+        }
+    }
+}
+
 #[cfg(test)]
 mod dc_tests {
     #[test]
@@ -421,6 +529,95 @@ mod transpose_tests {
         crossings as f64 * rate as f64 / samples.len() as f64
     }
 
+    fn make_input(rate: u32, shift: f32) -> InputSide {
+        let (_cmd_tx, cmd_rx) = rtrb::RingBuffer::<InCmd>::new(8);
+        let (trash, _trash_rx) = rtrb::RingBuffer::<Trash>::new(8);
+        let (onsets, _onsets_rx) = rtrb::RingBuffer::new(128);
+        InputSide::new(
+            InputConfig {
+                rate,
+                channel: 0,
+                monitor: true,
+                feed: false,
+                input_gain: 1.0,
+                onset_floor: 0.004,
+                onset_bass: false,
+                input_transpose: shift,
+                max_block: 256,
+            },
+            Arc::new(Shared::new(17)),
+            cmd_rx,
+            trash,
+            onsets,
+            MonitorSink::Duplex,
+            None,
+        )
+    }
+
+    #[test]
+    fn live_transpose_latency_is_bounded_at_common_sample_rates() {
+        for rate in [44_100, 48_000, 96_000] {
+            let mut input = make_input(rate, -1.0);
+
+            // Measure a new note after silence in the callback path too, not just the library's latency report.
+            let mut output = Vec::new();
+            let block = 128;
+            let onset = rate as usize / 4;
+            for start in (0..rate as usize / 2).step_by(block) {
+                let samples: Vec<f32> = (start..start + block)
+                    .map(|i| {
+                        if i < onset {
+                            0.0
+                        } else {
+                            (0.5 * (std::f64::consts::TAU * 220.0 * (i - onset) as f64 / rate as f64).sin())
+                                as f32
+                        }
+                    })
+                    .collect();
+                let (wet, _) = input.process_block(&samples, 1, 0);
+                output.extend_from_slice(wet);
+            }
+            let heard = output[onset..]
+                .iter()
+                .position(|v| v.abs() > 0.02)
+                .expect("monitor never produced the note");
+            assert!(
+                heard as f64 / (rate as f64) < 0.015,
+                "{rate}: onset delay {heard} frames"
+            );
+        }
+    }
+
+    #[test]
+    fn low_guitar_notes_keep_the_requested_pitch() {
+        for (hz, shift) in [(82.41_f64, -1.0_f32), (110.0, -5.0), (220.0, 2.0)] {
+            let rate = 48_000;
+            let mut input = make_input(rate, shift);
+            let mut output = Vec::new();
+            for start in (0..rate).step_by(256) {
+                let samples: Vec<f32> = (start..start + 256)
+                    .map(|i| (0.5 * (std::f64::consts::TAU * hz * i as f64 / rate as f64).sin()) as f32)
+                    .collect();
+                let (wet, _) = input.process_block(&samples, 1, 0);
+                output.extend_from_slice(wet);
+            }
+            let (actual, _) = qrs_analysis::pitch::mpm_pitch(
+                &mut qrs_analysis::spectrum::Spectra::new(),
+                &output[output.len() - 8192..],
+                rate,
+                30.0,
+                1000.0,
+                0.9,
+            );
+            let expected = hz * 2f64.powf(shift as f64 / 12.0);
+            let cents = 1200.0 * (actual / expected).log2();
+            assert!(
+                cents.abs() < 20.0,
+                "{hz} Hz shifted {shift}: {actual} Hz, {cents} cents"
+            );
+        }
+    }
+
     #[test]
     fn live_monitor_shifts_but_capture_stays_at_the_input_pitch() {
         let rate = 48_000;
@@ -447,7 +644,8 @@ mod transpose_tests {
             MonitorSink::Duplex,
             None,
         );
-        cmd_tx.push(InCmd::InputTranspose(-12.0)).unwrap();
+        let shifter = MonitorPitchShifter::new(rate, -12.0).unwrap();
+        cmd_tx.push(InCmd::InputTranspose(-12.0, Some(shifter))).unwrap();
 
         let mut phase = 0.0f64;
         let mut output = Vec::new();

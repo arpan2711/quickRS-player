@@ -33,6 +33,9 @@ realfft.workspace = true
 parking_lot.workspace = true
 nam-rs = "0.4.0"
 
+[build-dependencies]
+cc.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-core.workspace = true
 windows = { workspace = true, features = [

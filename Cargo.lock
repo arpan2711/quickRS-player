@@ -3399,6 +3399,7 @@ dependencies = [
 name = "qrs-audio"
 version = "0.5.4"
 dependencies = [
+ "cc",
  "cpal",
  "crossbeam-channel",
  "lewton",
