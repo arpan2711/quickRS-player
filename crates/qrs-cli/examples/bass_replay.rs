@@ -8,14 +8,107 @@ use qrs_formats::package::Package;
 
 const RATE: u32 = 48000;
 
+/// A 16-bit mono wav: its samples and rate.
+fn read_wav(path: &str) -> (Vec<f32>, u32) {
+    let b = std::fs::read(path).unwrap();
+    let mut i = 12;
+    let mut rate = 0;
+    while i + 8 < b.len() {
+        let id = &b[i..i + 4];
+        let n = u32::from_le_bytes(b[i + 4..i + 8].try_into().unwrap()) as usize;
+        if id == b"fmt " {
+            rate = u32::from_le_bytes(b[i + 12..i + 16].try_into().unwrap());
+        } else if id == b"data" {
+            let end = (i + 8 + n).min(b.len());
+            let x = b[i + 8..end]
+                .chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                .collect();
+            return (x, rate);
+        }
+        i += 8 + n + (n & 1);
+    }
+    panic!("no data in {path}");
+}
+
+/// What a recording of the part scores (its own chart, the same clock): the guitar's detector and the bass one.
+fn recording(a: &qrs_formats::model::Arrangement, x: &[f32], rate: u32) {
+    let peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    // as a player's input is set: peaks about -6 dBFS
+    let x: Vec<f32> = x.iter().map(|v| v * 0.5 / peak.max(1e-6)).collect();
+    for bass in [false, true] {
+        let mut det = OnsetDetector::new(rate);
+        det.bass = bass;
+        det.min_energy = 0.004;
+        let mut found = Vec::new();
+        for (k, c) in x.chunks(128).enumerate() {
+            det.feed(c, (k * 128) as u64, |i, _| found.push(i));
+        }
+        let played = detect::build_groups(a)
+            .iter()
+            .map(|g| (0.0, g.t))
+            .collect::<Vec<_>>();
+        run(
+            a,
+            &x,
+            rate,
+            &found,
+            if bass {
+                "recording, bass detector"
+            } else {
+                "recording, old detector"
+            },
+            &played,
+        );
+    }
+    // both: the old one's plucks, and the bass one's where the old found none close by
+    let list = |bass: bool| {
+        let mut det = OnsetDetector::new(rate);
+        det.bass = bass;
+        det.min_energy = 0.004;
+        let mut found = Vec::new();
+        for (k, c) in x.chunks(128).enumerate() {
+            det.feed(c, (k * 128) as u64, |i, _| found.push(i));
+        }
+        found
+    };
+    let old = list(false);
+    let near = (0.045 * rate as f64) as u64;
+    let mut both = old.clone();
+    both.extend(
+        list(true)
+            .into_iter()
+            .filter(|b| !old.iter().any(|o| o.abs_diff(*b) < near)),
+    );
+    both.sort();
+    let played = detect::build_groups(a)
+        .iter()
+        .map(|g| (0.0, g.t))
+        .collect::<Vec<_>>();
+    run(a, &x, rate, &both, "recording, both detectors", &played);
+    // every sample a pluck candidate is too much: exact chart times instead, to part the note test from the detector
+    let groups = detect::build_groups(a);
+    let oracle: Vec<u64> = groups.iter().map(|g| (g.t * rate as f64) as u64).collect();
+    let played: Vec<(f64, f64)> = groups.iter().map(|g| (0.0, g.t)).collect();
+    run(
+        a,
+        &x,
+        rate,
+        &oracle,
+        "recording, plucks at the chart's times",
+        &played,
+    );
+}
+
 struct Rec<'a> {
     x: &'a [f32],
     now: usize,
+    rate: u32,
 }
 
 impl SampleSource for Rec<'_> {
     fn rate(&self) -> u32 {
-        RATE
+        self.rate
     }
     fn written(&self) -> u64 {
         self.now as u64
@@ -37,10 +130,17 @@ impl SampleSource for Rec<'_> {
     }
 }
 
-fn run(a: &qrs_formats::model::Arrangement, x: &[f32], plucks: &[u64], label: &str, played: &[(f64, f64)]) {
+fn run(
+    a: &qrs_formats::model::Arrangement,
+    x: &[f32],
+    rate: u32,
+    plucks: &[u64],
+    label: &str,
+    played: &[(f64, f64)],
+) {
     let mut s = Scorer::new(a);
     s.set_instrument(Instrument::Bass);
-    let step = (0.01 * RATE as f64) as usize;
+    let step = (0.01 * rate as f64) as usize;
     let (mut fed, mut now) = (0, 0);
     while now < x.len() {
         now = (now + step).min(x.len());
@@ -50,18 +150,18 @@ fn run(a: &qrs_formats::model::Arrangement, x: &[f32], plucks: &[u64], label: &s
             .take_while(|&&i| (i as usize) + 256 <= now)
             .map(|&i| Pluck {
                 index: i,
-                song_time: i as f64 / RATE as f64,
+                song_time: i as f64 / rate as f64,
             })
             .collect();
         fed += new.len();
         s.feed(new);
-        let rec = Rec { x, now };
+        let rec = Rec { x, now, rate };
         let live = Live {
             source: &rec,
             level: 0.05,
             latency: 0.0,
         };
-        let t = now as f64 / RATE as f64;
+        let t = now as f64 / rate as f64;
         s.update(t, Some(&live), t);
     }
     let c = s.counts();
@@ -124,12 +224,29 @@ fn run(a: &qrs_formats::model::Arrangement, x: &[f32], plucks: &[u64], label: &s
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let jitter: f64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0) / 1000.0;
+    let jitter: f64 = args
+        .get(2)
+        .filter(|s| *s != "--wav")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0)
+        / 1000.0;
     let keys = Default::default();
     let a = Package::open(std::path::Path::new(&args[1]), &keys, None)
         .unwrap()
         .load(Some("bass"), 1.0)
         .unwrap();
+    if args.get(2).is_some_and(|s| s == "--wav") {
+        let (x, rate) = read_wav(&args[3]);
+        println!(
+            "{} {} {}: {:.0} s at {rate}",
+            a.artist,
+            a.title,
+            a.name,
+            x.len() as f64 / rate as f64
+        );
+        recording(&a, &x, rate);
+        return;
+    }
     let groups = detect::build_groups(&a);
     let end = groups.last().map(|g| g.t).unwrap_or(0.0) + 2.0;
     println!(
@@ -170,13 +287,13 @@ fn main() {
             .iter()
             .map(|p| (p.1.max(0.0) * RATE as f64) as u64)
             .collect();
-        run(&a, &x, &oracle, &format!("{name}, exact plucks"), &played);
+        run(&a, &x, RATE, &oracle, &format!("{name}, exact plucks"), &played);
         let mut det = OnsetDetector::new(RATE);
         det.bass = true;
         let mut found = Vec::new();
         for (k, c) in x.chunks(128).enumerate() {
             det.feed(c, (k * 128) as u64, |i, _| found.push(i));
         }
-        run(&a, &x, &found, &format!("{name}, live detector"), &played);
+        run(&a, &x, RATE, &found, &format!("{name}, live detector"), &played);
     }
 }

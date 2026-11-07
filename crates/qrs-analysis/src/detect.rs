@@ -523,12 +523,78 @@ pub fn explain(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>) -> 
     explain_as(mag, binhz, g, prev, false)
 }
 
-/// `explain` as a bass's notes are judged (P32.3, D89): a single note by the chord's tests too. Its pitch must be a
-/// real peak (low down a semitone is 2-4 Hz, inside even a 170 ms window's main lobe, so a note a semitone away
-/// reaches into the band), and a peak only a note just played explains must not have got louder (it was played
-/// again instead of this one).
+/// `explain` as a bass's notes are judged. A single note by `harmonic_contest` (D177: on real bass from song stems the
+/// foreign-peak test refused 13-40% of right notes for their own overtones, and the note tests before it passed 59-86%;
+/// this passes 85-95%, 0-6% of notes a semitone or two off); a double stop by the chord's tests (P32.3, D89).
 pub fn explain_bass(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>) -> Verdict {
+    if let [m] = g.midis[..] {
+        let ok = harmonic_contest(mag, binhz, m) >= CONTEST_MIN && sounding(mag, binhz, m);
+        return Verdict {
+            expected: 1,
+            need: 1,
+            present: ok as usize,
+            foreign: 0.0,
+            ok,
+        };
+    }
     explain_as(mag, binhz, g, prev, true)
+}
+
+/// How much of the note's own series a single bass note must show against the best other note (D177).
+pub const CONTEST_MIN: f64 = 0.9;
+
+/// The loudest local maximum within `tol` of `f`.
+fn local_peak(mag: &[f64], binhz: f64, f: f64, tol: f64) -> f64 {
+    let lo = ((f * (1.0 - tol) / binhz) as usize).max(2);
+    let hi = (f * (1.0 + tol) / binhz) as usize + 1;
+    if hi + 1 >= mag.len() {
+        return 0.0;
+    }
+    (lo..=hi)
+        .filter(|&i| mag[i] >= mag[i - 1] && mag[i] >= mag[i + 1])
+        .map(|i| mag[i])
+        .fold(0.0, f64::max)
+}
+
+/// Note `m`'s harmonics up to 1.5 kHz, compressed (sqrt) and weighted down the series: a low note's own fundamental
+/// sits in the window's main lobe, but its 8th harmonic is a semitone from the next note's by far more.
+fn salience(mag: &[f64], binhz: f64, m: f64) -> f64 {
+    let f = midi_to_hz(m);
+    let (mut s, mut w) = (0.0, 0.0);
+    for h in 1..=24 {
+        let fh = h as f64 * f;
+        if fh > 1500.0 {
+            break;
+        }
+        let k = 1.0 / (h as f64).sqrt();
+        s += k * local_peak(mag, binhz, fh, 0.012).sqrt();
+        w += k;
+    }
+    if w > 0.0 { s / w } else { 0.0 }
+}
+
+/// A note's salience against the best other note within an octave either way (D177; octaves aside, which share its
+/// series). Over 1: the note's own is the strongest.
+pub fn harmonic_contest(mag: &[f64], binhz: f64, m: i32) -> f64 {
+    let mut best: f64 = 1e-12;
+    for d in 1..12 {
+        best = best
+            .max(salience(mag, binhz, (m + d) as f64))
+            .max(salience(mag, binhz, (m - d) as f64));
+    }
+    salience(mag, binhz, m as f64) / best
+}
+
+/// Something of the note really sounds: one of its first six harmonics stands over the spectrum (35 Hz up).
+fn sounding(mag: &[f64], binhz: f64, m: i32) -> bool {
+    let Some(level) = Level::of(mag, binhz) else {
+        return false;
+    };
+    let f = midi_to_hz(m as f64);
+    (1..=6).any(|h| {
+        let p = local_peak(mag, binhz, h as f64 * f, 0.012);
+        p >= 0.1 * level.reference && p >= 4.0 * level.floor
+    })
 }
 
 fn explain_as(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>, strict: bool) -> Verdict {
@@ -1670,6 +1736,48 @@ mod tests {
             let got = score_played(&a, Instrument::Bass, &right, 0.1, ks);
             let hits = got.iter().filter(|g| **g == Some(Judgement::Hit)).count();
             assert!(hits >= 22, "ks {ks}: {got:?}");
+        }
+    }
+
+    /// D177: a real bass's sound, stiff-string overtones running sharp and plenty of them, over a low thump: the right
+    /// note passes, a semitone off doesn't.
+    #[test]
+    fn a_note_with_real_overtones_is_heard() {
+        let rate = 48000;
+        let mut sp = crate::spectrum::Spectra::new();
+        for m in [28, 33, 35, 40, 45, 50, 55] {
+            let f = midi_to_hz(m as f64);
+            let x: Vec<f32> = (0..(0.12 * rate as f64) as usize)
+                .map(|i| {
+                    let t = i as f64 / rate as f64;
+                    let tone: f64 = (1..=30)
+                        .map(|h| {
+                            let h = h as f64;
+                            let stiff = (1.0 + 0.00008 * h * h).sqrt();
+                            (std::f64::consts::TAU * h * f * stiff * t).sin() / h.powf(0.7)
+                        })
+                        .sum();
+                    let thump = 2.0 * (std::f64::consts::TAU * 58.0 * t).sin() * (-t * 30.0).exp();
+                    (0.05 * (tone + thump)) as f32
+                })
+                .collect();
+            let (mag, binhz) = sp.spectrum(&x, rate);
+            let g = |n: i32| NoteGroup {
+                t: 0.0,
+                midis: vec![n],
+                strings: vec![0],
+                muted: false,
+                legato: false,
+                state: None,
+                dt: 0.0,
+                judged_wall: 0.0,
+                last_check: -1.0,
+                repeats: HashSet::new(),
+                ringing: vec![],
+            };
+            assert!(explain_bass(&mag, binhz, &g(m), None).ok, "{m}");
+            assert!(!explain_bass(&mag, binhz, &g(m + 1), None).ok, "{m} + 1");
+            assert!(!explain_bass(&mag, binhz, &g(m - 1), None).ok, "{m} - 1");
         }
     }
 

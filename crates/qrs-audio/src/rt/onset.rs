@@ -56,7 +56,7 @@ pub struct OnsetDetector {
     /// calibration made at a louder input (the interface turned down since) can't hide every pluck.
     loud: f32,
     flux: Flux,
-    /// The input is a bass (D176): plucks come from `BassPlucks` alone.
+    /// The input is a bass (D176, D177): `BassPlucks` as well, for the plucks the rest misses.
     pub bass: bool,
     bass_plucks: BassPlucks,
 }
@@ -490,17 +490,6 @@ impl OnsetDetector {
         if self.hop_len == 0 {
             self.hop_start = start_idx;
         }
-        if self.bass {
-            let decay = 10f32.powf(-3.0 / (10.0 * self.rate as f32));
-            for (k, &s) in x.iter().enumerate() {
-                let gate = self.min_energy.min((PLAYING_SHARE * self.loud).max(LOUD_FLOOR));
-                if let Some((i, e)) = self.bass_plucks.push(s, start_idx + k as u64, gate) {
-                    emit(i, e);
-                }
-                self.loud = (self.loud * decay).max(s.abs() * 0.5);
-            }
-            return;
-        }
         let min_gap = (0.05 * self.rate as f64) as i64;
         for (k, &s) in x.iter().enumerate() {
             // the spectral flux's plucks (decided 16 ms on), unless one was just found
@@ -510,6 +499,13 @@ impl OnsetDetector {
             {
                 self.last_onset = i as i64;
                 let e = self.flux.rms[self.flux.at(0)];
+                emit(i, e);
+            }
+            // (a bass, D177: its plucks that the rest found nothing near; found later, so judged against the last)
+            if self.bass
+                && let Some((i, e)) = self.bass_plucks.push(s, start_idx + k as u64, gate)
+                && (i as i64 - self.last_onset).abs() >= (0.045 * self.rate as f64) as i64
+            {
                 emit(i, e);
             }
             self.hop[self.hop_len] = s;
@@ -781,14 +777,14 @@ mod bass_tests {
         (hit, at.len(), found.len())
     }
 
-    /// With the bass detector on: where in `x` it finds plucks.
+    /// `BassPlucks` alone: where in `x` it finds plucks.
     fn bass_plucks(x: &[f32]) -> Vec<usize> {
         let mut found = Vec::new();
-        let mut d = OnsetDetector::new(48000);
-        d.bass = true;
-        d.min_energy = 0.002;
-        for (k, c) in x.chunks(128).enumerate() {
-            d.feed(c, (k * 128) as u64, |i, _| found.push(i as usize));
+        let mut d = BassPlucks::new(48000);
+        for (k, &s) in x.iter().enumerate() {
+            if let Some((i, _)) = d.push(s, k as u64, 0.002) {
+                found.push(i as usize);
+            }
         }
         found
     }
@@ -825,6 +821,23 @@ mod bass_tests {
                 assert!(found.len() <= 26, "{midi} ks {ks}: {} plucks for 24", found.len());
             }
         }
+    }
+
+    /// The whole detector with `bass` on finds what either finds, and one pluck for a pluck both found.
+    #[test]
+    fn a_bass_input_uses_both_and_counts_a_pluck_once() {
+        let rate = 48000u32;
+        let mut x = testsig::hiss(48000 * 3, 0.0002, 3);
+        testsig::mix_at(&mut x, 48000, &testsig::ks_pluck(40.0, rate, 1.5, 0.2, 0.3, 1));
+        let mut d = OnsetDetector::new(rate);
+        d.bass = true;
+        d.min_energy = 0.002;
+        let mut found = Vec::new();
+        for (k, c) in x.chunks(128).enumerate() {
+            d.feed(c, (k * 128) as u64, |i, _| found.push(i as usize));
+        }
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0] + 1440 >= 48000 && found[0] <= 48000 + 1440, "{found:?}");
     }
 
     /// One long note with a fretless player's vibrato (+-30 cents at 5 Hz) and its decay: one pluck, not a stream.

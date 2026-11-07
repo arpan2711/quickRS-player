@@ -38,7 +38,7 @@ AI model, no upload, and the same take always gets the same answer. See
 
 ### Download
 
-* **Windows 10 or 11 (64-bit):** `quickRS-0.5.1-windows-x64.zip` from the
+* **Windows 10 or 11 (64-bit):** `quickRS-0.5.2-windows-x64.zip` from the
   [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
   There is no installer: unzip it and run `quickrs.exe`.
 * **macOS 11 or later (beta):** `quickRS-0.3.0-macos-universal.dmg` (or the
@@ -105,6 +105,12 @@ Easy to miss, and some of the best parts. `F1` in a song lists every key.
 * **Sounds late?** `,` and `.` nudge the sync, `Ctrl+,` and `Ctrl+.` your
   guitar's timing.
 
+
+### What's new in 0.5.2
+
+* **Bass notes judged on real bass**: a right note is no longer refused for its own overtones, and fewer plucks are
+  missed or late. Tested on bass separated from real recordings. See the
+  [0.5.2 release notes](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.2).
 
 ### What's new in 0.5.1
 
