@@ -203,7 +203,7 @@ of the doubt.
 
 Takes are saved as WAV files in the takes folder, the last 10 per passage.
 It's the data folder's `takes` folder unless you pick another in Settings >
-*Directories* > *RECORDINGS*.
+*Library* > *RECORDINGS*.
 
 ![A take, labelled](../screenshots/take-labelled.png)
 
@@ -237,7 +237,7 @@ A recording from a song is named after the song, then the date and time:
 a song's recordings together. From the amp room it's
 `quickRS <date> <time> <rig>.wav`. They go to a `quickRS Recordings` folder in
 your Music folder (or Documents, if there is no Music folder). Settings >
-*Directories* > *RECORDINGS* has *Change...*, *Open* and *Default* for it.
+*Library* > *RECORDINGS* has *Change...*, *Open* and *Default* for it.
 
 A recording isn't scored or checked; for that, use a [take](#takes).
 

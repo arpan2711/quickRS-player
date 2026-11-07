@@ -12,7 +12,7 @@ No songs come with quickRS. It plays the ones you own and custom songs (CDLC).
 
 The [first-time setup](INSTALL.md#the-first-start)'s *Keys and folders* page
 does the first part of this page (song folders, keys, the recordings folder);
-everything here is also in Settings (`F2`) > *Directories*.
+everything here is also in Settings (`F2`) > *Library*.
 
 * [Song folders](#song-folders)
 * [Feedpaks](#feedpaks)
@@ -22,11 +22,11 @@ everything here is also in Settings (`F2`) > *Directories*.
 
 ### Song folders
 
-Settings (`F2`) > *Directories* > *SONG FOLDERS* lists every folder quickRS reads
+Settings (`F2`) > *Library* > *SONG FOLDERS* lists every folder quickRS reads
 songs from, and where each came from: *added by you*, or Rocksmith's `dlc`
 folder (and a `feedpak` folder next to it) found by itself.
 
-![Settings > Directories, labelled](../screenshots/settings-library-labelled.png)
+![Settings > Library, labelled](../screenshots/settings-library-labelled.png)
 
 * *Add folder...* picks another folder. Dragging a folder onto the quickRS
   window does the same. Subfolders are read too.
@@ -55,7 +55,7 @@ folder (and a `feedpak` folder next to it) found by itself.
 Each song in the list is marked `feedpak`, `psarc`, or `feedpak + psarc` when
 you have it in both formats; the first one named is the copy that plays. A
 song you have in both formats is listed once, and *SONGS IN BOTH FORMATS* in
-Settings > Directories picks which copy plays (*The psarc* or *The feedpak*). Your
+Settings > Library picks which copy plays (*The psarc* or *The feedpak*). Your
 scores are shared by both copies.
 
 ![The library, labelled](../screenshots/library-labelled.png)
@@ -91,7 +91,7 @@ tuning and `0:00` for the length.
 
 #### Paste them in Settings
 
-1. Press `F2` (Settings) and open *Directories*. Scroll down to *ROCKSMITH KEYS*.
+1. Press `F2` (Settings) and open *Library*. Scroll down to *RS KEYS*.
 2. Paste the PSARC key into *PSARC key*, and the SNG key into *SNG key*. Each
    box checks the key as you type. If you have a whole `keys.json` text,
    paste it into either box and both are filled.
@@ -106,7 +106,7 @@ The top of the card says what quickRS found: *Keys found: psarc songs play*
 (and which file), *No keys yet* (and where it looked), *Only one of the two
 keys*, or *Your keys file doesn't read* (and why).
 
-![The keys in Settings > Directories, labelled](../screenshots/settings-keys-labelled.png)
+![The keys in Settings > Library, labelled](../screenshots/settings-keys-labelled.png)
 
 #### Or make keys.json
 
@@ -163,7 +163,7 @@ keys, because it has to read the psarcs.
    if Rocksmith is in Steam's usual place; otherwise *Browse...* to it.
 4. Box 2, *Where the feedpaks go*, defaults to a `feedpak` folder next to
    `dlc`. Leave it: quickRS finds that folder by itself. Anywhere else, add the
-   folder in Settings > Directories once.
+   folder in Settings > Library once.
 5. Press *Convert*. Run it again after you buy songs; only new ones are
    converted.
 

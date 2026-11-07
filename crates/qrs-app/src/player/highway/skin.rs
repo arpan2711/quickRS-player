@@ -10,7 +10,7 @@ use eframe::egui::{
 };
 use qrs_formats::Arrangement;
 
-use super::gfx::{BAKELITE, Pal, TUBE};
+use super::gfx::{BAKELITE, GAME, Pal, TUBE};
 use super::view::View;
 
 const PLATE_BYTES: [&[u8]; 6] = [
@@ -148,6 +148,54 @@ fn fnv(s: &str) -> u64 {
     })
 }
 
+/// The highway's note colours (P43.2, Settings > Display; config `hw_colours`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum NoteColours {
+    /// The game's own, fully saturated (the default).
+    #[default]
+    Vivid,
+    Bakelite,
+    Tube,
+    /// Bakelite or Tube by the song's stage (before P43.2).
+    Stage,
+}
+
+impl NoteColours {
+    pub const ALL: [NoteColours; 4] = [
+        NoteColours::Vivid,
+        NoteColours::Bakelite,
+        NoteColours::Tube,
+        NoteColours::Stage,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            NoteColours::Vivid => "vivid",
+            NoteColours::Bakelite => "bakelite",
+            NoteColours::Tube => "tube",
+            NoteColours::Stage => "stage",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            NoteColours::Vivid => "Vivid",
+            NoteColours::Bakelite => "Bakelite",
+            NoteColours::Tube => "Tube",
+            NoteColours::Stage => "By stage",
+        }
+    }
+
+    pub fn parse(s: &str) -> NoteColours {
+        Self::ALL.into_iter().find(|c| c.key() == s).unwrap_or_default()
+    }
+}
+
+/// The note boxes' sizes (P43.3; 1.2 is the most before a chord's boxes touch across strings).
+pub const GEM_SIZES: [f32; 3] = [1.0, 1.1, 1.2];
+/// The default: 110% (P43.3, a tester: "if the notebox itself is a bit bigger").
+pub const GEM_DEFAULT: usize = 1;
+
 /// The look over one song: chosen once from the song, then smoothed frame to frame.
 pub struct Look {
     /// 0 Bakelite, 1 patina copper, 2 worn paint.
@@ -206,8 +254,26 @@ impl Look {
         }
     }
 
-    pub fn pal(&self) -> &'static Pal {
-        if self.material == 0 { &BAKELITE } else { &TUBE }
+    /// The notes' colours: Vivid the game's own (P43.2: Bakelite and Tube read washed out, "like colour blind
+    /// mode"), Bakelite or Tube always, or by the stage as before.
+    pub fn pal(&self, colours: NoteColours) -> &'static Pal {
+        match colours {
+            NoteColours::Vivid => &GAME,
+            NoteColours::Bakelite => &BAKELITE,
+            NoteColours::Tube => &TUBE,
+            NoteColours::Stage if self.material == 0 => &BAKELITE,
+            NoteColours::Stage => &TUBE,
+        }
+    }
+
+    /// The material whose pictures face the gems; none for Vivid (drawn in its colours).
+    pub fn gems(&self, colours: NoteColours) -> Option<usize> {
+        match colours {
+            NoteColours::Vivid => None,
+            NoteColours::Bakelite => Some(0),
+            NoteColours::Tube => Some(self.material.max(1)),
+            NoteColours::Stage => Some(self.material),
+        }
     }
 
     /// Move toward the look for song time `now` and a streak, over `dt` seconds of the clock. Still and Plain hold the

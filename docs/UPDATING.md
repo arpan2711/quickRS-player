@@ -25,7 +25,7 @@ After that, quickRS updates itself: Settings > *About*.
      folder (say yes to replacing the files), or
    * keep the new folder beside the old one and copy your `keys.json` from the
      old folder into the new one, next to `quickrs.exe`. (Or skip this and
-     paste the keys in Settings > *Directories* later.) If you made a Desktop
+     paste the keys in Settings > *Library* later.) If you made a Desktop
      shortcut, run `make_shortcut.ps1` in the new folder.
 4. Start the new `quickrs.exe`. If you kept both folders, delete the old one
    once you're happy.
@@ -48,13 +48,13 @@ once: calibration and scoring are new since 0.1.0.
 Your settings, scores, favourites and playlists carry over. Some names and
 places changed:
 
-* Settings sections: *Audio* is *Audio input / output*, *Library* is
-  *Directories*, *Guitar tone* is *Raw guitar tone*.
-* Keys go in Settings > *Directories* > *ROCKSMITH KEYS* (paste them and
+* Settings sections: *Audio* is *Sound*, *Guitar tone* is *Tone*; songs,
+  keys and recordings are in *Library*.
+* Keys go in Settings > *Library* > *RS KEYS* (paste them and
   press *Save keys*). `keys.json` in the quickRS folder still works, and so
   does `keys.json.txt`. There's no need to restart or press `F5` after adding
   keys any more.
-* Song folders are listed in Settings > *Directories* > *SONG FOLDERS*, with
+* Song folders are listed in Settings > *Library* > *SONG FOLDERS*, with
   *Add folder...* and *Remove*. Dragging a folder onto the window still works.
 * New keys in the player: `W` note by note, `H` ear mode, `V` the highway,
   `I` invert the highway's strings, `C` compact rows, `F` full-screen tab,

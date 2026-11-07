@@ -15,9 +15,9 @@ use qrs_ui::units::px;
 use qrs_ui::widgets::{self, Segmented, interact};
 
 use super::{SettingsView, TileDrag, centre_x, centre_y, line_h, snap};
-use crate::player::Backdrop;
 use crate::player::highway_size::{SIZES, size_from, size_label, size_pct};
 use crate::player::tiles::{self, TILES};
+use crate::player::{Backdrop, GEM_SIZES, NoteColours, gem_from};
 use crate::state::AppState;
 
 const THEMES: [(&str, &str); 3] = [
@@ -346,7 +346,65 @@ impl SettingsView {
         if let Some(i) = clicked {
             self.acts.push(format!("set:hw_size:{}", size_pct(i)));
         }
-        card_n.max.y.max(card2.max.y)
+        // the highway's notes (P43.2/P43.3), a card under NOTATION: their colours (Vivid, the game's own, by default)
+        // and their boxes' size
+        let card_h = Rect::from_min_size(
+            pos2(body.min.x, card_n.max.y + gap),
+            vec2(
+                colw,
+                2.0 * pad + hh + 2.0 * (line_h(&ctx, 15.0) + px(10.0) + seg_h) + px(16.0),
+            ),
+        );
+        paint::card(&p, card_h, 24.0, false);
+        let mut y = self.heading(
+            &p,
+            "HIGHWAY NOTES",
+            x,
+            card_h.min.y + pad,
+            Some(x + wd),
+            "boxes, sustains and bends",
+            "",
+        );
+        let rows: [(&str, Vec<String>, usize, &str); 2] = [
+            (
+                "Colours",
+                NoteColours::ALL.iter().map(|c| c.label().to_string()).collect(),
+                {
+                    let cur = NoteColours::parse(&st.config.str("hw_colours", "vivid"));
+                    NoteColours::ALL.iter().position(|&c| c == cur).unwrap_or(0)
+                },
+                "set-hwcolours",
+            ),
+            (
+                "Box size",
+                GEM_SIZES.iter().map(|g| format!("{:.0}%", g * 100.0)).collect(),
+                gem_from(&st.config),
+                "set-hwgem",
+            ),
+        ];
+        for (k, (label, opts, sel, id)) in rows.iter().enumerate() {
+            text::draw(
+                &p,
+                label,
+                pos2(x, y),
+                Align2::LEFT_TOP,
+                Style::new(15.0, 700, th.text),
+                None,
+            );
+            y += line_h(&ctx, 15.0) + px(10.0);
+            let seg = Rect::from_min_size(pos2(x, y), vec2(wd, seg_h));
+            let opts: Vec<&str> = opts.iter().map(String::as_str).collect();
+            let (_, clicked) = widgets::segmented(ui, seg, *id, &seg_opts(&opts, *sel));
+            if let Some(i) = clicked {
+                self.acts.push(if k == 0 {
+                    format!("set:hw_colours:{}", NoteColours::ALL[i].key())
+                } else {
+                    format!("set:hw_gem:{:.0}", GEM_SIZES[i] * 100.0)
+                });
+            }
+            y = seg.max.y + px(16.0);
+        }
+        card_h.max.y.max(card2.max.y)
     }
 
     /// One tile in the TILES list: a grip to drag it by, its name (with its key) and a switch.
