@@ -79,9 +79,17 @@ fn transport_on_the_silent_timer() {
     assert!(!e.playing(), "song should have ended");
     assert!(e.finished());
     // play again from the start after the end
+    let t1 = std::time::Instant::now();
     e.toggle();
     sleep(50);
-    assert!(e.playing() && e.position() < 0.2);
+    // (from the start: against the time that really passed, as above; a loaded CI Mac overshot the sleep)
+    let slept = t1.elapsed().as_secs_f64();
+    let p = e.position();
+    assert!(
+        e.playing() && p < slept + 0.15,
+        "position {p} after {:.0} ms",
+        slept * 1000.0
+    );
 }
 
 #[test]
