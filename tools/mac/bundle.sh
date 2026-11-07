@@ -16,6 +16,10 @@ cd "$(dirname "$0")/../.."
 root="$(pwd)"
 
 export PATH="$HOME/.cargo/bin:$PATH"
+# Prefer the compiler and Cargo from the active rustup toolchain over unrelated system installs (for example, Homebrew
+# Rust). `rustup target add` installs targets into this toolchain, so Cargo must use its matching rustc as well.
+rustup_toolchain_bin="$(dirname "$(rustup which cargo)")"
+export PATH="$rustup_toolchain_bin:$PATH"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 
 # signalsmith-stretch's bindgen needs libclang (the private repo's .cargo/config.toml names the Windows one; an

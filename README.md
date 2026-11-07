@@ -189,7 +189,7 @@ Practising
   song's guitar.
 * Chords score like Rocksmith's (half the notes are enough), and strums are
   found through distorted or clipping inputs.
-* Pitch shift (`Shift+↑` / `Shift+↓`, or *TRANSPOSE* in the header), every
+* Guitar input transpose (`Shift+↑` / `Shift+↓`, or *TRANSPOSE* in the header), every
   stem of a stemmed feedpak with its own level, saved licks (`Ctrl+S`).
 * Every key on one sheet (`F1` or `?`), and what's switched on shown in red
   or amber.
@@ -258,11 +258,11 @@ picture at the top). `R` records what you hear, song and guitar, to a WAV
 file named after the song; it appears in your recordings folder when you
 stop.
 
-#### Pitch and stems
+#### Input transpose and stems
 
-The song up or down in semitones, and, for a feedpak split into stems, each
-stem's level. This picture is from a small example pack with guitar, drums,
-vocals and click stems.
+The guitar input up or down in semitones while the backing track stays put,
+and, for a feedpak split into stems, each stem's level. This picture is from a
+small example pack with guitar, drums, vocals and click stems.
 
 <img src="screenshots/stems-labelled.png" width="430" alt="The PITCH & STEMS group, labelled">
 
@@ -328,7 +328,7 @@ In the player:
 | --- | --- |
 | `Space` | Play / pause |
 | `=` / `Ctrl+=` | Faster / slower (25% to 150%, pitch kept) |
-| `Shift+↑` / `Shift+↓` | Pitch up / down a semitone (-12 to +12; also *TRANSPOSE* in the header) |
+| `Shift+↑` / `Shift+↓` | Guitar input pitch up / down a semitone (-12 to +12; backing track unchanged; also *TRANSPOSE* in the header) |
 | `←` `→` | Seek: 1 s, growing to 20 s while held (`Shift`: always 1 s) |
 | `-` | Back 5 s |
 | `Home` | Back to the start |

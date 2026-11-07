@@ -1,12 +1,10 @@
 //! The song's own audio in the player (P20.3, new in the Rust port): a stemmed feedpak's stem mixer (level, mute
-//! and solo per stem) and pitch shift (-12..+12 semitones, the speed unchanged). Both are remembered per song in
-//! userdata.json (`song_audio`).
+//! and solo per stem) and guitar-input transposition (-12..+12 semitones). Both are remembered per song in userdata.json
+//! (`song_audio`).
 //!
-//! A new stem mix is summed on a worker thread and swapped into the engine where the song is (`replace_song`). A
-//! pitch shift (and slow-down, which may come with it) is a `StretchJob` like the slow-down's; when only the mix or
-//! the pitch changed, the version playing keeps playing until the new one is ready at the playhead, so there's no
-//! gap. The tab stays as written; the scorer, the tuner's "this song" tuning and the selection synth follow the
-//! shift (DECISIONS D38).
+//! A new stem mix is summed on a worker thread and swapped into the engine where the song is (`replace_song`).
+//! Slow-down is a `StretchJob`; the pitch control shifts the guitar monitor and pitch interpretation, not the song.
+//! The tab and backing track stay as written, while scoring, the tuner and takes follow the input shift.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
@@ -21,8 +19,6 @@ use super::PlayerView;
 use crate::state::AppState;
 use crate::transport::Source;
 
-/// Taps closer together than this build one version (as the speed keys).
-const SETTLE: f32 = 0.45;
 /// A mixer change waits this long for the next before the stems are summed.
 const REMIX_SETTLE: f32 = 0.12;
 
@@ -33,9 +29,8 @@ pub struct Mixer {
     pub mix: Vec<StemMix>,
     remix_at: Option<Instant>,
     remix_rx: Option<Receiver<SongBuffer>>,
-    /// Semitones the song is shifted by.
+    /// Semitones the guitar input is shifted by (-: down, +: up).
     pub pitch: i32,
-    pitch_at: Option<Instant>,
     /// A new version (slowed and/or shifted) getting ready while the old one plays on.
     pending: Option<StretchJob>,
 }
@@ -44,7 +39,9 @@ impl Mixer {
     /// The stems and the saved settings of a song being opened.
     pub fn new(stems: Option<Arc<StemSet>>, saved: &SongAudio) -> Mixer {
         let mut m = Mixer {
-            pitch: saved.pitch.clamp(-MAX_SEMITONES, MAX_SEMITONES),
+            // Earlier builds stored the backing-track shift. Reverse its sign to preserve the same guitar/track
+            // pitch relationship with the new input-shift meaning.
+            pitch: -saved.pitch.clamp(-MAX_SEMITONES, MAX_SEMITONES),
             ..Default::default()
         };
         if let Some(set) = &stems {
@@ -124,37 +121,30 @@ pub fn pitch_long(p: i32) -> String {
 }
 
 impl PlayerView {
-    /// The open strings as they sound with the pitch shift (what the synth plays and the tuner aims at).
+    /// The song's open strings. Input transposition does not change the track or the chart.
     pub(super) fn sounding_opens(&self) -> Vec<i32> {
-        self.chart.opens.iter().map(|o| o + self.mixer.pitch).collect()
+        self.chart.opens.clone()
     }
 
-    /// The tuning the song sounds in with the pitch shift ("E Standard" for Eb Standard shifted up one).
+    /// The tuning written in the chart and heard on the backing track.
     pub(super) fn sounding_tuning_name(&self) -> String {
-        let offs: Vec<i32> = self
-            .chart
-            .arr
-            .tuning
-            .iter()
-            .map(|o| o + self.mixer.pitch)
-            .collect();
-        qrs_formats::model::tuning_name(&offs, self.chart.arr.is_bass)
+        qrs_formats::model::tuning_name(&self.chart.arr.tuning, self.chart.arr.is_bass)
     }
 
-    /// The open strings' names with the pitch shift.
+    /// The open strings' names as written in the chart.
     pub(super) fn sounding_string_names(&self) -> Vec<&'static str> {
         self.chart
             .arr
             .open_string_midi()
             .into_iter()
-            .map(|m| qrs_formats::model::note_name(m + self.mixer.pitch))
+            .map(qrs_formats::model::note_name)
             .collect()
     }
 
-    /// A fresh scorer for the chart, expecting the shifted pitch.
+    /// A fresh scorer for the chart, compensating for the guitar input's pitch shift.
     pub(super) fn new_scorer(&self) -> qrs_analysis::Scorer {
         let mut s = qrs_analysis::Scorer::new(&self.chart.arr);
-        s.transpose(self.mixer.pitch);
+        s.transpose(-self.mixer.pitch);
         s
     }
 
@@ -162,12 +152,12 @@ impl PlayerView {
         st.userdata.set_song_audio(&self.sid, self.mixer.saved());
     }
 
-    /// The pitch keys: up or down a semitone (0: back to the original).
+    /// The input pitch keys: up or down a semitone (0: no shift).
     pub(super) fn change_pitch(&mut self, st: &mut AppState, step: i32) {
-        if self.engine().is_none() {
-            self.say("Pitch shift needs the audio engine", "");
+        let Some(engine) = self.engine().cloned() else {
+            self.say("Input transpose needs the audio engine", "");
             return;
-        }
+        };
         let new = if step == 0 {
             0
         } else {
@@ -187,10 +177,12 @@ impl PlayerView {
             return;
         }
         self.mixer.pitch = new;
-        self.mixer.pitch_at = Some(Instant::now());
-        self.scorer.transpose(new);
+        engine.set_input_transpose(new as f32);
+        self.tuner_hist.clear();
+        self.tuner_midi = None;
+        self.scorer.transpose(-new);
         self.save_song_audio(st);
-        self.say(format!("Pitch {}", pitch_long(new)), "");
+        self.say(format!("Guitar input {}", pitch_long(new)), "");
     }
 
     /// The stem mixer's keys: `stem:on:i`, `stem:solo:i`, `stem:up:i`, `stem:down:i`, `stem:reset`.
@@ -247,7 +239,7 @@ impl PlayerView {
         self.say(say, "");
     }
 
-    /// Start a new version of the song for `speed` and the pitch shift (the original when neither applies). With
+    /// Start a slowed version of the song for `speed` (the original at normal speed). With
     /// `immediate` (or a new speed) it plays at once from where it's ready; otherwise the version playing keeps on
     /// until the new one is ready at the playhead.
     pub(super) fn restretch(&mut self, speed: f64, immediate: bool) {
@@ -258,14 +250,14 @@ impl PlayerView {
         if let Some(j) = self.mixer.pending.take() {
             j.cancel();
         }
-        if (speed - 1.0).abs() < 1e-6 && self.mixer.pitch == 0 {
+        if (speed - 1.0).abs() < 1e-6 {
             if let Some(job) = self.stretch.take() {
                 job.cancel();
             }
             e.set_speed(1.0, None);
             return;
         }
-        let job = StretchJob::start_shifted(song, speed, self.mixer.pitch as f32, e.position());
+        let job = StretchJob::start_shifted(song, speed, 0.0, e.position());
         if immediate || (e.speed() - speed).abs() > 1e-6 {
             if let Some(old) = self.stretch.take() {
                 old.cancel();
@@ -296,22 +288,10 @@ impl PlayerView {
         self.mixer.remix_at = Some(Instant::now() - std::time::Duration::from_secs(1));
     }
 
-    /// Every frame: a settled pitch change starts its version, a settled mixer change its mix; a finished mix goes
-    /// in; a version that's ready takes over.
+    /// Every frame: a settled mixer change starts its mix; a finished mix goes in, and a slowed version takes over
+    /// when ready.
     pub(super) fn update_song_audio(&mut self) {
         let Some(e) = self.engine().cloned() else { return };
-        let playing = self.transport.playing();
-        if self
-            .mixer
-            .pitch_at
-            .is_some_and(|t| t.elapsed().as_secs_f32() > SETTLE)
-        {
-            self.mixer.pitch_at = None;
-            if self.pending_speed.is_none() {
-                // (a speed change waiting too makes its own version, with the pitch)
-                self.restretch(e.speed(), !playing);
-            }
-        }
         if self.mixer.remix_rx.is_none()
             && let Some(set) = self.mixer.stems.clone()
             && self
@@ -370,5 +350,14 @@ mod tests {
         assert_eq!(pitch_long(0), "original pitch");
         assert_eq!(pitch_long(-1), "\u{2212}1 semitone");
         assert_eq!(pitch_long(12), "+12 semitones");
+    }
+
+    #[test]
+    fn saved_track_shift_is_reinterpreted_as_the_opposite_input_shift() {
+        let saved = SongAudio {
+            pitch: 3,
+            ..Default::default()
+        };
+        assert_eq!(Mixer::new(None, &saved).pitch, -3);
     }
 }

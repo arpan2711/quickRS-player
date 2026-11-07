@@ -114,9 +114,11 @@ the pack sets them* puts the mix back.
   *Calibrate*. See [AUDIO-SETUP](AUDIO-SETUP.md#calibrating-your-input).
 * On an interface, check the channel: *INPUT CHANNEL*, or let quickRS find it
   by playing a few clear notes.
-* Tune up. The tuner tile uses the song's tuning, and follows a pitch shift.
-* If you shifted the pitch, quickRS expects the shifted notes. *Original
-  pitch* in *Controls* > *PITCH* puts it back.
+* Tune up. The tuner tile targets the song's tuning and follows any guitar
+  input transpose.
+* If you shifted the guitar input, quickRS scores and displays the shifted
+  notes. *No shift* in *Controls* > *PITCH* puts it back; the backing track
+  does not change.
 
 
 ### Chords or strums don't count

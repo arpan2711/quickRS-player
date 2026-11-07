@@ -314,6 +314,8 @@ pub enum InCmd {
     OnsetFloor(f32),
     /// The input is a bass: its own pluck detector (D176).
     OnsetBass(bool),
+    /// Transpose the monitored guitar, in semitones (-12..=12).
+    InputTranspose(f32),
     /// Hand the guitar (dry and toned) to the output even with monitoring off (for the looper and Rewind).
     Feed(bool),
 }

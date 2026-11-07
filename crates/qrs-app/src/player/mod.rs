@@ -633,7 +633,7 @@ pub struct PlayerView {
     pending_speed: Option<f64>,
     speed_at: Instant,
     stretch: Option<StretchJob>,
-    /// The song's stem mixer and pitch shift (P20.3).
+    /// The song's stem mixer and guitar-input transposition (P20.3).
     mixer: songaudio::Mixer,
     /// The synth guitar playing the part in place of the song's (P23.11).
     song_synth: songsynth::SongSynth,
@@ -928,12 +928,12 @@ impl PlayerView {
         };
         p.relink_glyphs();
         if let Some(e) = p.transport.engine() {
+            e.set_input_transpose(p.mixer.pitch as f32);
             let _ = e.take_onsets(); // plucks before the song started don't count
         }
         if p.mixer.pitch != 0 {
-            // the song's saved pitch shift: its version starts now, during the count-in
-            p.scorer.transpose(p.mixer.pitch);
-            p.restretch(1.0, true);
+            // the guitar input's saved pitch shift; the backing track stays at its original pitch
+            p.scorer.transpose(-p.mixer.pitch);
         }
         p.count_in(); // (a song opens counting in, or playing at once with the count-in off)
         p
@@ -1167,7 +1167,7 @@ impl PlayerView {
     }
 
     fn apply_speed(&mut self, speed: f64) {
-        // (with the pitch shift, if there is one)
+        // (with the guitar input's pitch adjustment, if there is one)
         self.restretch(speed, true);
     }
 
@@ -1266,15 +1266,8 @@ impl PlayerView {
                 self.transport.pause();
             }
             if let Some(song) = self.transport.song().cloned() {
-                self.synth.start_track(
-                    song,
-                    a,
-                    b,
-                    self.offset,
-                    speed,
-                    self.mixer.pitch as f32,
-                    self.sel_loop,
-                );
+                self.synth
+                    .start_track(song, a, b, self.offset, speed, 0.0, self.sel_loop);
             }
             return;
         }
@@ -1530,7 +1523,7 @@ impl PlayerView {
         if name.starts_with("review") && self.review_act(name) {
             return;
         }
-        // the tuner's tuning card (D136): the song shifted to this pitch
+        // the tuner's tuning card: the guitar input shift to apply
         if let Some(to) = name.strip_prefix("pitch_to:").and_then(|v| v.parse::<i32>().ok()) {
             if to == 0 {
                 self.change_pitch(st, 0);
@@ -2294,7 +2287,7 @@ impl PlayerView {
             return Some(format!("partn:{}", d - 1));
         }
         if matches!(key, Key::ArrowUp | Key::ArrowDown) && shift && !m.alt {
-            // the song's pitch, a semitone at a time (P20.3)
+            // the guitar input's pitch, a semitone at a time (P20.3)
             return Some(if key == Key::ArrowUp { "pitch+" } else { "pitch-" }.into());
         }
         if m.alt {
@@ -2726,7 +2719,8 @@ impl PlayerView {
             let (hz, clarity) =
                 qrs_analysis::instrument::pitch_for(self.instrument, &mut self.sp, &self.pitch_buf, rate);
             if hz > 0.0 && clarity > 0.85 {
-                self.tuner_hist.push_back(69.0 + 12.0 * (hz / 440.0).log2());
+                self.tuner_hist
+                    .push_back(69.0 + 12.0 * (hz / 440.0).log2() + self.mixer.pitch as f64);
                 while self.tuner_hist.len() > 5 {
                     self.tuner_hist.pop_front();
                 }
@@ -2899,6 +2893,9 @@ impl PlayerView {
         self.toast_keys.clear();
         self.shortcuts = false;
         self.mixer.pitch = 0;
+        if let Some(e) = self.engine() {
+            e.set_input_transpose(0.0);
+        }
         self.summary_dismissed = false;
         self.shot_streak = std::env::var("QUICKRS_SHOT_STREAK")
             .ok()
@@ -3110,6 +3107,10 @@ impl PlayerView {
                         e.set_monitor(false);
                     }
                     self.mixer.pitch = 1;
+                    if let Some(e) = self.engine() {
+                        e.set_input_transpose(1.0);
+                    }
+                    self.scorer.transpose(-1);
                     self.input_offset = 0.02;
                     self.loop_a = Some(now - 4.0);
                     self.loop_b = Some(now + 14.0);
@@ -3117,7 +3118,7 @@ impl PlayerView {
                     self.nbn = true;
                     self.set_ear(true);
                     self.pressed = Some(vec!["Shift".into(), "↑".into()]);
-                    self.say_for("Pitch ", "+1 semitone", 30.0);
+                    self.say_for("Input ", "+1 semitone", 30.0);
                 }
                 "shortcuts" => self.shortcuts = true,
                 // the synth guitar's key on, and being prepared (P23.11)
@@ -3170,8 +3171,14 @@ impl PlayerView {
                     self.shot_song_end(st, "results");
                     self.act(st, "summary_close");
                 }
-                // the header's transpose stepper moved (P23.12): the tuning shown as it sounds now
-                "transpose2" => self.mixer.pitch = 2,
+                // the header's transpose stepper moved: the guitar input shift and track tuning are shown
+                "transpose2" => {
+                    self.mixer.pitch = 2;
+                    if let Some(e) = self.engine() {
+                        e.set_input_transpose(2.0);
+                    }
+                    self.scorer.transpose(-2);
+                }
                 // the score tile on a streak of n (P37.7)
                 // the score tile on a streak of n (P37.7), about three notes in four hit so the arc is long
                 w if w.starts_with("streak_") => {
@@ -3294,6 +3301,7 @@ impl PlayerView {
         }
         self.mixer.cancel();
         if let Some(e) = e {
+            e.set_input_transpose(0.0);
             e.pause();
             e.set_speed(1.0, None);
             e.unload();
@@ -3743,9 +3751,8 @@ impl PlayerView {
             "tuning",
         );
         x = snap(mr.max.x);
-        // transpose (P23.12): a sunken "TRANSPOSE − 0 +" beside the tuning, its keys Shift ↓ / Shift ↑ (the
-        // label goes first when it's narrow); transposed, what to tune to now. With no room, "+1" lit as before.
-        // The open strings follow when there's room (the tuner tile and the tab's rows name them too).
+        // transpose: a sunken "TRANSPOSE − 0 +" beside the tuning, shifting the guitar input while the backing
+        // track and tab stay as written. With no room, the signed shift stays visible.
         let pitch = self.mixer.pitch;
         let cy = y + text::line_height(&ctx, Style::new(14.0, 700, th.text)) / 2.0;
         let follow = if pitch != 0 {
@@ -3787,7 +3794,7 @@ impl PlayerView {
                 ui,
                 nr,
                 &format!(
-                    "Transposed {}: the song sounds in {}; the tab stays as written",
+                    "Guitar input {}: the backing track stays in {}; the tab stays as written",
                     songaudio::pitch_long(pitch),
                     self.sounding_tuning_name()
                 ),
@@ -3820,8 +3827,8 @@ impl PlayerView {
     }
 
     /// The header's transpose stepper, its left middle at `at`, in `room` across: a sunken pill, "TRANSPOSE" (when it
-    /// fits), − the semitones +. − and + are Shift ↓ / Shift ↑ (D38: the song's pitch, the tab as written); a click
-    /// on the value puts it back to 0. `follow`: what must fit after it (the tuning it sounds in). None: no room,
+    /// fits), − the semitones +. The keys shift the guitar input; a click on the value puts it back to 0. `follow`:
+    /// what must fit after it (the track's tuning). None: no room,
     /// nothing drawn.
     fn draw_transpose(&mut self, ui: &Ui, at: Pos2, room: f32, follow: f32) -> Option<Rect> {
         let p = ui.painter().clone();
@@ -3858,7 +3865,7 @@ impl PlayerView {
             let lr = Rect::from_min_size(r.min, vec2(lab_w, h));
             if hover.is_some_and(|q| lr.contains(q)) {
                 self.tip = Some((
-                    "Transpose the song (the tab stays as written)".into(),
+                    "Transpose the guitar input (the backing track and tab stay as written)".into(),
                     String::new(),
                     ipos(lr.min.x, r.max.y + px(8.0)),
                     Align2::LEFT_TOP,
@@ -3869,8 +3876,20 @@ impl PlayerView {
         let minus = Rect::from_min_size(pos2(x, r.min.y), Vec2::splat(key));
         let plus = Rect::from_min_size(ipos(r.max.x - key, r.min.y), Vec2::splat(key));
         for (b, ic, tip, k, act) in [
-            (minus, Icon::Minus, "Down a semitone", "Shift ↓", "pitch-"),
-            (plus, Icon::Plus, "Up a semitone", "Shift ↑", "pitch+"),
+            (
+                minus,
+                Icon::Minus,
+                "Shift guitar input down a semitone",
+                "Shift ↓",
+                "pitch-",
+            ),
+            (
+                plus,
+                Icon::Plus,
+                "Shift guitar input up a semitone",
+                "Shift ↑",
+                "pitch+",
+            ),
         ] {
             let resp = interact(ui, b, ("hdr-transpose", act), Sense::click());
             let ink = if resp.is_pointer_button_down_on() {
@@ -3918,11 +3937,11 @@ impl PlayerView {
             self.tip = Some((
                 if pitch != 0 {
                     format!(
-                        "Transposed {}  ·  click: original pitch",
+                        "Guitar input shifted {}  ·  click: no shift",
                         songaudio::pitch_long(pitch)
                     )
                 } else {
-                    "Transpose: original pitch".into()
+                    "Guitar input: original pitch".into()
                 },
                 String::new(),
                 ipos(mid_x(mid_r), r.max.y + px(8.0)),
@@ -5645,15 +5664,9 @@ impl PlayerView {
     fn draw_slowing(&self, p: &Painter, well: Rect, prog: Option<f64>) {
         let th = t();
         let pct = (self.speed() * 100.0).round() as i64;
-        let pitch_only = pct == 100 && self.mixer.pitch != 0;
         let (title, tail, u) = match prog {
             Some(pr) if self.pending_speed.is_none() => (
-                if pitch_only {
-                    "Shifting the pitch of the rest of the song… "
-                } else {
-                    "Slowing down the rest of the song… "
-                }
-                .to_string(),
+                "Slowing down the rest of the song… ".to_string(),
                 format!("{}%", (pr * 100.0).round() as i64),
                 Some(pr),
             ),

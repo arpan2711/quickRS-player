@@ -212,7 +212,7 @@ pub(super) const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Shift T", "Your sounds (on the Rig)"),
             ("7 8", "Your instrument quieter, louder"),
             ("9 0", "Song quieter, louder"),
-            ("Shift ↑ ↓", "Transpose the song"),
+            ("Shift ↑ ↓", "Transpose the guitar input; backing track stays put"),
             (", .", "Sync offset"),
             ("Ctrl , .", "Your instrument's delay: shorter, longer"),
             ("R", "Record, pause, resume"),

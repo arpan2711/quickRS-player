@@ -41,8 +41,8 @@ pub fn read(midi: f64, targets: &[i32]) -> Reading {
 
 impl Reading {
     /// The words under the needle: "+3¢ · in tune", "−12¢ · tune up", "2 semitones sharp · tune down" (against the lit string).
-    /// `no_tune_up`: the strings are above standard (a song shifted up, or charted up): a reading below one says to
-    /// shift the song rather than tune up.
+    /// `no_tune_up`: the guitar's target is above standard: a reading below the target says to shift the guitar input
+    /// rather than tune up.
     pub fn verdict(&self, no_tune_up: bool) -> String {
         if self.string.is_none() {
             return format!("{:+.0}¢  ·  not near a string", self.cents);
@@ -55,7 +55,7 @@ impl Reading {
             let then = if self.semis > 0 {
                 "tune down"
             } else if no_tune_up {
-                "shift the song"
+                "shift the guitar input"
             } else {
                 "tune up"
             };
@@ -64,7 +64,11 @@ impl Reading {
         let then = if self.cents.abs() <= 5.0 {
             "in tune"
         } else if self.cents < 0.0 {
-            if no_tune_up { "shift the song" } else { "tune up" }
+            if no_tune_up {
+                "shift the guitar input"
+            } else {
+                "tune up"
+            }
         } else {
             "tune down"
         };
@@ -81,45 +85,47 @@ impl Reading {
     }
 }
 
-/// The tuning card's offer: the song (as it sounds with `pitch`) is in a standard or drop tuning `k` semitones from
-/// E's; playing it at `to_pitch` puts it in E's (`then`) on a guitar in standard.
+/// The tuning card's offer: after the input shift, the guitar's target tuning is `k` semitones from E's; `to_pitch`
+/// shifts the input so the guitar can stay in E standard (`then`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Offer {
     pub k: i32,
     pub to_pitch: i32,
-    /// The tuning it sounds in now ("Eb Standard"), and with the offer taken ("E Standard").
+    /// The physical guitar tuning now ("Eb Standard"), and with the offer taken ("E Standard").
     pub now: String,
     pub then: String,
 }
 
-/// The offer for a part tuned `offsets` (per string, from E standard) heard with `pitch`, or None when it's in E
-/// already, isn't a standard or drop tuning (an open tuning is retuned for), or the shift would go past an octave.
+/// The offer for a part tuned `offsets` (per string, from E standard) with input shift `pitch`, or None when it's
+/// already E standard, isn't a standard or drop tuning (an open tuning is retuned for), or the shift would go past
+/// an octave.
 pub fn offer(offsets: &[i32], is_bass: bool, pitch: i32, max: i32) -> Option<Offer> {
     let n = if is_bass { 4 } else { 6 };
     let mut o: Vec<i32> = offsets.to_vec();
     o.resize(o.len().max(n), 0);
     o.truncate(n);
-    let k = o[1] + pitch;
+    // The raw guitar tuning that lands on the chart after the input shift is chart_tuning - pitch.
+    let k = o[1] - pitch;
     let standard = o.iter().all(|&x| x == o[1]);
     let drop = o[0] == o[1] - 2 && o[1..].iter().all(|&x| x == o[1]);
     if !(standard || drop) || k == 0 {
         return None;
     }
-    let to_pitch = pitch - k;
+    let to_pitch = o[1];
     if to_pitch.abs() > max {
         return None;
     }
-    let sounding = |p: i32| -> Vec<i32> { o.iter().map(|x| x + p).collect() };
+    let guitar_tuning = |p: i32| -> Vec<i32> { o.iter().map(|x| x - p).collect() };
     Some(Offer {
         k,
         to_pitch,
-        now: tuning_name(&sounding(pitch), is_bass),
-        then: tuning_name(&sounding(to_pitch), is_bass),
+        now: tuning_name(&guitar_tuning(pitch), is_bass),
+        then: tuning_name(&guitar_tuning(to_pitch), is_bass),
     })
 }
 
 impl Offer {
-    /// The card's line: below standard, retune or shift; above, shift (never tune up past standard).
+    /// The card's line: below standard, retune or shift the input down; above, shift the input up.
     pub fn words(&self) -> String {
         let n = self.k.unsigned_abs();
         let how = if n == 1 {
@@ -129,24 +135,24 @@ impl Offer {
         };
         if self.k < 0 {
             format!(
-                "The song is in {}, {how} below standard. Tune down to it, or play it in {} as you're tuned now.",
+                "The track is in {}, {how} below standard. Tune down to it, or shift the guitar input down to play in {}.",
                 self.now, self.then
             )
         } else {
             format!(
-                "The song sounds in {}, {how} above standard. Don't tune up: play it in {} instead.",
+                "The track is in {}, {how} above standard. Tune up to it, or shift the guitar input up to play in {}.",
                 self.now, self.then
             )
         }
     }
 
-    /// The card's key: "Play in E Standard (song +1)", "Play in E Standard (original pitch)".
+    /// The card's key: "Play in E Standard (input −1)", "Play in E Standard (no shift)".
     pub fn key(&self) -> String {
         if self.to_pitch == 0 {
-            format!("Play in {} (original pitch)", self.then)
+            format!("Play in {} (no shift)", self.then)
         } else {
             format!(
-                "Play in {} (song {})",
+                "Play in {} (input {})",
                 self.then,
                 super::songaudio::pitch_short(self.to_pitch)
             )
@@ -185,38 +191,38 @@ mod tests {
         assert_eq!(r.semis, -1);
         assert!((r.cents - 40.0).abs() < 1e-6); // (48.4 is G#2/Ab2 +40¢)
         assert_eq!(r.verdict(false), "1 semitone flat  ·  tune up");
-        assert_eq!(r.verdict(true), "1 semitone flat  ·  shift the song");
+        assert_eq!(r.verdict(true), "1 semitone flat  ·  shift the guitar input");
         // nowhere near a string
         assert_eq!(read(70.0, &E).string, None);
     }
 
     #[test]
-    fn a_song_below_standard_offers_a_shift_up_and_never_a_tune_up() {
-        // Eb standard: tune down, or play it a semitone up in E standard
+    fn a_track_below_standard_offers_an_input_shift_down_for_standard_tuning() {
+        // Eb standard: tune down, or shift guitar input down while playing in E standard
         let o = offer(&[-1; 6], false, 0, 12).unwrap();
-        assert_eq!((o.k, o.to_pitch), (-1, 1));
+        assert_eq!((o.k, o.to_pitch), (-1, -1));
         assert_eq!((o.now.as_str(), o.then.as_str()), ("Eb Standard", "E Standard"));
-        assert_eq!(o.key(), "Play in E Standard (song +1)");
+        assert_eq!(o.key(), "Play in E Standard (input \u{2212}1)");
         assert!(
             o.words()
-                .starts_with("The song is in Eb Standard, a semitone below standard. Tune down")
+                .starts_with("The track is in Eb Standard, a semitone below standard. Tune down")
         );
-        // Drop C#: shift +1 to Drop D
+        // Drop C#: shift the guitar input down to play in Drop D
         let o = offer(&[-3, -1, -1, -1, -1, -1], false, 0, 12).unwrap();
-        assert_eq!((o.to_pitch, o.then.as_str()), (1, "Drop D"));
-        // the song shifted up 2 from E standard: it sounds in F#... never "tune up", back to the original pitch
-        let o = offer(&[0; 6], false, 2, 12).unwrap();
+        assert_eq!((o.to_pitch, o.then.as_str()), (-1, "Drop D"));
+        // An input shifted down two on an E chart can use standard tuning by clearing the shift.
+        let o = offer(&[0; 6], false, -2, 12).unwrap();
         assert_eq!(o.k, 2);
         assert_eq!(o.to_pitch, 0);
-        assert!(o.words().contains("Don't tune up"), "{}", o.words());
-        assert_eq!(o.key(), "Play in E Standard (original pitch)");
-        // already in E (Eb shifted +1), or E standard, or an open tuning: no card
-        assert_eq!(offer(&[-1; 6], false, 1, 12), None);
+        assert!(o.words().contains("shift the guitar input up"), "{}", o.words());
+        assert_eq!(o.key(), "Play in E Standard (no shift)");
+        // Already physically in E, or an open tuning: no card
+        assert_eq!(offer(&[-1; 6], false, -1, 12), None);
         assert_eq!(offer(&[0; 6], false, 0, 12), None);
         assert_eq!(offer(&[-2, -2, 0, 0, 0, -2], false, 0, 12), None);
         // bass: its four strings
         let o = offer(&[-2, -2, -2, -2], true, 0, 12).unwrap();
-        assert_eq!((o.to_pitch, o.then.as_str()), (2, "E Standard"));
+        assert_eq!((o.to_pitch, o.then.as_str()), (-2, "E Standard"));
         // past the shift's reach
         assert_eq!(offer(&[-1; 6], false, 0, 0), None);
     }

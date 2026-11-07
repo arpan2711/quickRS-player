@@ -268,15 +268,15 @@ stems).
 (The picture is from a small example pack with guitar, drums, vocals and click
 stems.)
 
-**Pitch.** `Shift+↑` and `Shift+↓` (or *Higher* and *Lower*, or the `−` and
-`+` of *TRANSPOSE* in the header, beside the tuning) move the song up
-or down a semitone at a time, from 12 down to 12 up. *Original pitch* puts it
-back. The tab stays as written: the frets don't change, only what you hear.
-Scoring, the tuner's *this song* tuning, the synth guitar and takes all expect
-the shifted pitch, so you can play a song in E standard along with a record
-tuned down a half step, or use a capo and play the tab's shapes. Pitch shift
-works together with slow-down. A change takes a moment: the old version plays
-until the new one is ready.
+**Input transpose.** `Shift+↑` and `Shift+↓` (or *Higher* and *Lower*, or the
+`−` and `+` of *TRANSPOSE* in the header, beside the tuning) shift the guitar
+input up or down a semitone at a time, from 12 down to 12 up. *Original pitch*
+clears the shift. The backing track and tab stay at their original pitch.
+Scoring, the tuner, the live guitar monitor and takes follow the shifted input;
+the synth guitar still plays the chart as written. For example, shift the input
+down a semitone to play an Eb-tuned chart on an E-standard guitar without
+raising the backing track. Monitoring with a pitch shift adds a little audio
+latency.
 
 ![TRANSPOSE in the header: as written, and two semitones up](../screenshots/transpose.png)
 
@@ -296,8 +296,8 @@ The pitch and the mix are remembered per song.
 
 The player shows what you've changed. Red means something is taken away: with
 your guitar muted (`M`) the GUITAR knob reads MUTED. Amber means something is
-changed from normal: the speed knob off 100%, a pitch shift (the header's
-*TRANSPOSE* shows the amount and what to tune to), a loop, a tone picked
+changed from normal: the speed knob off 100%, an input transpose (the header's
+*TRANSPOSE* shows the amount and the track's tuning), a loop, a tone picked
 with `T`, an easier difficulty, a sync or guitar timing change.
 
 The lamps above the transport (note by note, loop, ear mode, take) can be

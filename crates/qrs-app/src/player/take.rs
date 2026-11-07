@@ -547,10 +547,10 @@ impl PlayerView {
                             arr.title = title;
                             arr.name = part;
                             if pitch != 0 {
-                                // the song was pitch-shifted: the take is checked against what it sounded like
+                                // The recorded guitar is unshifted; compensate its chart pitch for the input shift.
                                 arr.tuning.resize(arr.tuning.len().max(6), 0);
                                 for t in &mut arr.tuning {
-                                    *t += pitch;
+                                    *t -= pitch;
                                 }
                             }
                             let input = Arc::new(TakeInput {
@@ -751,14 +751,14 @@ impl PlayerView {
         let _ = std::thread::Builder::new()
             .name("take-listen".into())
             .spawn(move || {
-                let samples = restretch_take(&samples, rate, speed / played_at);
+                let samples = restretch_take(&samples, rate, speed / played_at, semis);
                 let clip = match song {
                     Some(song) => {
                         // (the song's stretch from where the take starts, the take's length long)
                         let (a, b) = (t0 + offset, t1 + offset);
                         let lead = (-a).max(0.0);
                         let mut track = vec![0.0f32; 2 * (lead / speed * song.rate as f64) as usize];
-                        track.extend(qrs_audio::synth::track_clip(&song, a.max(0.0), b, speed, semis));
+                        track.extend(qrs_audio::synth::track_clip(&song, a.max(0.0), b, speed, 0.0));
                         Clip {
                             rate: song.rate,
                             samples: mix(&samples, rate, Some(&track), song.rate),
@@ -1313,14 +1313,14 @@ impl PlayerView {
     }
 }
 
-/// A take played at one speed made to sound at another: `k` = the new speed over the one it was played at (1:
-/// as it is).
-pub fn restretch_take(mono: &[f32], rate: u32, k: f64) -> Vec<f32> {
-    if (k - 1.0).abs() < 1e-6 || mono.is_empty() {
+/// A take played at one speed made to sound at another, with an optional guitar input pitch shift.
+/// `k` is the new speed over the one it was played at; `semitones` shifts the recorded input.
+pub fn restretch_take(mono: &[f32], rate: u32, k: f64, semitones: f32) -> Vec<f32> {
+    if ((k - 1.0).abs() < 1e-6 && semitones == 0.0) || mono.is_empty() {
         return mono.to_vec();
     }
     let stereo: Vec<f32> = mono.iter().flat_map(|&v| [v, v]).collect();
-    qrs_audio::stretch::stretch_clip(&stereo, rate, k, 0.0)
+    qrs_audio::stretch::stretch_clip(&stereo, rate, k, semitones)
         .chunks_exact(2)
         .map(|f| f[0])
         .collect()
