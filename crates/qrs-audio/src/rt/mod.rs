@@ -316,7 +316,7 @@ pub enum InCmd {
     /// The input is a bass: its own pluck detector (D176).
     OnsetBass(bool),
     /// Transpose the monitored guitar, in semitones (-12..=12).
-    InputTranspose(Option<input::MonitorPitchShifter>),
+    InputTranspose(f32, Option<input::MonitorPitchShifter>),
     /// Hand the guitar (dry and toned) to the output even with monitoring off (for the looper and Rewind).
     Feed(bool),
 }

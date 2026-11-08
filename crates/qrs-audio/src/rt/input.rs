@@ -170,7 +170,16 @@ impl InputSide {
                 InCmd::InputGain(g) => self.input_gain = g,
                 InCmd::OnsetFloor(f) => self.detector.min_energy = f,
                 InCmd::OnsetBass(b) => self.detector.bass = b,
-                InCmd::InputTranspose(shifter) => {
+                InCmd::InputTranspose(semitones, shifter) => {
+                    if semitones != 0.0
+                        && let Some(current) = self.pitch_shifter.as_mut()
+                    {
+                        current.set_semitones(semitones);
+                        if let Some(redundant) = shifter {
+                            discard(&mut self.trash, Trash::InputPitch(redundant));
+                        }
+                        continue;
+                    }
                     if let Some(old) = std::mem::replace(&mut self.pitch_shifter, shifter) {
                         discard(&mut self.trash, Trash::InputPitch(old));
                     }
@@ -530,11 +539,15 @@ mod transpose_tests {
             None,
         );
         let shifter = MonitorPitchShifter::new(rate, -12.0).unwrap();
-        cmd_tx.push(InCmd::InputTranspose(Some(shifter))).unwrap();
+        cmd_tx.push(InCmd::InputTranspose(-12.0, Some(shifter))).unwrap();
 
         let mut phase = 0.0f64;
         let mut output = Vec::new();
         for block in 0..180 {
+            if block == 90 {
+                let shifter = MonitorPitchShifter::new(rate, -1.0).unwrap();
+                cmd_tx.push(InCmd::InputTranspose(-1.0, Some(shifter))).unwrap();
+            }
             let mut samples = Vec::with_capacity(512);
             for _ in 0..512 {
                 samples.push((phase.sin() * 0.5) as f32);
@@ -544,8 +557,14 @@ mod transpose_tests {
             output.extend_from_slice(wet);
         }
 
+        let transition = &output[90 * 512..90 * 512 + 2048];
+        for block in transition.chunks_exact(128) {
+            let rms = (block.iter().map(|x| x * x).sum::<f32>() / block.len() as f32).sqrt();
+            assert!(rms > 0.02, "transpose change caused a monitor dropout");
+        }
         let monitor_tail = &output[output.len() - 8192..];
-        assert!((frequency(monitor_tail, rate) - 220.0).abs() < 4.0);
+        let expected = 440.0 * 2f64.powf(-1.0 / 12.0);
+        assert!((frequency(monitor_tail, rate) - expected).abs() < 4.0);
 
         let mut captured = vec![0.0; 8192];
         assert!(shared.capture.latest(&mut captured).is_some());

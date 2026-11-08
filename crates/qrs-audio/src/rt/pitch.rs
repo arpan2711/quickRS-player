@@ -7,6 +7,7 @@ unsafe extern "C" {
     fn quickrs_monitor_shifter_block_size() -> usize;
     fn quickrs_monitor_shifter_new(rate: u32, semitones: f32) -> *mut c_void;
     fn quickrs_monitor_shifter_process(shifter: *mut c_void, input: *const f32, output: *mut f32);
+    fn quickrs_monitor_shifter_set_semitones(shifter: *mut c_void, semitones: f32);
     fn quickrs_monitor_shifter_delete(shifter: *mut c_void);
 }
 
@@ -69,6 +70,10 @@ impl MonitorPitchShifter {
                 self.output_ready = true;
             }
         }
+    }
+
+    pub(crate) fn set_semitones(&mut self, semitones: f32) {
+        unsafe { quickrs_monitor_shifter_set_semitones(self.handle.as_ptr(), semitones) };
     }
 }
 
