@@ -436,11 +436,12 @@ impl PlayerView {
         let name = if self.mixer.pitch == 0 {
             format!("{} (this song)", self.chart.arr.tuning_name())
         } else {
-            // the song is pitch-shifted: tune to what it sounds like
+            // The input is shifted; show its physical tuning while the tuner still targets the track.
             format!(
-                "{} (song {})",
+                "{} (input {} → {})",
                 self.sounding_tuning_name(),
-                super::songaudio::pitch_short(self.mixer.pitch)
+                super::songaudio::pitch_short(self.mixer.pitch),
+                self.transposed_input_tuning_name()
             )
         };
         let opens = self.sounding_opens();
@@ -471,39 +472,6 @@ impl PlayerView {
             }
         }
         "Your tuning".into()
-    }
-
-    fn tuner_targets_partOld(&self) -> (String, Vec<i32>) {
-        let (name, offs) = TUNINGS[self.tuning_choice % TUNINGS.len()];
-        match offs {
-            None => (
-                if self.mixer.pitch == 0 {
-                    format!("{} (this song)", self.chart.arr.tuning_name())
-                } else {
-                    // Show both the track tuning and the shifted input tuning; the tracker still targets the track.
-                    format!(
-                        "{} (input {} → {})",
-                        self.sounding_tuning_name(),
-                        super::songaudio::pitch_short(self.mixer.pitch),
-                        self.transposed_input_tuning_name()
-                    )
-                },
-                self.sounding_opens(),
-            ),
-            Some(o) => {
-                let base = if self.chart.arr.is_bass {
-                    BASS_OPEN_MIDI
-                } else {
-                    GUITAR_OPEN_MIDI
-                };
-                (
-                    name.into(),
-                    (0..self.chart.opens.len())
-                        .map(|i| base[i.min(5)] + o[i.min(5)])
-                        .collect(),
-                )
-            }
-        }
     }
 
     /// C below the part's lowest note to B above its highest (at least two octaves).
