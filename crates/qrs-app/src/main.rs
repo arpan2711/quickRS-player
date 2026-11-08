@@ -26,6 +26,7 @@ mod devstatus;
 mod devswap;
 mod dialogs;
 mod downloads;
+mod drive;
 mod gallery;
 mod gearindex;
 mod gpu;
@@ -171,6 +172,14 @@ fn main() -> anyhow::Result<()> {
             viewport = viewport.with_position([x, y]).with_inner_size([w, h]);
         }
         viewport = viewport.with_maximized(r.maximized).with_fullscreen(r.fullscreen);
+    }
+    // drive mode (D180): off-screen and not taking focus, so the owner's screen and typing are left alone
+    drive::check()?;
+    if drive::on() {
+        viewport = viewport
+            .with_position([-30000.0, -30000.0])
+            .with_active(false)
+            .with_taskbar(false);
     }
     let mut opts = eframe::NativeOptions {
         viewport,

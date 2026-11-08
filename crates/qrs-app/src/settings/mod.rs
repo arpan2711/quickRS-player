@@ -327,6 +327,12 @@ impl SettingsView {
             self.scroll = 0.0;
             return;
         }
+        if section == "display_end" {
+            // (the screenshots: the Display page at its end, the highway notes and the tuner's face, P48.3)
+            self.section = "display";
+            self.scroll = 4000.0;
+            return;
+        }
         if section == "library_rec" {
             // (the screenshots: the Library page's recordings folders, at its end)
             self.section = "library";

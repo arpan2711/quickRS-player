@@ -404,7 +404,31 @@ impl SettingsView {
             }
             y = seg.max.y + px(16.0);
         }
-        card_h.max.y.max(card2.max.y)
+        // the tuner's face (P48.3): the same choice as the dots beside TUNER on the tile
+        use crate::player::tuner_face::Face;
+        let card_t = Rect::from_min_size(
+            pos2(body.min.x, card_h.max.y + gap),
+            vec2(colw, 2.0 * pad + hh + seg_h + px(8.0)),
+        );
+        paint::card(&p, card_t, 24.0, false);
+        let y = self.heading(
+            &p,
+            "TUNER",
+            x,
+            card_t.min.y + pad,
+            Some(x + wd),
+            "its face (also the dots beside TUNER on the tile)",
+            "",
+        );
+        let cur = Face::parse(&st.config.str("tuner_face", ""));
+        let opts: Vec<&str> = Face::ALL.iter().map(|f| f.short()).collect();
+        let sel = Face::ALL.iter().position(|&f| f == cur).unwrap_or(0);
+        let seg = Rect::from_min_size(pos2(x, y), vec2(wd, seg_h));
+        let (_, clicked) = widgets::segmented(ui, seg, "set-tunerface", &seg_opts(&opts, sel));
+        if let Some(i) = clicked {
+            self.acts.push(format!("set:tuner_face:{}", Face::ALL[i].key()));
+        }
+        card_t.max.y.max(card2.max.y)
     }
 
     /// One tile in the TILES list: a grip to drag it by, its name (with its key) and a switch.

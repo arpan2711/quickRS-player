@@ -756,13 +756,15 @@ fn draw_tab(
         );
         p.rect_filled(band, px(10.0), th.screen_hi);
     }
-    // strings and their names
+    // strings and their names ("E A D G B e")
+    let names: Vec<&'static str> = opens.iter().map(|&m| qrs_formats::model::note_name(m)).collect();
+    let labels = qrs_formats::model::string_labels(&names, inst.is_bass());
     for s in 0..n {
         let y = ys(s);
         p.hline(left..=right, y, (1.0, th.line));
         text::draw(
             p,
-            qrs_formats::model::note_name(opens[s]),
+            labels[s],
             pos2(names_x, y),
             Align2::CENTER_CENTER,
             Style::new(13.0, 800, string_color(s)),

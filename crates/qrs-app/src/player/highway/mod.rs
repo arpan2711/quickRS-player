@@ -1031,6 +1031,57 @@ fn name_from_notes(c: &qrs_formats::model::Chord, opens: &[i32]) -> String {
     chordname::name(&heard).map_or_else(String::new, |g| g.name())
 }
 
+/// Round the highway's corners (P47.2, owner: the tab's well is rounded, the highway was a hard rectangle): each
+/// corner outside a quarter circle of radius `r` painted in the page's colour (the theme's base, what's behind the
+/// player), its edge feathered over a pixel, then a faint rim along the edge like the tab's well.
+pub fn round_corners(p: &egui::Painter, well: Rect, r: f32) {
+    use egui::epaint::Mesh;
+    let th = t();
+    let base = th.base;
+    let feather = 1.0 / p.ctx().pixels_per_point();
+    let n = 16;
+    for (corner, centre, a0) in [
+        (
+            well.left_top(),
+            well.left_top() + vec2(r, r),
+            std::f32::consts::PI,
+        ),
+        (
+            well.right_top(),
+            well.right_top() + vec2(-r, r),
+            1.5 * std::f32::consts::PI,
+        ),
+        (well.right_bottom(), well.right_bottom() + vec2(-r, -r), 0.0),
+        (
+            well.left_bottom(),
+            well.left_bottom() + vec2(r, -r),
+            0.5 * std::f32::consts::PI,
+        ),
+    ] {
+        let mut m = Mesh::default();
+        m.colored_vertex(corner, base);
+        for k in 0..=n {
+            let a = a0 + std::f32::consts::FRAC_PI_2 * k as f32 / n as f32;
+            let d = vec2(a.cos(), a.sin());
+            m.colored_vertex(centre + d * r, base);
+            m.colored_vertex(centre + d * (r - feather), egui::Color32::TRANSPARENT);
+        }
+        for k in 0..n as u32 {
+            let (o0, o1) = (1 + 2 * k, 3 + 2 * k);
+            m.add_triangle(0, o0, o1);
+            m.add_triangle(o0, o1, o1 + 1);
+            m.add_triangle(o0, o1 + 1, o0 + 1);
+        }
+        p.add(egui::Shape::mesh(m));
+    }
+    p.rect_stroke(
+        well,
+        egui::CornerRadius::same(r.round().clamp(0.0, 255.0) as u8),
+        egui::Stroke::new(1.0, gfx::alpha(egui::Color32::BLACK, 0.35)),
+        egui::StrokeKind::Inside,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

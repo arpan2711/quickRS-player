@@ -580,14 +580,17 @@ impl Rack {
             } else {
                 ("NAM capture", "nam")
             };
-            let picked = rfd::FileDialog::new()
-                .set_title(match d.kind {
-                    CKind::Nam => "Add a NAM capture",
-                    CKind::Pedal => "Add a NAM pedal",
-                    CKind::Ir => "Add an IR cab",
-                })
-                .add_filter(what, &[ext])
-                .pick_file();
+            let title = match d.kind {
+                CKind::Nam => "Add a NAM capture",
+                CKind::Pedal => "Add a NAM pedal",
+                CKind::Ir => "Add an IR cab",
+            };
+            let picked = crate::drive::pick(title).unwrap_or_else(|| {
+                rfd::FileDialog::new()
+                    .set_title(title)
+                    .add_filter(what, &[ext])
+                    .pick_file()
+            });
             if let Some(path) = picked {
                 match captures::with(|l| l.add_path_as(&path, Some(d.kind))) {
                     Ok(it) => {

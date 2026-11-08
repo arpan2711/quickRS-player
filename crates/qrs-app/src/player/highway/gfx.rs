@@ -57,12 +57,16 @@ impl Pen<'_> {
         q.iter().map(|x| self.v.pt(*x)).collect()
     }
 
-    /// A flat convex polygon.
+    /// A flat convex polygon. Slivers are skipped (P46.2: a gem's side seen nearly edge-on, a fraction of a pixel
+    /// thick, made egui's anti-aliasing feather throw a thin spike across the highway, One Headlight's "vertical bar
+    /// that goes as the notes come closer"); they'd draw nothing anyway.
     pub fn poly(&self, q: &[V3], col: Color32) {
         if col == Color32::TRANSPARENT {
             return;
         }
-        if let Some(s) = self.pts(q) {
+        if let Some(s) = self.pts(q)
+            && !sliver(&s)
+        {
             self.p.add(Shape::convex_polygon(s, col, Stroke::NONE));
         }
     }
@@ -256,6 +260,20 @@ impl Pen<'_> {
         }
         self.p.add(Shape::mesh(m));
     }
+}
+
+/// A screen polygon thinner than a quarter pixel on average (twice its area over its perimeter), or with no area.
+pub fn sliver(s: &[Pos2]) -> bool {
+    if s.len() < 3 {
+        return true;
+    }
+    let (mut area2, mut per) = (0.0f32, 0.0f32);
+    for k in 0..s.len() {
+        let (a, b) = (s[k], s[(k + 1) % s.len()]);
+        area2 += a.x * b.y - b.x * a.y;
+        per += (b - a).length();
+    }
+    per.is_nan() || per <= 0.0 || area2.abs() / per < 0.25
 }
 
 /// A colour faded by k (alpha or additive alike: premultiplied scaling).
@@ -526,4 +544,25 @@ pub const STR_TAU: [f32; 6] = [0.27, 0.25, 0.17, 0.23, 0.20, 0.26];
 /// A string's colour index (bass strings past 6 reuse the guitar's).
 pub fn si(s: i32) -> usize {
     s.clamp(0, 5) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slivers_are_told_from_faces() {
+        // a gem's side nearly edge-on: 40 px long, 0.1 px thick
+        let thin = [pos2(0.0, 0.0), pos2(40.0, 0.0), pos2(40.0, 0.1), pos2(0.0, 0.1)];
+        assert!(sliver(&thin));
+        // collapsed to a line, or a point
+        assert!(sliver(&[pos2(0.0, 0.0), pos2(10.0, 10.0), pos2(20.0, 20.0)]));
+        assert!(sliver(&[pos2(5.0, 5.0); 4]));
+        // a small far gem's face (3 x 1.3 px) still draws, either winding
+        let face = [pos2(0.0, 0.0), pos2(3.0, 0.0), pos2(3.0, 1.3), pos2(0.0, 1.3)];
+        assert!(!sliver(&face));
+        let mut rev = face;
+        rev.reverse();
+        assert!(!sliver(&rev));
+    }
 }

@@ -305,6 +305,8 @@ pub(crate) fn lettering(
 mod amps;
 mod cabs;
 mod pedals;
+/// The drawing kit, for other realistic faces (the tuner's, P48.3).
+pub(crate) use pedals::kit;
 mod racks;
 pub mod silver;
 

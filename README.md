@@ -38,11 +38,12 @@ AI model, no upload, and the same take always gets the same answer. See
 
 ### Download
 
-* **Windows 10 or 11 (64-bit):** `quickRS-0.5.4-windows-x64.zip` from the
+* **Windows 10 or 11 (64-bit):** `quickRS-0.5.5-windows-x64.zip` from the
   [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
   There is no installer: unzip it and run `quickrs.exe`.
 * **macOS 11 or later (beta):** `quickRS-0.5.4-macos-universal.dmg` (or the
-  `.zip`) from the [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
+  `.zip`) from the [0.5.4 release](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.4) (0.5.5 is
+  Windows only for now).
   One app for Apple silicon and Intel
   Macs. Its tests run on GitHub's Macs, but it hasn't been tried on a real Mac
   since 0.3.0 (reports welcome), and it isn't notarised by Apple, so the
@@ -106,6 +107,17 @@ Easy to miss, and some of the best parts. `F1` in a song lists every key.
 * **Sounds late?** `,` and `.` nudge the sync, `Ctrl+,` and `Ctrl+.` your
   guitar's timing.
 
+
+### What's new in 0.5.5
+
+* **Sight reading**: standard notation over the tab, or instead of it (the staff key on the tab's toolbar, or `S`).
+* **A new tuner**: five faces to pick from (rack lamps, a needle meter, a strobe, a pedal, or the old digital one),
+  always on the song's tuning, any string set to any note by hand, a click on a string to tune that one alone, and
+  it knows a bass from a guitar.
+* **On the highway**: accents, hammer-ons and pull-offs to open strings, and bends inside chords now show; full screen
+  fills the window and keeps your score at the top right; rounded corners; and a stray line that could flash through
+  incoming notes is gone. See the
+  [0.5.5 release notes](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.5).
 
 ### What's new in 0.5.4
 
@@ -229,9 +241,12 @@ The numbers on each picture are explained under it.
 #### Tab
 
 The whole part as pages of tab with rhythm notation, the current bar lit and
-the next notes ringed. Lead, Rhythm and Bass are a key apart.
+the next notes ringed. Lead, Rhythm and Bass are a key apart. For sight reading,
+`S` puts standard notation over the tab, or shows it alone.
 
 ![The player, labelled](screenshots/player-labelled.png)
+
+![Sight reading: standard notation over the tab](screenshots/sight-reading.png)
 
 #### Loops and slowing down
 
@@ -245,7 +260,13 @@ it.
 
 #### Highway
 
-A Rocksmith-style 3D note highway, in place of the tab (`V`).
+A Rocksmith-style 3D note highway, in place of the tab (`V`), with the techniques on the notes (bends with their
+amount, slides, hammer-ons and pull-offs, mutes, harmonics, accents). `F` makes it fill the window, with your score at
+the top right.
+
+![The highway, labelled](screenshots/highway-labelled.png)
+
+![The highway full screen, with the score](screenshots/highway-full.png)
 
 #### Review and continuous mode
 
@@ -254,8 +275,6 @@ one to loop it, and `O` plays the loop over and over, scoring every pass. See
 [Reviewing a run](docs/PLAYING.md#reviewing-a-run).
 
 ![Continuous mode on a review part](screenshots/continuous.png)
-
-![The highway, labelled](screenshots/highway-labelled.png)
 
 #### Note by note
 
@@ -304,9 +323,17 @@ Settings > Library.
 
 ![Settings > Library, labelled](screenshots/settings-library-labelled.png)
 
+#### Tuner
+
+A tile on the song's own tuning (a bass part gets a bass tuner), in five faces: rack lamps, a needle meter, a
+strobe, a pedal, or digital. Click a string to tune just that one; the sliders key sets any string to any note.
+
+![The tuner's five faces and its string editor](screenshots/tuner-faces.png)
+
 #### Also
 
-Scoring with your best three runs per part, a tuner set to the song's tuning,
+Scoring with your best three runs per part, a tuner on the song's tuning (five
+faces, any string set by hand),
 lyrics, a difficulty slider with level-up after a clean loop, three themes
 (Midnight, Graphite, Daylight), guitar tones (As is, Clean, Crunch, Lead,
 Bass, Acoustic, Pedalboard, and your own), and a converter from psarc to
@@ -360,6 +387,7 @@ In the player:
 | `Ctrl+↑` / `Ctrl+↓` | Harder / easier |
 | `Y` | Lyrics tile on / off |
 | `N` | Rhythm notation on / off |
+| `S` | Tab, notation and tab, notation only |
 | `H` | Ear mode |
 | `W` | Note by note |
 | `Enter` | Note by note, while it waits: skip the note |

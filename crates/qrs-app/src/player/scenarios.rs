@@ -837,3 +837,71 @@ fn the_tab_toolbar_is_never_over_the_tab() {
         }
     }
 }
+
+/// P47.1 (owner): the RS Highway's full screen is the whole window, edge to edge (the tab's keeps its margin and the
+/// scrollbar's groove); the score tile floats at its top right, and folds to a strip (config `hw_full_score`).
+#[test]
+fn the_highway_full_screen_is_edge_to_edge_with_the_score() {
+    let mut h = H::new();
+    qrs_ui::text::install(&h.st.ctx);
+    h.settle();
+    let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0));
+    let frame = |h: &mut H| {
+        let ctx = h.st.ctx.clone();
+        for k in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(area),
+                time: Some(k as f64 * 0.05),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| h.p.ui(ui, &mut h.st, area));
+            out.textures_delta.clear();
+        }
+    };
+    h.p.tab_full = true;
+    h.p.hw_on = true;
+    frame(&mut h);
+    assert_eq!(h.p.well, area, "the highway fills the window");
+    let tile = h.p.hw_score_rect;
+    assert!(tile.width() > 200.0 && tile.height() > 60.0, "{tile:?}");
+    assert!(
+        area.max.x - tile.max.x < 40.0 && tile.min.y - area.min.y < 80.0,
+        "top right, under the toolbar: {tile:?}"
+    );
+    h.st.config.set("hw_full_score", false);
+    frame(&mut h);
+    assert_eq!(h.p.hw_score_rect, egui::Rect::NOTHING, "folded to its strip");
+    // the tab's full screen keeps its margin and the scrollbar's groove, and has no score tile
+    h.st.config.set("hw_full_score", true);
+    h.p.hw_on = false;
+    frame(&mut h);
+    assert!(h.p.well.min.x > area.min.x && h.p.well.max.x < area.max.x - 20.0);
+}
+
+/// P48.1 (owner): the tuner opens on the song's own tuning (no list of tunings), each string can be set to any note,
+/// and it works out guitar or bass by itself.
+#[test]
+fn the_tuner_is_the_songs_and_each_string_can_be_set() {
+    use qrs_analysis::instrument::Instrument;
+    let mut h = H::new();
+    let (name, song) = h.p.tuner_targets();
+    assert_eq!(song, vec![40, 45, 50, 55, 59, 64], "a guitar part: six strings");
+    assert!(name.contains("this song"), "{name}");
+    assert_eq!(h.p.tuner_inst(), Instrument::Guitar);
+    // the low string a whole step down by hand: Drop D, named, and the retune card stands aside
+    let mut t = song.clone();
+    t[0] -= 2;
+    h.p.tuner_custom = Some(t.clone());
+    assert_eq!(h.p.tuner_targets(), ("Drop D (yours)".to_string(), t));
+    h.p.tuner_custom = Some(vec![38, 45, 50, 55, 57, 62]);
+    assert_eq!(h.p.tuner_targets().0, "Your tuning");
+    h.p.tuner_custom = None;
+    // a bass part with the settings on guitar: a bass tuner (four strings, the bass detector)
+    h.p.chart.arr.is_bass = true;
+    h.p.chart.opens = vec![28, 33, 38, 43];
+    assert_eq!(h.p.tuner_inst(), Instrument::Bass);
+    // a 5-string bass set in the settings: five strings
+    h.p.instrument = Instrument::Bass5;
+    assert_eq!(h.p.tuner_inst(), Instrument::Bass5);
+    assert_eq!(h.p.tuner_targets().1.len(), 5);
+}

@@ -36,12 +36,16 @@ after a few seconds of playing. Click anywhere to jump there.
 * `F` full-screen tab: no header, transport or console. `F` or `Esc` leaves.
   `F11` makes the window itself full screen.
 * `N` rhythm notation under the tab.
+* `S` sight reading: standard notation over each row of tab, then notation
+  alone, then back to tab (also the staff key on the toolbar). Guitar is
+  written on a treble clef an octave up, as guitar music is; bass on a bass
+  clef.
 * `A` / `Shift+A` next or previous part; `1`-`6` pick one.
 * `Ctrl+↑` / `Ctrl+↓` harder or easier, like Rocksmith's difficulty.
 
-The same controls are on the see-through toolbar at the tab's top right. Its
-first key is *RS Highway* (`V`). It rolls up after a few seconds; hover it to
-open it.
+The same controls are on the toolbar in its own row over the tab. Its first
+key is *RS Highway* (`V`); then zoom, bar width, string spacing, and round keys
+for compact rows, chord numbers, notation and full screen.
 
 ![The tab toolbar](../screenshots/tab-tools.png)
 
@@ -63,8 +67,18 @@ and early. On the highway's own toolbar:
 
 * *Speed*: how far apart the notes are. Turning it up spreads them out but
   never makes them show up later.
+* *Size*: the notes bigger or smaller (the camera closer or further).
 * *Camera*: *Rocksmith*, or *Steady*, which holds a view as long as it can.
 * Invert (`I`): low E at the bottom instead of the top.
+* Chord names as charted or as numbers in the song's key, and the background
+  (Live, Still or Plain).
+* Full screen (`F`): the highway fills the whole window, with your score in a
+  tile at the top right. Hover the tile for its fold key: it folds to a strip
+  with the score and accuracy.
+
+Technique marks ride on the notes: hammer-ons and pull-offs (also to open
+strings), palm mutes, harmonics, taps, slides, bend arrows with their amount,
+and a white frame around an accented note.
 
 ![The highway, labelled](../screenshots/highway-labelled.png)
 
@@ -308,11 +322,21 @@ does something shows its keycap and what it did at the tab's foot.
 ### Tiles
 
 The console at the right has tiles: note and chord (on a piano or the guitar
-neck), lyrics (`Y`), score, a tuner set to the song's tuning, and the
+neck), lyrics (`Y`), score, a tuner, and the
 pedalboard (`Shift+T` lists your saved sounds there). Drag a tile to move
 it; its close key hides it; *Tiles* brings it back. Hover a tile and the grey
 key beside its grab bar folds it to a slim strip; click the strip to open it
 again.
+
+**The tuner** opens on the song's own tuning (what it sounds like, with a pitch
+shift) and works out by itself whether you're on guitar or bass: a bass part
+gets a bass tuner, with five strings if Settings has a 5-string bass. The dots
+beside *TUNER* pick its face: rack lamps, a needle meter, a strobe, a pedal, or
+the digital one (also in Settings > *Display*). Click a string to tune that one
+alone, however far off it is; click it again to go back. The sliders key opens
+the string editor: up and down keys set any string to any note (a dropped
+string for a song the chart has in standard, say), and the round arrow goes
+back to the song's tuning.
 
 The note widget is a small window that stays on top of everything: the note
 you're playing, the key quickRS thinks you're in, and that key's scale on the

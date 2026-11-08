@@ -752,6 +752,9 @@ fn url_encode(s: &str) -> String {
 
 /// Open a web page in the default browser.
 pub fn open_url(url: &str) {
+    if crate::drive::intercept_url(url) {
+        return;
+    }
     #[cfg(windows)]
     let r = std::process::Command::new("rundll32")
         .args(["url.dll,FileProtocolHandler", url])

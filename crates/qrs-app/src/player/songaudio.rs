@@ -143,12 +143,14 @@ impl PlayerView {
 
     /// The open strings' names with the pitch shift.
     pub(super) fn sounding_string_names(&self) -> Vec<&'static str> {
-        self.chart
+        let names: Vec<&'static str> = self
+            .chart
             .arr
             .open_string_midi()
             .into_iter()
             .map(|m| qrs_formats::model::note_name(m + self.mixer.pitch))
-            .collect()
+            .collect();
+        qrs_formats::model::string_labels(&names, self.chart.arr.is_bass)
     }
 
     /// A fresh scorer for the chart, expecting the shifted pitch.

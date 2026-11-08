@@ -15,26 +15,46 @@ pub struct Reading {
     pub semis: i32,
 }
 
-/// The reading for `midi` (fractional) against the open strings `targets`.
+/// The reading for `midi` (fractional) against the open strings `targets`: a string within half a semitone; else
+/// one an octave under it (P48.1, the bassist's review: the 12th-fret harmonic, or a reading an octave up, landed on
+/// the string two semitones off it, E2 on a bass's D string, and said "tune down" there); else the nearest within
+/// 2.5 semitones.
 pub fn read(midi: f64, targets: &[i32]) -> Reading {
     let cents = (midi - midi.round()) * 100.0;
-    let near = (0..targets.len()).min_by(|&a, &b| {
-        (targets[a] as f64 - midi)
-            .abs()
-            .total_cmp(&(targets[b] as f64 - midi).abs())
-    });
-    let Some(i) = near.filter(|&i| (targets[i] as f64 - midi).abs() <= 2.5) else {
+    let nearest = |off: f64| {
+        (0..targets.len())
+            .map(|i| (i, midi - off - targets[i] as f64))
+            .min_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+    };
+    let pick = nearest(0.0)
+        .filter(|&(_, d)| d.abs() < 0.5)
+        .or_else(|| nearest(12.0).filter(|&(_, d)| d.abs() < 0.5))
+        .or_else(|| nearest(0.0).filter(|&(_, d)| d.abs() <= 2.5));
+    let Some((i, d)) = pick else {
         return Reading {
             string: None,
             cents,
             semis: 0,
         };
     };
-    let d = midi - targets[i] as f64;
     Reading {
         string: Some(i),
         // within half a semitone the nearest note is the string's, so the two readouts are the same number
         cents,
+        semis: if d.abs() < 0.5 { 0 } else { d.round() as i32 },
+    }
+}
+
+/// The reading against string `i` alone, however far off it (P48.1, both reviews: a string clicked in the tuner;
+/// retuning E to C, four semitones, was "not near a string", and close strings took each other's readings).
+pub fn read_string(midi: f64, targets: &[i32], i: usize) -> Reading {
+    let Some(&t) = targets.get(i) else {
+        return read(midi, targets);
+    };
+    let d = midi - t as f64;
+    Reading {
+        string: Some(i),
+        cents: (midi - midi.round()) * 100.0,
         semis: if d.abs() < 0.5 { 0 } else { d.round() as i32 },
     }
 }
@@ -45,7 +65,7 @@ impl Reading {
     /// shift the song rather than tune up.
     pub fn verdict(&self, no_tune_up: bool) -> String {
         if self.string.is_none() {
-            return format!("{:+.0}¢  ·  not near a string", self.cents);
+            return "not near a string".into();
         }
         if self.semis != 0 {
             let n = self.semis.unsigned_abs();
@@ -164,9 +184,12 @@ mod tests {
 
     #[test]
     fn the_tuner_and_the_header_measure_alike() {
-        // the review's case: Eb3 +3 cents with the song in Eb standard (C#3 is the nearest string, 2 below)
+        // the review's case: Eb3 +3 cents with the song in Eb standard: the low Eb an octave up (P48.1: a harmonic
+        // or an octave reading is its own string), and clicked onto the C#3 string, 2 semitones above that one
         let m = 51.03;
         let r = read(m, &EB);
+        assert_eq!((r.string, r.semis), (Some(0), 0));
+        let r = read_string(m, &EB, 2);
         assert_eq!(r.string, Some(2));
         assert_eq!(r.semis, 2);
         assert!((r.cents - 3.0).abs() < 1e-6, "{}", r.cents); // as the header's "you: Eb3 +3¢"
@@ -219,5 +242,35 @@ mod tests {
         assert_eq!((o.to_pitch, o.then.as_str()), (2, "E Standard"));
         // past the shift's reach
         assert_eq!(offer(&[-1; 6], false, 0, 0), None);
+    }
+
+    #[test]
+    fn a_harmonic_or_an_octave_up_is_its_own_string() {
+        // a bass's E at the 12th fret (E2, 40) was read as its D string (38) two semitones sharp
+        let bass = [28, 33, 38, 43];
+        let r = read(40.1, &bass);
+        assert_eq!((r.string, r.semis), (Some(0), 0));
+        assert!((r.cents - 10.0).abs() < 1e-6);
+        // a guitar's low E heard an octave up (E3, 52) is the low E, not the D string
+        let gtr = [40, 45, 50, 55, 59, 64];
+        assert_eq!(read(52.0, &gtr).string, Some(0));
+        // a string on its own note still wins over an octave match (the high E against the low one)
+        assert_eq!(read(64.0, &gtr).string, Some(5));
+    }
+
+    #[test]
+    fn a_clicked_string_is_read_however_far_off() {
+        // retuning E2 down to C2: four semitones, "not near a string" by itself
+        let to_c = [36, 45, 50, 55, 59, 64];
+        assert_eq!(read(40.0, &to_c).string, None);
+        let r = read_string(40.0, &to_c, 0);
+        assert_eq!((r.string, r.semis), (Some(0), 4));
+        assert_eq!(r.verdict(false), "4 semitones sharp  ·  tune down");
+        // DADGAD's G and A strings: a sharp G is the G's, not the A's, once the G is clicked
+        let dadgad = [38, 45, 50, 55, 57, 62];
+        let r = read_string(56.2, &dadgad, 3);
+        assert_eq!((r.string, r.semis), (Some(3), 1));
+        // nothing near: no number that looks like a string's cents
+        assert_eq!(read(70.0, &[40]).verdict(false), "not near a string");
     }
 }

@@ -63,16 +63,6 @@ const TECH_TAGS: [(Techs, &str); 11] = [
     (Techs::POP, "Pop"),
     (Techs::ACCENT, ">"),
 ];
-pub const TUNINGS: [(&str, Option<[i32; 6]>); 8] = [
-    ("song", None),
-    ("E Standard", Some([0; 6])),
-    ("Eb Standard", Some([-1; 6])),
-    ("D Standard", Some([-2; 6])),
-    ("Drop D", Some([-2, 0, 0, 0, 0, 0])),
-    ("Drop C#", Some([-3, -1, -1, -1, -1, -1])),
-    ("Drop C", Some([-4, -2, -2, -2, -2, -2])),
-    ("Open G", Some([-2, -2, 0, 0, 0, -2])),
-];
 const INLAY_FRETS: [(i32, i32); 10] = [
     (3, 1),
     (5, 1),
@@ -417,12 +407,44 @@ impl PlayerView {
         (qrs_analysis::pitch::note_label(midi as f64), detail, col)
     }
 
-    /// (name, MIDI note of each open string) the tuner tunes to; the song's own tuning by default. On a bass
-    /// (P32.5): a 5-string's low B under a bass part's four, and a guitar part's low four strings an octave down
-    /// (what a bass plays it on); a guitar's are the part's, as before.
+    /// The instrument the tuner listens for and draws strings for (P48.1, owner: it works out guitar or bass by
+    /// itself): the settings' bass (4 or 5 strings) when it's set; else a bass part means a bass in hand (its bass
+    /// detector, not the guitar's: a guitar's reading of a low E1 came out an octave or more off); else a guitar.
+    pub(super) fn tuner_inst(&self) -> qrs_analysis::instrument::Instrument {
+        use qrs_analysis::instrument::Instrument;
+        if self.instrument.is_bass() {
+            self.instrument
+        } else if self.chart.arr.is_bass {
+            Instrument::Bass
+        } else {
+            Instrument::Guitar
+        }
+    }
+
+    /// (name, MIDI note of each open string) the tuner tunes to: the strings set by hand (P48.1) when there are,
+    /// else the song's own tuning as it sounds. On a bass (P32.5): a 5-string's low B under a bass part's four, and a
+    /// guitar part's low four strings an octave down (what a bass plays it on); a guitar's are the part's.
     pub(super) fn tuner_targets(&self) -> (String, Vec<i32>) {
-        let (name, opens) = self.tuner_targets_part();
-        let inst = self.instrument;
+        if let Some(c) = &self.tuner_custom {
+            return (self.custom_tuning_name(c), c.clone());
+        }
+        self.song_tuner_targets()
+    }
+
+    /// The song's strings for the tuner (what the editor starts from and goes back to).
+    pub(super) fn song_tuner_targets(&self) -> (String, Vec<i32>) {
+        let name = if self.mixer.pitch == 0 {
+            format!("{} (this song)", self.chart.arr.tuning_name())
+        } else {
+            // the song is pitch-shifted: tune to what it sounds like
+            format!(
+                "{} (song {})",
+                self.sounding_tuning_name(),
+                super::songaudio::pitch_short(self.mixer.pitch)
+            )
+        };
+        let opens = self.sounding_opens();
+        let inst = self.tuner_inst();
         if !inst.is_bass() {
             return (name, opens);
         }
@@ -434,36 +456,21 @@ impl PlayerView {
         }
     }
 
-    fn tuner_targets_part(&self) -> (String, Vec<i32>) {
-        let (name, offs) = TUNINGS[self.tuning_choice % TUNINGS.len()];
-        match offs {
-            None => (
-                if self.mixer.pitch == 0 {
-                    format!("{} (this song)", self.chart.arr.tuning_name())
-                } else {
-                    // the song is pitch-shifted: tune to what it sounds like
-                    format!(
-                        "{} (song {})",
-                        self.sounding_tuning_name(),
-                        super::songaudio::pitch_short(self.mixer.pitch)
-                    )
-                },
-                self.sounding_opens(),
-            ),
-            Some(o) => {
-                let base = if self.chart.arr.is_bass {
-                    BASS_OPEN_MIDI
-                } else {
-                    GUITAR_OPEN_MIDI
-                };
-                (
-                    name.into(),
-                    (0..self.chart.opens.len())
-                        .map(|i| base[i.min(5)] + o[i.min(5)])
-                        .collect(),
-                )
+    /// A hand-set tuning's name: a known one when it is ("Drop D (yours)"), else "Your tuning".
+    fn custom_tuning_name(&self, c: &[i32]) -> String {
+        let (std, bass): (&[i32], bool) = match c.len() {
+            6 => (&GUITAR_OPEN_MIDI, false),
+            4 => (&BASS_OPEN_MIDI[..4], true),
+            _ => (&[], false),
+        };
+        if !std.is_empty() {
+            let offs: Vec<i32> = c.iter().zip(std).map(|(a, b)| a - b).collect();
+            let n = qrs_formats::model::tuning_name(&offs, bass);
+            if n != "Custom" {
+                return format!("{n} (yours)");
             }
         }
+        "Your tuning".into()
     }
 
     /// C below the part's lowest note to B above its highest (at least two octaves).
@@ -1616,10 +1623,20 @@ impl PlayerView {
         let th = t();
         let ctx = ui.ctx().clone();
         let (pad_x, pad_y) = (px(16.0), px(12.0));
-        let gauge_h = px(100.0);
+        // the face (P48.3): Digital's arc as it was, the others at their own proportions
+        let face = self.tuner_face;
+        let gauge_h = if face == super::tuner_face::Face::Digital {
+            px(100.0)
+        } else {
+            face.height(w - 2.0 * pad_x)
+        };
         // the tuning card (D136): a song in another standard tuning offers to be shifted into E's
         let offer = self.retune_offer();
         let offer_h = if offer.is_some() { px(116.0) } else { 0.0 };
+        // the string editor (P48.1): a row of up keys over the strings and down keys under them
+        let edit = self.tuner_edit;
+        let arrow_h = px(20.0);
+        let edit_h = if edit { 2.0 * (arrow_h + px(3.0)) } else { 0.0 };
         let card = Rect::from_min_size(
             pos2(x, y),
             vec2(
@@ -1628,6 +1645,7 @@ impl PlayerView {
                     + px(18.0)
                     + px(10.0)
                     + px(28.0)
+                    + edit_h
                     + px(6.0)
                     + gauge_h
                     + px(4.0)
@@ -1639,51 +1657,134 @@ impl PlayerView {
         self.tile_card(&p, card, lifting);
         let (lx, tw) = (card.min.x + pad_x, card.width() - 2.0 * pad_x);
         let (name, targets) = self.tuner_targets();
+        if self.tuner_lock.is_some_and(|i| i >= targets.len()) {
+            self.tuner_lock = None;
+        }
         let hy = card.min.y + pad_y + px(9.0);
         let tt = caps(&p, "TUNER", pos2(lx, hy), 12.0, Align2::LEFT_CENTER, None);
-        // the tuning's name and an arrow after it: their box, grown by int(12 s), takes the click
-        let ic_c = on_px(pos2(card.max.x - px(CLOSE_SLOT + 6.0), hy));
-        let isz = pxr(14.0).max(pixels(6.0));
-        let ic = Rect::from_min_size(ic_c - Vec2::splat(half(isz)), Vec2::splat(isz));
-        let name_st = Style::new(13.0, 700, th.text);
-        let name_w = ic.min.x - tt.max.x - px(18.0);
-        let lw = text::width(&ctx, &text::fit(&ctx, &name, name_st, name_w), name_st);
-        let lh = text::line_height(&ctx, name_st);
-        let lr = Rect::from_min_size(
-            pos2(whole(ic.min.x - px(2.0)) - lw, whole(hy) - half(lh)),
-            vec2(lw, lh),
-        );
-        let grow = px(12.0);
-        let u = lr.union(ic);
-        let pick = Rect::from_min_max(
-            u.min - Vec2::splat(half(grow)),
-            u.max + Vec2::splat(grow - half(grow)),
-        );
-        let resp = interact(ui, pick, "tuner-tuning", Sense::click());
-        let hot = resp.hovered();
-        if hot {
+        // the faces as dots after the caption (P48.3, owner): the lit one is showing; a dot picks its face, the caption
+        // steps to the next
+        let tresp = interact(ui, tt.expand(px(4.0)), "tuner-caption", Sense::click());
+        if tresp.hovered() {
             ctx.set_cursor_icon(CursorIcon::PointingHand);
+            self.tip = Some((
+                format!("Tuner face: {} (click for the next)", face.label()),
+                String::new(),
+                pos2(tt.center().x, tt.min.y - px(6.0)),
+                Align2::CENTER_BOTTOM,
+            ));
         }
-        if resp.clicked() {
-            self.tuning_choice = (self.tuning_choice + 1) % TUNINGS.len();
-            let n = self.tuner_targets().0;
-            self.say(format!("Tuner: {n}"), "");
+        if tresp.clicked() {
+            self.acts.push(format!("tuner_face:{}", face.next().key()));
         }
-        icons::icon(&p, Icon::Right, ic_c, 14.0, if hot { th.text } else { th.text_2 });
+        let mut dx = tt.max.x + px(10.0);
+        for f in super::tuner_face::Face::ALL {
+            let c = pos2(dx + px(3.5), hy);
+            let hit = Rect::from_center_size(c, Vec2::splat(px(11.0)));
+            let dresp = interact(ui, hit, ("tuner-face", f.key()), Sense::click());
+            let on = f == face;
+            let r = if dresp.hovered() { px(4.0) } else { px(3.2) };
+            if on {
+                p.circle_filled(c, r, th.accent);
+            } else {
+                p.circle_filled(c, r, if dresp.hovered() { th.caption } else { th.tick });
+            }
+            if dresp.hovered() {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+                self.tip = Some((
+                    f.label().into(),
+                    String::new(),
+                    pos2(c.x, hit.min.y - px(4.0)),
+                    Align2::CENTER_BOTTOM,
+                ));
+            }
+            if dresp.clicked() && !on {
+                self.acts.push(format!("tuner_face:{}", f.key()));
+            }
+            dx += px(11.0);
+        }
+        let tt = Rect::from_min_max(tt.min, pos2(dx, tt.max.y));
+        // the tuning's name (the song's, P48.1: no list of tunings), then a key that opens the string editor (a tick
+        // while it's open) and, for strings set by hand, one that goes back to the song's
+        let key = px(24.0);
+        let ek = Rect::from_center_size(on_px(pos2(card.max.x - pad_x - half(key), hy)), Vec2::splat(key));
+        let eresp = interact(ui, ek, "tuner-edit", Sense::click());
+        if eresp.hovered() {
+            ctx.set_cursor_icon(CursorIcon::PointingHand);
+            self.tip = Some((
+                if edit {
+                    "Done"
+                } else {
+                    "Set each string to any note"
+                }
+                .into(),
+                String::new(),
+                pos2(ek.center().x, ek.min.y - px(6.0)),
+                Align2::CENTER_BOTTOM,
+            ));
+        }
+        if edit {
+            paint::inset(&p, ek, Some(8.0), 2.0, Fill::Base);
+        } else {
+            paint::raised(&p, ek, Some(8.0), 2.0, Fill::Base, 0.0);
+        }
+        let ek_col = if edit {
+            th.accent_ink
+        } else if eresp.hovered() {
+            th.text
+        } else {
+            th.text_2
+        };
+        icons::icon(
+            &p,
+            if edit { Icon::Check } else { Icon::Sliders },
+            ek.center(),
+            12.0,
+            ek_col,
+        );
+        if eresp.clicked() {
+            self.tuner_edit = !edit;
+        }
+        let mut name_right = ek.min.x - px(8.0);
+        if self.tuner_custom.is_some() {
+            let rk = Rect::from_center_size(pos2(ek.min.x - px(6.0) - half(key), hy), Vec2::splat(key));
+            let rresp = interact(ui, rk, "tuner-reset", Sense::click());
+            paint::raised(&p, rk, Some(8.0), 2.0, Fill::Base, 0.0);
+            let rk_col = if rresp.hovered() { th.text } else { th.text_2 };
+            icons::icon(&p, Icon::Restart, rk.center(), 12.0, rk_col);
+            if rresp.hovered() {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+                self.tip = Some((
+                    "Back to the song's tuning".into(),
+                    String::new(),
+                    pos2(rk.center().x, rk.min.y - px(6.0)),
+                    Align2::CENTER_BOTTOM,
+                ));
+            }
+            if rresp.clicked() {
+                self.tuner_custom = None;
+                let n = self.tuner_targets().0;
+                self.say(format!("Tuner: {n}"), "");
+            }
+            name_right = rk.min.x - px(8.0);
+        }
         txt(
             &p,
             &name,
-            pos2(ic.min.x - px(2.0), hy),
+            pos2(name_right, hy),
             13.0,
-            if hot { th.text } else { th.text_2 },
+            th.text_2,
             700,
             Align2::RIGHT_CENTER,
-            Some(name_w),
+            Some(name_right - tt.max.x - px(12.0)),
         );
         let m = self.tuner_midi;
         // (P37.6b, D136: measured as the header's readout, cents to the nearest note; a string more than half a
-        // semitone off says so in semitones, where it read "+203¢")
-        let reading = m.map(|m| super::tuning::read(m, &targets));
+        // semitone off says so in semitones, where it read "+203¢"; P48.1: a string clicked is tuned to, however far)
+        let reading = m.map(|m| match self.tuner_lock {
+            Some(i) => super::tuning::read_string(m, &targets, i),
+            None => super::tuning::read(m, &targets),
+        });
         let near = reading.as_ref().and_then(|r| r.string);
         if let Some(o) = &offer {
             let r = Rect::from_min_max(
@@ -1695,17 +1796,23 @@ impl PlayerView {
         let n = targets.len() as f32;
         let gap = px(6.0);
         let cw = (tw - gap * (n - 1.0)) / n.max(1.0);
-        let cy0 = card.min.y + pad_y + px(18.0) + px(10.0);
+        let row0 = card.min.y + pad_y + px(18.0) + px(10.0);
+        let cy0 = if edit { row0 + arrow_h + px(3.0) } else { row0 };
+        let mut step: Option<(usize, i32)> = None;
         for (i, tg) in targets.iter().enumerate() {
             let r = Rect::from_min_size(
                 pos2(whole(lx + i as f32 * (cw + gap)), cy0),
                 vec2(whole(cw), px(28.0)),
             );
             let on = near == Some(i);
-            if on {
+            let locked = self.tuner_lock == Some(i);
+            if on || locked {
                 paint::inset(&p, r, Some(9.0), 2.0, Fill::Base);
             } else {
                 paint::raised(&p, r, Some(9.0), 3.0, Fill::Base, 0.0);
+            }
+            if locked {
+                paint::ring(&p, r, Some(9.0), 1.5, th.accent, true);
             }
             let tcol = if on {
                 th.accent_ink
@@ -1724,11 +1831,71 @@ impl PlayerView {
                 Align2::CENTER_CENTER,
                 None,
             );
+            // a click on a string tunes to it alone (again: back to finding the string by itself)
+            let kresp = interact(ui, r, ("tuner-string", i), Sense::click());
+            if kresp.hovered() {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+                self.tip = Some((
+                    if locked {
+                        "Back to finding the string by itself".to_string()
+                    } else {
+                        format!(
+                            "Tune this string ({})",
+                            qrs_analysis::pitch::note_label(*tg as f64)
+                        )
+                    },
+                    String::new(),
+                    pos2(r.center().x, r.max.y + px(6.0) + if edit { arrow_h } else { 0.0 }),
+                    Align2::CENTER_TOP,
+                ));
+            }
+            if kresp.clicked() {
+                self.tuner_lock = if locked { None } else { Some(i) };
+            }
+            if !edit {
+                continue;
+            }
+            for (dir, ay, icon) in [(1, row0, Icon::Up), (-1, cy0 + px(28.0) + px(3.0), Icon::Down)] {
+                let ar = Rect::from_min_size(pos2(r.min.x, ay), vec2(r.width(), arrow_h));
+                let aresp = interact(ui, ar, ("tuner-step", i, dir), Sense::click());
+                paint::pill(&p, ar, if aresp.hovered() { th.caption } else { th.tick });
+                icons::icon(&p, icon, ar.center(), 10.0, th.base);
+                if aresp.hovered() {
+                    ctx.set_cursor_icon(CursorIcon::PointingHand);
+                }
+                if aresp.clicked() {
+                    step = Some((i, dir));
+                }
+            }
         }
-        let gauge = Rect::from_min_size(pos2(lx, cy0 + px(28.0) + px(6.0)), vec2(tw, gauge_h));
+        if let Some((i, d)) = step {
+            let mut t = targets.clone();
+            // (from a low A under a 5-string's B to an octave over a guitar's high E)
+            t[i] = (t[i] + d).clamp(21, 76);
+            let song = self.song_tuner_targets().1;
+            let label = qrs_analysis::pitch::note_label(t[i] as f64);
+            self.tuner_custom = if t == song { None } else { Some(t) };
+            self.say(format!("Tuner: string {} to {label}", targets.len() - i), "");
+        }
+        let below = if edit {
+            cy0 + px(28.0) + px(3.0) + arrow_h
+        } else {
+            cy0 + px(28.0)
+        };
+        let gauge = Rect::from_min_size(pos2(lx, below + px(6.0)), vec2(tw, gauge_h));
         let base = gauge.max.y + px(4.0) + px(24.0); // the bottom row's baseline
         let (Some(m), Some(reading)) = (m, reading) else {
-            knobs::arc_gauge(&p, gauge, None, th.text_2);
+            if face == super::tuner_face::Face::Digital {
+                knobs::arc_gauge(&p, gauge, None, th.text_2);
+            } else {
+                let rd = super::tuner_face::Reading {
+                    cents: None,
+                    in_tune: false,
+                    heard: None,
+                    semis: 0,
+                };
+                super::tuner_face::draw(&p, gauge, face, &mut self.tuner_anim, &rd);
+            }
             self.text_base(
                 &p,
                 "play an open string",
@@ -1743,29 +1910,32 @@ impl PlayerView {
             return card.max.y;
         };
         let cents = reading.needle();
-        let col = if reading.semis == 0 && cents.abs() <= 5.0 {
+        // (green only on a string: "+3¢ · not near a string" was green, the guitarist's review)
+        let col = if reading.string.is_some() && reading.semis == 0 && cents.abs() <= 5.0 {
             th.hit
         } else {
             th.late
         };
-        knobs::arc_gauge(&p, gauge, Some(cents as f32), col);
-        self.text_base(
-            &p,
-            &qrs_analysis::pitch::note_label(m),
-            lx,
-            base,
-            26.0,
-            th.text,
-            800,
-            Align2::LEFT_TOP,
-            None,
-        );
+        let heard = qrs_analysis::pitch::note_label(m);
+        if face == super::tuner_face::Face::Digital {
+            knobs::arc_gauge(&p, gauge, Some(cents as f32), col);
+        } else {
+            let rd = super::tuner_face::Reading {
+                cents: Some(cents as f32),
+                in_tune: reading.string.is_some() && reading.semis == 0 && cents.abs() <= 5.0,
+                heard: Some(&heard),
+                semis: reading.semis,
+            };
+            super::tuner_face::draw(&p, gauge, face, &mut self.tuner_anim, &rd);
+        }
+        // (the pedal and the lamps show the note themselves)
+        let label_w = if face.shows_note() {
+            0.0
+        } else {
+            self.text_base(&p, &heard, lx, base, 26.0, th.text, 800, Align2::LEFT_TOP, None);
+            text::width(&ctx, &heard, Style::new(26.0, 800, th.text))
+        };
         let no_tune_up = offer.as_ref().is_some_and(|o| o.k > 0);
-        let label_w = text::width(
-            &ctx,
-            &qrs_analysis::pitch::note_label(m),
-            Style::new(26.0, 800, th.text),
-        );
         self.text_base(
             &p,
             &reading.verdict(no_tune_up),
@@ -1782,7 +1952,7 @@ impl PlayerView {
 
     /// The tuning card's offer for the song as it sounds now (the tuner on "this song"'s tuning, not hidden).
     fn retune_offer(&self) -> Option<super::tuning::Offer> {
-        if self.retune_hidden || TUNINGS[self.tuning_choice % TUNINGS.len()].1.is_some() {
+        if self.retune_hidden || self.tuner_custom.is_some() {
             return None;
         }
         super::tuning::offer(
@@ -1849,6 +2019,106 @@ impl PlayerView {
         .clicked()
         {
             self.acts.push(format!("pitch_to:{}", o.to_pitch));
+        }
+    }
+
+    /// The score tile over the RS Highway's full screen (P47.1, owner request): at the top right under the highway's
+    /// toolbar, the console's own tile; its fold pill (as in the console, on hover) folds it to a slim strip with the
+    /// score and accuracy, a click on the strip opens it. Shown or folded is kept apart from the console's tile
+    /// (config `hw_full_score`).
+    pub(super) fn draw_hw_score(&mut self, ui: &Ui, st: &mut AppState, well: Rect) {
+        let th = t();
+        let ctx = ui.ctx().clone();
+        let p = ui.painter().clone();
+        let open = st.config.bool("hw_full_score", true);
+        let w = px(360.0).min(well.width() * 0.45);
+        // (the toolbar plate: 12 below the well's top, a 26 key in 5 of padding)
+        let (x, y) = (well.max.x - px(16.0) - w, well.min.y + px(12.0 + 36.0 + 10.0));
+        let mouse = ctx.input(|i| i.pointer.hover_pos());
+        if !open {
+            self.hw_score_rect = Rect::NOTHING;
+            let card = Rect::from_min_size(pos2(x, y), vec2(w, px(STRIP_H)));
+            let resp = interact(ui, card, "hw-score-strip", Sense::click());
+            self.tile_card(&p, card, false);
+            let cy = card.center().y;
+            caps(
+                &p,
+                "SCORE",
+                pos2(card.min.x + px(18.0), cy),
+                11.0,
+                Align2::LEFT_CENTER,
+                None,
+            );
+            let c = self.scorer.counts();
+            let figures = if !self.has_input() {
+                "no input".to_string()
+            } else if c.judged() > 0 {
+                format!(
+                    "{}  ·  {}%",
+                    crate::home::group_digits(self.scorer.score() as usize),
+                    (self.scorer.accuracy() * 100.0).round_ties_even() as i64
+                )
+            } else {
+                "–".to_string()
+            };
+            txt(
+                &p,
+                &figures,
+                pos2(card.min.x + px(86.0), cy),
+                13.0,
+                th.text,
+                700,
+                Align2::LEFT_CENTER,
+                Some(w - px(140.0)),
+            );
+            icons::icon(
+                &p,
+                Icon::Down,
+                pos2(card.max.x - px(24.0), cy),
+                12.0,
+                if resp.hovered() { th.text } else { th.caption },
+            );
+            if resp.hovered() {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+                self.tip = Some((
+                    "Open the score".into(),
+                    String::new(),
+                    pos2(card.center().x, card.max.y + px(6.0)),
+                    Align2::CENTER_TOP,
+                ));
+            }
+            if resp.clicked() {
+                st.config.set("hw_full_score", true);
+            }
+            return;
+        }
+        // the tile's area takes the pointer, so a click on it doesn't reach the highway
+        let last = self.hw_score_rect;
+        let _ = interact(ui, last, "hw-score-card", Sense::click());
+        let bottom = self.draw_score_tile(ui, st, x, y, w, false);
+        let card = Rect::from_min_max(pos2(x, y), pos2(x + w, bottom));
+        self.hw_score_rect = card;
+        if !mouse.is_some_and(|m| card.contains(m)) {
+            return;
+        }
+        let fold = Rect::from_center_size(
+            pos2(card.center().x, card.min.y + px(8.0)),
+            vec2(px(26.0), px(13.0)),
+        );
+        let fresp = interact(ui, fold, "hw-score-fold", Sense::click());
+        paint::pill(&p, fold, if fresp.hovered() { th.caption } else { th.tick });
+        icons::icon(&p, Icon::Up, fold.center(), 9.0, th.base);
+        if fresp.hovered() {
+            ctx.set_cursor_icon(CursorIcon::PointingHand);
+            self.tip = Some((
+                "Fold the score away".into(),
+                String::new(),
+                pos2(fold.center().x, fold.max.y + px(6.0)),
+                Align2::CENTER_TOP,
+            ));
+        }
+        if fresp.clicked() {
+            st.config.set("hw_full_score", false);
         }
     }
 

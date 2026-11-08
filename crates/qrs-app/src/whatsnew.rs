@@ -22,14 +22,14 @@ pub const BEFORE_KEY: &str = "0.4.0";
 /// How many starts the card shows on.
 pub const STARTS: u64 = 2;
 
-/// What's new since 0.4.0, a line each (the card lists them).
+/// What's new in this version, a line each (the card lists them after an update).
 pub const WHATS_NEW: [&str; 6] = [
-    "A new first-time setup, with a timing tool that measures your delay",
-    "Bass mode: bass parts, bass amps and a bass tuner",
-    "The amp room: every amp, pedal and cab on one screen, with a catalogue",
-    "Neural Amp Modeler captures through your own TONE3000 account (Settings › Neural Amp Modeler)",
-    "A difficulty for every part, and easy songs to start with on Home",
-    "Practice that works together: loops, count-in, review and takes",
+    "Sight reading: standard notation above the tab or instead of it (the staff key, or S)",
+    "Five tuner faces: rack lamps, needle meter, strobe, pedal and digital (the dots beside TUNER)",
+    "The tuner opens on the song's tuning, sets any string to any note and knows a bass from a guitar",
+    "The highway shows accents, hammer-ons and pull-offs on open strings, and bends in chords",
+    "RS Highway full screen fills the window, with your score at the top right",
+    "Highway fixes: rounded corners, and no stray line through incoming notes",
 ];
 
 /// Run once at start (before the first-time setup is checked): records this version as the last run and says

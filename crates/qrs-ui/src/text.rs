@@ -20,6 +20,13 @@ const MEDIUM: &[u8] = include_bytes!("../../../assets/fonts/Manrope-Medium.ttf")
 const SEMIBOLD: &[u8] = include_bytes!("../../../assets/fonts/Manrope-SemiBold.ttf");
 const BOLD: &[u8] = include_bytes!("../../../assets/fonts/Manrope-Bold.ttf");
 const EXTRABOLD: &[u8] = include_bytes!("../../../assets/fonts/Manrope-ExtraBold.ttf");
+/// Bravura (Steinberg, SIL OFL 1.1, assets/fonts/Bravura-OFL.txt): the SMuFL music symbols for the staff (D181).
+const BRAVURA: &[u8] = include_bytes!("../../../assets/fonts/Bravura.otf");
+
+/// The music font (SMuFL code points; its em is four staff spaces), at `size` points.
+pub fn music(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("music".into()))
+}
 
 /// Install Manrope as egui's fonts (call once at start). The proportional family is Manrope Medium.
 pub fn install(ctx: &egui::Context) {
@@ -42,6 +49,10 @@ pub fn install(ctx: &egui::Context) {
     if let Some(p) = defs.families.get_mut(&FontFamily::Proportional) {
         p.insert(0, "manrope-500".into());
     }
+    defs.font_data
+        .insert("bravura".into(), Arc::new(FontData::from_static(BRAVURA)));
+    defs.families
+        .insert(FontFamily::Name("music".into()), vec!["bravura".into()]);
     let fonts_dir =
         std::path::PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()))
             .join("Fonts");

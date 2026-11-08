@@ -351,7 +351,7 @@ fn cmd_info(keys: &Keys, file: &Path, files: bool) -> anyhow::Result<()> {
             a.key,
             a.name,
             tmp.tuning_name(),
-            tmp.string_names().join(" "),
+            tmp.string_labels().join(" "),
             a.chart.describe()
         );
     }
