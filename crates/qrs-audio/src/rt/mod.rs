@@ -14,6 +14,7 @@ pub mod input;
 pub mod jam;
 pub mod onset;
 pub mod output;
+mod pitch;
 pub mod record;
 pub mod rewind;
 pub mod ring;
@@ -315,7 +316,7 @@ pub enum InCmd {
     /// The input is a bass: its own pluck detector (D176).
     OnsetBass(bool),
     /// Transpose the monitored guitar, in semitones (-12..=12).
-    InputTranspose(f32, Option<input::MonitorPitchShifter>),
+    InputTranspose(Option<input::MonitorPitchShifter>),
     /// Hand the guitar (dry and toned) to the output even with monitoring off (for the looper and Rewind).
     Feed(bool),
 }

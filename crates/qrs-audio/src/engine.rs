@@ -732,7 +732,7 @@ impl Engine {
 
     /// Shift the live guitar monitor without changing captured/scoring samples.
     pub fn set_input_transpose(&self, semitones: f32) {
-        let mut semitones = if semitones.is_finite() {
+        let semitones = if semitones.is_finite() {
             semitones.clamp(
                 -(crate::stretch::MAX_SEMITONES as f32),
                 crate::stretch::MAX_SEMITONES as f32,
@@ -752,10 +752,9 @@ impl Engine {
         };
         if rate.is_some() && semitones != 0.0 && shifter.is_none() {
             log::warn!("could not create the live monitor pitch shifter; leaving input unshifted");
-            semitones = 0.0;
             self.inner.ctl.lock().persist.input_transpose = 0.0;
         }
-        self.inp(InCmd::InputTranspose(semitones, shifter));
+        self.inp(InCmd::InputTranspose(shifter));
     }
 
     /// Minimum pluck energy (raise for a microphone in a noisy room).
