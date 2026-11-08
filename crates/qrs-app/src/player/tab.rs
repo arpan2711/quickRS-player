@@ -28,6 +28,9 @@ use qrs_ui::widgets::{self, ButtonStyle, RoundKind, interact};
 
 use super::{Chart, Glyph};
 
+mod staff;
+pub use staff::Score;
+
 /// How far the loop's bars are tinted towards the accent, and the Ctrl-drag selection.
 pub const LOOP_WASH: f32 = 0.08;
 pub const SEL_WASH: f32 = 0.08;
@@ -494,6 +497,8 @@ pub struct TabCtx<'a> {
     pub held: Option<(usize, f32, f32)>,
     /// Chord names as numbers in this key (the toolbar's chord-names key); None: as charted.
     pub numerals: Option<qrs_analysis::keyguess::Key>,
+    /// Tab, standard notation, or both (P44.1).
+    pub score: Score,
 }
 
 pub struct TabView {
@@ -550,6 +555,12 @@ pub struct TabView {
     fret_size: f32,
     chip_h: f64,
     chip_pad: f64,
+    /// The staff (P44.1): its band's height above the tab (0: tab only), the room above its top line, its staff
+    /// space, and the clef and key signature's width (pixels).
+    stave_h: f64,
+    stave_above: f64,
+    sp: f64,
+    clef_w: f64,
 }
 
 impl Default for TabView {
@@ -593,6 +604,10 @@ impl Default for TabView {
             fret_size: 15.0,
             chip_h: 22.0,
             chip_pad: 10.0,
+            stave_h: 0.0,
+            stave_above: 0.0,
+            sp: 9.0,
+            clef_w: 0.0,
         }
     }
 }
@@ -737,7 +752,7 @@ impl TabView {
             content.w.to_bits(),
             s.to_bits(),
             self.zoom.to_bits(),
-            (c.notation as u32) | (c.snap as u32) << 1 | (self.compact as u32) << 2,
+            (c.notation as u32) | (c.snap as u32) << 1 | (self.compact as u32) << 2 | (c.score as u32) << 3,
             chart.rhythm_id,
             (self.width_k.to_bits(), self.height_k.to_bits()),
         );
@@ -749,22 +764,27 @@ impl TabView {
         // the bars' width and the strings' spacing can each be stretched on top of the zoom
         let wzoom = zoom * self.width_k as f64;
         let hk = self.height_k as f64 * if self.compact { 0.8 } else { 1.0 };
-        self.names_x = content.x + ipx(12.0); // string names, centred in the margin
-        self.left = content.x + ipx(40.0);
-        self.row_w = content.right() - self.left - ipx(6.0);
         self.line_gap = (22.0 * s * zoom.clamp(0.8, 1.3) * hk).trunc();
         self.staff_h = self.line_gap * (chart.n_strings.max(1) - 1) as f64;
+        // the staff (P44.1): its band above the tab, and the clef and key signature left of the first bar
+        self.staff_layout(c);
+        if !c.score.tab() {
+            self.staff_h = 0.0;
+        }
+        self.left = content.x + ipx(40.0) + self.clef_w;
+        self.names_x = self.left - ipx(28.0); // string names, centred in the margin
+        self.row_w = content.right() - self.left - ipx(6.0);
         // above the staff, top down: section labels, chord names, then a line of its own for the bar numbers
         // (compact: the section labels share the chord names' line, and the margins are tighter)
         self.top_m = ipx(if self.compact { 46.0 } else { 72.0 });
         self.band_m = ipx(if self.compact { 26.0 } else { 30.0 });
-        let lane_h = if c.notation && chart.rhythm.is_some() {
+        let lane_h = if c.notation && chart.rhythm.is_some() && c.score.tab() {
             ipx(if self.compact { 40.0 } else { 46.0 })
         } else {
             0.0
         };
         let bot_m = ipx(if self.compact { 18.0 } else { 26.0 }) + lane_h;
-        self.row_h = self.top_m + self.staff_h + bot_m;
+        self.row_h = self.top_m + self.stave_h + self.staff_h + bot_m;
         self.pad = ipx(12.0);
         // the fret numbers (on chips) shrink a little when zoomed out, with the strings (never below 80%)
         self.note_k = zoom.clamp(0.8, 1.0);
@@ -907,8 +927,8 @@ impl TabView {
     pub fn screen_at(&self, time: f64) -> Option<(f32, f32, f32)> {
         let m = self.measure_at(time)?;
         let x = self.x_of(time, Some(m));
-        let y0 = self.top + self.row_top(m.row) - self.scroll_px + self.top_m;
-        let (top, bottom) = (y0 - self.band_m, y0 + self.staff_h);
+        let y0 = self.top + self.row_top(m.row) - self.scroll_px + self.top_m + self.stave_h;
+        let (top, bottom) = (y0 - self.stave_h - self.band_m, y0 + self.staff_h);
         if bottom < self.region.y || top > self.region.bottom() {
             return None;
         }
@@ -920,7 +940,7 @@ impl TabView {
     pub fn note_pos(&self, time: f64, string: i32, n_strings: usize) -> Option<Pos2> {
         let m = self.measure_at(time)?;
         let x = self.x_of(time, Some(m));
-        let y0 = self.top + self.row_top(m.row) - self.scroll_px + self.top_m;
+        let y0 = self.top + self.row_top(m.row) - self.scroll_px + self.top_m + self.stave_h;
         let n = n_strings.max(1) as i32;
         let y = y0 + (n - 1 - string.clamp(0, n - 1)) as f64 * self.line_gap;
         if y < self.region.y || y > self.region.bottom() {
@@ -937,8 +957,8 @@ impl TabView {
             .iter()
             .filter(|m| m.start >= t0 - 0.01 && m.start < t1 - 0.01)
         {
-            let y0 = self.top + self.row_top(m.row) - self.scroll_px + self.top_m;
-            let (top, bottom) = (y0 - self.band_m, y0 + self.staff_h);
+            let y0 = self.top + self.row_top(m.row) - self.scroll_px + self.top_m + self.stave_h;
+            let (top, bottom) = (y0 - self.stave_h - self.band_m, y0 + self.staff_h);
             if bottom < self.region.y || top > self.region.bottom() {
                 continue;
             }
@@ -1345,11 +1365,11 @@ impl TabView {
         for r in first..=last {
             let row = &self.rows[r];
             let top = self.top + self.row_top(r) - scroll;
-            let y0 = top + self.top_m; // the highest string
+            let y0 = top + self.top_m + self.stave_h; // the highest string (the staff above it, P44.1)
             let last_m = &self.measures[*row.last().unwrap()];
             let x1 = last_m.x + last_m.w;
             // the current bar's band: from its number to just below the bottom string
-            let band_top = y0 - self.band_m;
+            let band_top = y0 - self.stave_h - self.band_m;
             let band_h = y0 + self.staff_h + (gap * 0.45).max(self.chip_h / 2.0 + 2.0 * s) - band_top;
             let ys = |st: i32| y0 + (n_strings - 1 - st) as f64 * gap;
             for &mi in row {
@@ -1432,8 +1452,11 @@ impl TabView {
                     paint::ring(&pc, bx.rect(), Some(14.0), 2.0, th.accent, false);
                 }
             }
+            if c.score.staff() {
+                self.draw_staff(&pc, c, y0 - self.stave_h, row, r == 0);
+            }
             // strings and their names
-            for st in 0..n_strings {
+            for st in 0..n_strings * c.score.tab() as i32 {
                 let y = ys(st);
                 pg(&pc, th.line, |px| px.line((self.left, y), (x1, y), lw));
                 let name = chart.string_names.get(st as usize).copied().unwrap_or("?");
@@ -1451,20 +1474,24 @@ impl TabView {
             let mut bars = Pix::default();
             for &mi in row {
                 let m = &self.measures[mi];
-                bars.line((int_(m.x), y0), (int_(m.x), y0 + self.staff_h), lw);
+                if c.score.tab() {
+                    bars.line((int_(m.x), y0), (int_(m.x), y0 + self.staff_h), lw);
+                }
                 if m.number > 0 {
                     put(
                         &pc,
                         &m.number.to_string(),
                         m.x + ipx(6.0),
-                        y0 - ipx(if self.compact { 11.0 } else { 14.0 }),
+                        y0 - self.stave_h - ipx(if self.compact { 11.0 } else { 14.0 }),
                         Align2::LEFT_BOTTOM,
                         Style::new(12.0, 700, th.caption),
                         None,
                     );
                 }
             }
-            bars.line((int_(x1), y0), (int_(x1), y0 + self.staff_h), lw);
+            if c.score.tab() {
+                bars.line((int_(x1), y0), (int_(x1), y0 + self.staff_h), lw);
+            }
             bars.draw(&pc, th.bar_line);
             let (r_start, r_end) = (self.measures[row[0]].start, last_m.end);
             let mut pills: Vec<PRect> = Vec::new();
@@ -1541,6 +1568,17 @@ impl TabView {
                     last_right = cx + half;
                 }
             }
+            // the cursors' span: the staff's lines (P44.1) and the tab's strings
+            let cur_top = if c.score.staff() {
+                y0 - self.stave_h + self.stave_above - 1.5 * self.sp
+            } else {
+                y0 - gap * 0.64
+            };
+            let cur_bot = if c.score.tab() {
+                y0 + self.staff_h + gap * 0.46
+            } else {
+                y0 - self.stave_h + self.stave_above + 5.5 * self.sp
+            };
             // the cursor, under the notes so their knock-outs mask it instead of it slicing through digits
             if cur.row == r {
                 // a glowing line with a small marker on top
@@ -1548,9 +1586,9 @@ impl TabView {
                 let cw = ipx(3.0).max(2.0);
                 let bar = PRect {
                     x: cx - (cw / 2.0).floor(),
-                    y: int_(y0 - gap * 0.64),
+                    y: int_(cur_top),
                     w: cw,
-                    h: int_(self.staff_h + gap * 1.1),
+                    h: int_(cur_bot - cur_top),
                 };
                 paint::glow(&pc, bar.rect(), th.accent, 6.0, None, None);
                 let mk = 6.0 * s;
@@ -1571,16 +1609,20 @@ impl TabView {
                 let sx = int_(self.x_of(stt, None));
                 let bar = PRect {
                     x: sx - lw,
-                    y: int_(y0 - gap * 0.64),
+                    y: int_(cur_top),
                     w: ipx(2.0).max(2.0),
-                    h: int_(self.staff_h + gap * 1.1),
+                    h: int_(cur_bot - cur_top),
                 };
                 pg(&pc, th.text, |px| px.rect(bar, lw));
             }
             // notes: fret numbers on knock-outs of the screen's colour; the ones being played now lit
             let (g0, g1) = (
                 lower_bound(&chart.gtimes, r_start),
-                lower_bound(&chart.gtimes, r_end),
+                if c.score.tab() {
+                    lower_bound(&chart.gtimes, r_end)
+                } else {
+                    0 // standard notation alone: no fret numbers
+                },
             );
             let mut pm_runs: Vec<f64> = Vec::new();
             // each string's note before: (time, its chip's right edge)
@@ -1742,7 +1784,7 @@ impl TabView {
                     }
                 }
             }
-            if c.notation && c.ear.is_none() {
+            if c.notation && c.ear.is_none() && c.score.tab() {
                 self.draw_rhythm(&pc, c, y0 + self.staff_h + ipx(10.0), r_start, r_end);
             }
         }
@@ -2294,6 +2336,7 @@ mod tests {
                     ear: None,
                     held: None,
                     numerals: None,
+                    score: Score::Tab,
                 };
                 let well = Rect::from_min_size(egui::pos2(28.0, 143.0), egui::vec2(960.0, 400.0));
                 let groove = Rect::from_min_size(egui::pos2(1002.0, 143.0), egui::vec2(10.0, 400.0));
@@ -2358,6 +2401,7 @@ mod tests {
                     ear: None,
                     held: None,
                     numerals: None,
+                    score: Score::Tab,
                 };
                 tv.layout(ctx, &c, content);
                 (tv.row_h, tv.line_gap, tv.rows.len(), tv.chip_h)

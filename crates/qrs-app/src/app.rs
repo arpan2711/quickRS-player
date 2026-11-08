@@ -155,6 +155,8 @@ pub struct QuickRs {
     pub screen: Screen,
     gallery: gallery::Gallery,
     shots: Option<shots::Shots>,
+    /// drive mode (QUICKRS_DRIVE): scripted input, D180
+    driver: Option<crate::drive::Driver>,
     pub state: AppState,
     pub lib: LibView,
     pub home: HomeView,
@@ -212,7 +214,8 @@ impl QuickRs {
         });
         // screenshots never open a sound device (D13: nothing audible at night, and nothing of the owner's moves):
         // their guitar is the stand-in on the no-device backend
-        let mode = if shots.is_some() {
+        // (nor does drive mode, D180: a test copy beside the owner's quickRS mustn't take the owner's interface)
+        let mode = if shots.is_some() || crate::drive::on() {
             AudioMode::Shots
         } else if args.silent {
             AudioMode::Silent
@@ -244,6 +247,7 @@ impl QuickRs {
             },
             gallery: gallery::Gallery::default(),
             shots,
+            driver: crate::drive::Driver::new(),
             state,
             lib: LibView::default(),
             home: HomeView::default(),
@@ -925,15 +929,19 @@ impl QuickRs {
                 ("tiles", serde_json::json!([["board", false]])),
             ],
             shots::Page::PlayerAt("neck") => vec![("note_view", "guitar".into())],
-            shots::Page::PlayerAt("tuner_lyrics") => vec![(
-                "tiles",
-                serde_json::json!([
-                    ["tuner", true],
-                    ["score", true],
-                    ["lyrics", true],
-                    ["note", false]
-                ]),
-            )],
+            shots::Page::PlayerAt(w)
+                if w == "tuner_lyrics" || w == "tuner_edit" || w.starts_with("tuner_face_") =>
+            {
+                vec![(
+                    "tiles",
+                    serde_json::json!([
+                        ["tuner", true],
+                        ["score", true],
+                        ["lyrics", true],
+                        ["note", false]
+                    ]),
+                )]
+            }
 
             // (the Python app's player shots: its tiles, the pedalboard's off)
             p if p.is_player() => vec![("tiles", serde_json::json!([["board", false]]))],
@@ -1278,6 +1286,9 @@ impl eframe::App for QuickRs {
     /// Screenshot mode: the real mouse and keyboard don't reach the app (a shot shows only what it stages, like the
     /// Python tool's off-screen window); the shots of something under the pointer get a pointer there.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(d) = &mut self.driver {
+            d.input(ctx, raw_input);
+        }
         // the window's scale set before the frame starts, so a resize lays the page out once, at the new scale (it
         // took two frames, the first redrawing the panels at the old one: D70). The size is the window's own, in
         // pixels: egui's rect here is in points of the scale being replaced.
@@ -1750,6 +1761,9 @@ impl eframe::App for QuickRs {
                 r.listen.stage(-16.0, 45.04, false);
                 r.rig_ui.explain = (pg == shots::Page::PlayerAt("room_explain")).then_some(0);
             }
+        }
+        if let Some(d) = &self.driver {
+            d.after(&ctx);
         }
         if let Some(sh) = &mut self.shots {
             // pages wait for the library (and the player for its song)

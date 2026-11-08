@@ -115,6 +115,21 @@ pub fn note_name(midi: i32) -> &'static str {
     NOTE_NAMES[midi.rem_euclid(12) as usize]
 }
 
+const NOTE_NAMES_LOWER: [&str; 12] = ["c", "c#", "d", "eb", "e", "f", "f#", "g", "ab", "a", "bb", "b"];
+
+/// The strings' names as shown, low to high: a guitar's top string in lower case ("E A D G B e"), as tab books
+/// write it. Bass names stay as they are.
+pub fn string_labels(names: &[&'static str], is_bass: bool) -> Vec<&'static str> {
+    let mut out = names.to_vec();
+    if !is_bass && out.len() >= 6 {
+        let last = out.len() - 1;
+        if let Some(i) = NOTE_NAMES.iter().position(|n| *n == out[last]) {
+            out[last] = NOTE_NAMES_LOWER[i];
+        }
+    }
+    out
+}
+
 /// Python's `round(x, 3)` as a JSON number.
 pub fn r3(x: f64) -> Value {
     let v: f64 = format!("{x:.3}").parse().unwrap_or(x);
@@ -414,6 +429,11 @@ impl Arrangement {
         self.open_string_midi().into_iter().map(note_name).collect()
     }
 
+    /// [`string_labels`]: the names to show ("E A D G B e").
+    pub fn string_labels(&self) -> Vec<&'static str> {
+        string_labels(&self.string_names(), self.is_bass)
+    }
+
     pub fn tuning_name(&self) -> String {
         tuning_name(&self.tuning, self.is_bass)
     }
@@ -476,6 +496,23 @@ mod tests {
         anchors_end_at_next(&mut v);
         let got: Vec<(f64, f64)> = v.iter().map(|x| (x.start, x.end)).collect();
         assert_eq!(got, vec![(16.8, 20.0), (20.0, 30.0), (30.0, 40.0)]);
+    }
+
+    #[test]
+    fn a_guitars_top_string_is_lower_case() {
+        assert_eq!(
+            string_labels(&["E", "A", "D", "G", "B", "E"], false).concat(),
+            "EADGBe"
+        );
+        assert_eq!(
+            string_labels(&["D", "A", "D", "G", "B", "E"], false).concat(),
+            "DADGBe"
+        );
+        assert_eq!(
+            string_labels(&["Eb", "Ab", "Db", "Gb", "Bb", "Eb"], false).join(" "),
+            "Eb Ab Db Gb Bb eb"
+        );
+        assert_eq!(string_labels(&["E", "A", "D", "G"], true).concat(), "EADG");
     }
 
     #[test]

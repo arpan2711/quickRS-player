@@ -37,6 +37,9 @@ pub fn pick_folder(from: Option<&Path>) -> Option<PathBuf> {
 
 /// A folder for something else (`title` says what), starting at `from` when it's a folder.
 pub fn pick_folder_titled(title: &str, from: Option<&Path>) -> Option<PathBuf> {
+    if let Some(got) = crate::drive::pick(title) {
+        return got;
+    }
     let mut d = rfd::FileDialog::new().set_title(title);
     if let Some(f) = from.filter(|f| f.is_dir()) {
         d = d.set_directory(f);
@@ -46,6 +49,9 @@ pub fn pick_folder_titled(title: &str, from: Option<&Path>) -> Option<PathBuf> {
 
 /// A capture to add: a .nam (an amp or pedal) or a .wav (a cab's impulse response).
 pub fn pick_capture_file() -> Option<PathBuf> {
+    if let Some(got) = crate::drive::pick("Add a .nam capture or an IR") {
+        return got;
+    }
     let d = rfd::FileDialog::new()
         .set_title("Add a .nam capture or an IR")
         .add_filter("NAM capture or IR", &["nam", "wav"])
@@ -55,6 +61,9 @@ pub fn pick_capture_file() -> Option<PathBuf> {
 
 /// A keys file (keys.json, or Notepad's keys.json.txt).
 pub fn pick_keys_file() -> Option<PathBuf> {
+    if let Some(got) = crate::drive::pick("Load a keys file") {
+        return got;
+    }
     let d = rfd::FileDialog::new()
         .set_title("Load a keys file")
         .add_filter("Keys file", &["json", "txt"])

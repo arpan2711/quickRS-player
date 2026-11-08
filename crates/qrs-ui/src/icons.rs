@@ -57,6 +57,8 @@ pub enum Icon {
     Eye,
     /// A random pick (new in quickRS, P37.10): two arrows crossing, as a music player's shuffle.
     Shuffle,
+    /// Standard notation on the tab page (P44.1): a staff's five lines with a note on them.
+    Staff,
 }
 
 impl Icon {
@@ -209,6 +211,13 @@ pub fn icon_image(icon: Icon, size: u32, color: Color32) -> crate::raster::Image
         Icon::Search => {
             p.circle(11.0, 11.0, 7.0, iu(2.0));
             p.stroke(&[(16.7, 16.7), (21.0, 21.0)], 2.0);
+        }
+        Icon::Staff => {
+            for y in [5.0, 9.0, 13.0, 17.0, 21.0] {
+                p.stroke(&[(2.0, y), (22.0, y)], 1.2);
+            }
+            p.circle(10.0, 15.0, 3.2, 0);
+            p.stroke(&[(12.9, 15.0), (12.9, 3.0)], 2.0);
         }
         Icon::Music => {
             p.stroke(&[(9.0, 18.0), (9.0, 5.0), (21.0, 3.0), (21.0, 16.0)], 2.0);

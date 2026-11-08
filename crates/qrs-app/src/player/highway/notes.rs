@@ -372,6 +372,51 @@ fn icons(pen: &Pen, at: V3, tech: Techs, s: usize, a: f32) {
     }
 }
 
+/// An accent (P46.1, a tester: never shown on the highway): a bright frame just outside a face centred at `at`, half
+/// size hw × hh world units, rolled with it; dark-edged so it reads on any string and on the dark floor.
+fn accent(pen: &Pen, at: V3, roll: f32, hw: f32, hh: f32, a: f32) {
+    let v = pen.v;
+    let k = v.scale(at);
+    if GEM_H * pen.gem * k < 3.5 {
+        return;
+    }
+    let (sn, cs) = roll.sin_cos();
+    let Some(q) = [(-hw, hh), (hw, hh), (hw, -hh), (-hw, -hh)]
+        .iter()
+        .map(|&(x, y)| v.pt(v3(at.x + x * cs - y * sn, at.y + x * sn + y * cs, at.z)))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return;
+    };
+    let w = (0.16 * k).max(1.5);
+    pen.p.add(egui::Shape::closed_line(
+        q.clone(),
+        Stroke::new(w * 1.9, alpha(rgb(10, 10, 14), 0.7 * a)),
+    ));
+    pen.p.add(egui::Shape::closed_line(
+        q,
+        Stroke::new(w, alpha(Color32::WHITE, a)),
+    ));
+}
+
+/// A gem's accent frame: 0.2 outside its face.
+fn gem_accent(pen: &Pen, at: V3, roll: f32, a: f32) {
+    let g = pen.gem;
+    let face = v3(at.x, at.y, at.z - GEM_D / 2.0 * g - 0.01);
+    accent(pen, face, roll, GEM_W / 2.0 * g + 0.2, GEM_H / 2.0 * g + 0.2, a);
+}
+
+/// An open string's marks (P46.1: hammer-ons, pull-offs, palm mutes, harmonics on open strings were never drawn, the
+/// bar had no face to carry them): the gem's marks at the bar's middle, an accent framing the bar.
+#[allow(clippy::too_many_arguments)]
+fn open_marks(pen: &Pen, l: f32, r: f32, y: f32, z: f32, tech: Techs, s: usize, a: f32) {
+    let mid = (l + r) / 2.0;
+    icons(pen, v3(mid, y, z + GEM_D / 2.0), tech, s, a);
+    if has(tech, Techs::ACCENT) {
+        accent(pen, v3(mid, y, z - 0.01), 0.0, (r - l) / 2.0 + 0.15, 0.4, a);
+    }
+}
+
 /// Bend chevrons stacked just above a gem, one per half step (02 §4).
 fn chevrons(pen: &Pen, at: V3, n: usize, s: usize, a: f32) {
     let v = pen.v;
@@ -468,6 +513,9 @@ fn note(pen: &Pen, c: &Cache, n: &HwNote, marks: &[Option<(Judgement, f32)>]) {
     }
     let at = v3(x, y, z);
     gem(pen, at, roll(u), s, a, 0.0, 1.0);
+    if has(n.tech, Techs::ACCENT) {
+        gem_accent(pen, at, roll(u), a);
+    }
     icons(pen, at, n.tech, s, a);
     if n.bend > 0.0 {
         chevrons(pen, at, n.bend.round().max(1.0) as usize, s, a);
@@ -515,6 +563,7 @@ fn open_bar(pen: &Pen, c: &Cache, n: &HwNote, z: f32, a: f32) {
         alpha(rgb(60, 160, 190), 0.35 * a),
     );
     bar(pen, l, r, y, z, s, a);
+    open_marks(pen, l, r, y, z, n.tech, s, a);
 }
 
 /// A tapered bar at height y from l to r (0.25 g thick, pointed ends) in the string's colour, a brighter core.
@@ -575,19 +624,21 @@ fn tail(pen: &Pen, c: &Cache, n: &HwNote, played: bool) {
     let sounding = played && v.now >= n.t && v.now <= n.t + n.sus;
     let k = if sounding { 1.0 } else { 0.0 };
     if n.fret <= 0 {
-        // open sustain: two rails along the window's edges, a translucent fill between
+        // open sustain: two rails along the window's edges, a translucent fill between (P46.1: 0.3 was hard to tell
+        // from the floor for a tester; fuller, and fuller still while it rings)
         let (wf, ww) = window_at(c, n.t).unwrap_or((1, 4));
         let (l, r) = (wire((wf - 1) as f32) + 0.3, wire((wf - 1 + ww) as f32) - 0.3);
+        let fill = 0.42 + 0.18 * k;
         let zs: Vec<f32> = (0..=12).map(|i| z0 + (z1 - z0) * i as f32 / 12.0).collect();
         for w in zs.windows(2) {
             let (fa, fb) = (v.fade(w[0]), v.fade(w[1]));
             pen.grad(
                 [v3(l, y, w[0]), v3(r, y, w[0]), v3(r, y, w[1]), v3(l, y, w[1])],
                 [
-                    alpha(pen.pal.face_mid[s], 0.3 * fa),
-                    alpha(pen.pal.face_mid[s], 0.3 * fa),
-                    alpha(pen.pal.face_mid[s], 0.3 * fb),
-                    alpha(pen.pal.face_mid[s], 0.3 * fb),
+                    alpha(pen.pal.face_mid[s], fill * fa),
+                    alpha(pen.pal.face_mid[s], fill * fa),
+                    alpha(pen.pal.face_mid[s], fill * fb),
+                    alpha(pen.pal.face_mid[s], fill * fb),
                 ],
             );
             for x in [l, r] {
@@ -919,16 +970,32 @@ fn chord(pen: &Pen, c: &Cache, k: usize, marks: &[Option<(Judgement, f32)>]) {
         alpha(BOX_GLASS, 0.45 * a),
     );
     if !ch.repeat {
+        // (P46.1: bends inside chords had no chevrons; the amount is written once, by the top bent note)
+        let mut label: Option<(V3, f64)> = None;
         for &i in &c.chord_notes[k] {
             let n = &c.notes[i];
             let s = si(n.string);
+            let y = v.sy(n.string);
             if n.fret <= 0 {
-                bar(pen, l + 0.2, r - 0.2, v.sy(n.string), z, s, a);
+                bar(pen, l + 0.2, r - 0.2, y, z, s, a);
+                open_marks(pen, l + 0.2, r - 0.2, y, z, n.tech, s, a);
             } else {
-                let at = v3(slot(n.fret), v.sy(n.string), z);
+                let at = v3(slot(n.fret), y, z);
                 gem(pen, at, 0.0, s, a, 0.0, 1.0);
+                if has(n.tech, Techs::ACCENT) {
+                    gem_accent(pen, at, 0.0, a);
+                }
                 icons(pen, at, n.tech, s, a);
+                if n.bend > 0.0 {
+                    chevrons(pen, at, n.bend.round().max(1.0) as usize, s, a);
+                    if label.is_none_or(|(p, _)| at.y > p.y) {
+                        label = Some((at, n.bend));
+                    }
+                }
             }
+        }
+        if let Some((at, b)) = label {
+            bend_label(pen, at, b, a);
         }
     }
     box_edges(pen, l, r, bot, t, z, a, depth);

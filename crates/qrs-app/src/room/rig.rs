@@ -2503,10 +2503,10 @@ fn suggestions(room: &mut RoomView, ui: &Ui, r: Rect, inst: qrs_analysis::instru
         );
         if link(ui, pos2(x, y), ("suggest", n), &label, Align2::LEFT_CENTER, 11.0).clicked() {
             ui.ctx().copy_text(s.unit.query.to_string());
-            ui.ctx()
-                .open_url(egui::OpenUrl::new_tab(crate::captures::suggest::search_url(
-                    s.unit.query,
-                )));
+            let url = crate::captures::suggest::search_url(s.unit.query);
+            if !crate::drive::intercept_url(&url) {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+            }
             room.say(
                 format!("Opened TONE3000 for {}", s.unit.name),
                 "  \u{b7}  its search words are copied",

@@ -19,6 +19,8 @@ use super::PlayerView;
 use crate::state::AppState;
 use crate::transport::Source;
 
+/// Taps closer together than this build one version (as the speed keys).
+const SETTLE: f32 = 0.45;
 /// A mixer change waits this long for the next before the stems are summed.
 const REMIX_SETTLE: f32 = 0.12;
 
@@ -31,6 +33,7 @@ pub struct Mixer {
     remix_rx: Option<Receiver<SongBuffer>>,
     /// Semitones the guitar input is shifted by (-: down, +: up).
     pub pitch: i32,
+    pitch_at: Option<Instant>,
     /// A new version (slowed and/or shifted) getting ready while the old one plays on.
     pending: Option<StretchJob>,
 }
@@ -144,12 +147,14 @@ impl PlayerView {
 
     /// The open-string names after the selected input transpose.
     pub(super) fn transposed_input_string_names(&self) -> Vec<&'static str> {
-        self.chart
+        let names: Vec<&'static str> = self
+            .chart
             .arr
             .open_string_midi()
             .into_iter()
             .map(|m| qrs_formats::model::note_name(m + self.mixer.pitch))
-            .collect()
+            .collect();
+        qrs_formats::model::string_labels(&names, self.chart.arr.is_bass)
     }
 
     /// A fresh scorer for the chart, compensating for the guitar input's pitch shift.

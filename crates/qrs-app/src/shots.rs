@@ -176,7 +176,17 @@ impl Shots {
             ("31_results_practice", Page::PlayerAt("results_practice")),
             ("32_no_audio", Page::PlayerAt("no_audio")),
         ];
-        let own: [(&str, Page, ThemeName); 118] = [
+        let own: [(&str, Page, ThemeName); 127] = [
+            // sight reading on the tab page (P44.1): notation over the tab, and notation only
+            ("13p_tab_both", Page::PlayerAt("tab_both"), mid),
+            ("13p_tab_staff", Page::PlayerAt("tab_staff"), mid),
+            // the tuner's faces (P48.3), one launch for all five
+            ("12f_tuner_arc", Page::PlayerAt("tuner_face_arc"), mid),
+            ("12f_tuner_needle", Page::PlayerAt("tuner_face_needle"), mid),
+            ("12f_tuner_strobe", Page::PlayerAt("tuner_face_strobe"), mid),
+            ("12f_tuner_pedal", Page::PlayerAt("tuner_face_pedal"), mid),
+            ("12f_tuner_digital", Page::PlayerAt("tuner_face_digital"), mid),
+            ("20_settings_display_end", Page::Settings("display_end"), mid),
             // the highway's streak readout (D144): x4 on a 60-note streak, and Daylight
             ("13o_highway_streak", Page::PlayerAt("highway_streak"), mid),
             (
@@ -312,6 +322,7 @@ impl Shots {
             ("13l_highway", Page::PlayerAt("highway"), mid),
             ("13l_highway_inverted", Page::PlayerAt("highway_invert"), mid),
             ("13l_highway_full", Page::PlayerAt("highway_full"), mid),
+            ("12e_tuner_edit", Page::PlayerAt("tuner_edit"), mid),
             (
                 "13l_highway-daylight",
                 Page::PlayerAt("highway"),

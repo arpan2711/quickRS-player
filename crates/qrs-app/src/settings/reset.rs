@@ -29,6 +29,7 @@ pub fn keys(page: &str) -> &'static [&'static str] {
             "tiles",
             "lyrics_next",
             "note_widget",
+            "tuner_face",
         ],
         "library" => &["select_preview", "prefer", "recordings_dir", "takes_dir"],
         "about" | "updates" => &[update::KEY_CHECK, update::KEY_SKIP],

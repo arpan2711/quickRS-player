@@ -35,6 +35,7 @@ mod theory;
 pub mod tiles;
 mod transport_art;
 mod transport_room;
+pub mod tuner_face;
 mod tuning;
 
 use std::collections::VecDeque;
@@ -349,7 +350,7 @@ impl Chart {
             id: CHART_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             rhythm_id: 0,
             n_strings: arr.string_count(),
-            string_names: arr.string_names(),
+            string_names: arr.string_labels(),
             key: qrs_analysis::keyguess::song_key(&arr),
             arr,
             glyphs,
@@ -601,7 +602,15 @@ pub struct PlayerView {
     bar: Rect,
     dial_drag: Option<DialDrag>,
     dials: Vec<(Rect, &'static str)>,
-    tuning_choice: usize,
+    /// The tuner's strings set by hand (P48.1, owner: any note per string), low first; None: the song's.
+    pub(super) tuner_custom: Option<Vec<i32>>,
+    /// The tuner's string editor is open.
+    pub(super) tuner_edit: bool,
+    /// The string the tuner tunes to alone (a click on its key), however far off.
+    pub(super) tuner_lock: Option<usize>,
+    /// The tuner's face (P48.3; config `tuner_face`) and its moving parts.
+    pub(super) tuner_face: tuner_face::Face,
+    pub(super) tuner_anim: tuner_face::Anim,
     tuner_hist: VecDeque<f64>,
     pub tuner_midi: Option<f64>,
     tuner_seen: Instant,
@@ -617,8 +626,12 @@ pub struct PlayerView {
     zoom_what: ZoomWhat,
     /// The tab fills the screen (owner request): no header, transport or console; F or Esc to leave.
     pub tab_full: bool,
+    /// The score tile over the highway's full screen, last frame (it takes the pointer there, P47.1).
+    pub(super) hw_score_rect: Rect,
     /// Chord names as numbers in the part's key (config "chord_numerals"; the tab and the highway).
     pub chord_numerals: bool,
+    /// The tab page: tab, standard notation, or both (config "tab_score", P44.1).
+    pub tab_score: tab::Score,
     /// The transport's baked art (loaded on the first frame that draws it), the gem's light, and the last frame.
     art: Option<transport_art::Art>,
     gem_glow: transport_art::Glow,
@@ -844,7 +857,11 @@ impl PlayerView {
             bar: Rect::NOTHING,
             dial_drag: None,
             dials: Vec::new(),
-            tuning_choice: 0,
+            tuner_custom: None,
+            tuner_edit: false,
+            tuner_lock: None,
+            tuner_face: tuner_face::Face::parse(&st.config.str("tuner_face", "")),
+            tuner_anim: Default::default(),
             tuner_hist: VecDeque::new(),
             tuner_midi: None,
             tuner_seen: Instant::now(),
@@ -856,7 +873,9 @@ impl PlayerView {
             zoom_at: None,
             zoom_what: ZoomWhat::Zoom,
             tab_full: st.config.bool("tab_full", false),
+            hw_score_rect: Rect::NOTHING,
             chord_numerals: st.config.bool("chord_numerals", false),
+            tab_score: tab::Score::parse(&st.config.str("tab_score", "tab")),
             art: None,
             gem_glow: transport_art::Glow::default(),
             art_at: None,
@@ -1475,6 +1494,7 @@ impl PlayerView {
         self.highway.size = highway::size_from(&st.config);
         self.highway.colours = highway::NoteColours::parse(&st.config.str("hw_colours", "vivid"));
         self.highway.gem = highway::gem_from(&st.config);
+        self.tuner_face = tuner_face::Face::parse(&st.config.str("tuner_face", ""));
         self.display_offset = st.config.f64("display_offset", 0.0);
         let old = self.nota;
         self.nota = Nota::from_config(st);
@@ -1803,6 +1823,12 @@ impl PlayerView {
                     "I",
                 );
             }
+            a if a.starts_with("tuner_face:") => {
+                let f = tuner_face::Face::parse(&a["tuner_face:".len()..]);
+                self.tuner_face = f;
+                st.config.set("tuner_face", f.key());
+                self.say(format!("Tuner: {}", f.label()), "");
+            }
             "hw_backdrop" => {
                 let b = self.highway.cycle_backdrop();
                 st.config.set("hw_backdrop", b.key());
@@ -1829,6 +1855,17 @@ impl PlayerView {
                         "F",
                     );
                 }
+            }
+            "tab_score" => {
+                self.tab_score = self.tab_score.next();
+                st.config.set("tab_score", self.tab_score.key());
+                self.tab.jump = true;
+                let msg = match (self.tab_score, self.chart.rhythm.is_some()) {
+                    (tab::Score::Tab, _) => "Tab".to_string(),
+                    (sc, true) => sc.label().to_string(),
+                    (sc, false) => format!("{}: this part has no beats to read the rhythm from", sc.label()),
+                };
+                self.say(msg, "S");
             }
             "chord_numerals" => {
                 self.chord_numerals = !self.chord_numerals;
@@ -2339,6 +2376,7 @@ impl PlayerView {
             Key::D if !ctrl && self.hw_on => "hw_backdrop",
             Key::C if shift && !ctrl => "countdown",
             Key::C if !ctrl => "tab_compact",
+            Key::S if !ctrl && !self.hw_on => "tab_score",
             Key::K if !ctrl => "chord_numerals",
             Key::Space => "play",
             Key::Minus => "rewind",
@@ -2719,7 +2757,7 @@ impl PlayerView {
         let rate = e.capture().rate();
         if level > 0.002 && e.capture().latest(&mut self.pitch_buf).is_some() {
             let (hz, clarity) =
-                qrs_analysis::instrument::pitch_for(self.instrument, &mut self.sp, &self.pitch_buf, rate);
+                qrs_analysis::instrument::pitch_for(self.tuner_inst(), &mut self.sp, &self.pitch_buf, rate);
             if hz > 0.0 && clarity > 0.85 {
                 self.tuner_hist
                     .push_back(69.0 + 12.0 * (hz / 440.0).log2() + self.mixer.pitch as f64);
@@ -3057,6 +3095,20 @@ impl PlayerView {
                     self.hw_on = true;
                     self.tab_full = true;
                 }
+                "tab_both" => self.tab_score = tab::Score::Both,
+                "tab_staff" => self.tab_score = tab::Score::Staff,
+                w if w.starts_with("tuner_face_") => {
+                    self.tuner_face = tuner_face::Face::parse(&w["tuner_face_".len()..]);
+                }
+                // the tuner's string editor open on a Drop D set by hand (P48.1)
+                "tuner_edit" => {
+                    self.tuner_edit = true;
+                    let mut t = self.song_tuner_targets().1;
+                    if let Some(low) = t.first_mut() {
+                        *low -= 2;
+                    }
+                    self.tuner_custom = Some(t);
+                }
                 // the note size (D143): further, and two steps closer
                 w if w.starts_with("highway_size") => {
                     self.hw_on = true;
@@ -3389,7 +3441,14 @@ impl PlayerView {
         let draw_now = self.draw_now();
         let (main, aside) = Self::layout(area);
         let foot = px(76.0);
-        let well = if self.tab_full {
+        let well = if self.tab_full && self.hw_on && !theme::classic() {
+            // the highway's full screen: the whole window, edge to edge (P47.1, owner: the margin and the tab's
+            // scrollbar groove left it off-centre, with a strip on the right)
+            Rect::from_min_size(
+                ipos(area.min.x, area.min.y),
+                vec2(snap(area.width()), snap(area.height())),
+            )
+        } else if self.tab_full {
             // the full-screen tab: the whole window but a margin and the scrollbar's groove
             let pad = px(18.0);
             Rect::from_min_size(
@@ -3405,7 +3464,15 @@ impl PlayerView {
                 ipos(main.min.x, top + px(18.0)),
                 vec2(
                     snap(main.width() - px(24.0)),
-                    snap(main.max.y - foot - px(18.0) - top - px(18.0)),
+                    // (the highway stops a little higher: its foot met the footer's keys, the owner, P47.2)
+                    snap(
+                        main.max.y
+                            - foot
+                            - px(18.0)
+                            - top
+                            - px(18.0)
+                            - if self.hw_on { px(14.0) } else { 0.0 },
+                    ),
                 ),
             )
         };
@@ -3445,6 +3512,7 @@ impl PlayerView {
             ear: self.ear.then_some(self.revealed.as_slice()),
             held: self.nbn_tab(),
             numerals,
+            score: self.tab_score,
         };
         let tab_acts = if self.hw_on {
             self.highway.full = self.tab_full;
@@ -3454,6 +3522,12 @@ impl PlayerView {
             self.acts.extend(out.acts.into_iter().map(String::from));
             if out.tip.is_some() {
                 self.tip = out.tip;
+            }
+            if self.tab_full && !self.overlay_up() {
+                self.draw_hw_score(ui, st, well);
+            } else if !self.tab_full && !theme::classic() {
+                // rounded like the tab's well (P47.2, owner: "a weird rectangle on the screen")
+                highway::round_corners(ui.painter(), well, px(24.0));
             }
             Vec::new()
         } else {
@@ -4460,8 +4534,8 @@ impl PlayerView {
                 + 3.0 * (px(3.0) + core)
                 + 2.0 * div_gap
                 + px(1.0)
-                + 3.0 * key
-                + px(12.0);
+                + 4.0 * key
+                + px(16.0);
             (snap(w), labs)
         };
         // the longest names that fit
@@ -4604,6 +4678,17 @@ impl PlayerView {
         x = snap(x + px(1.0) + div_gap);
         let toggles = [
             (Icon::Rows, self.tab.compact, "Compact rows", "C", "tab_compact"),
+            (
+                Icon::Staff,
+                self.tab_score.staff(),
+                match self.tab_score {
+                    tab::Score::Tab => "Tab (click: notation and tab)",
+                    tab::Score::Both => "Notation and tab (click: notation only)",
+                    tab::Score::Staff => "Notation only (click: tab)",
+                },
+                "S",
+                "tab_score",
+            ),
             (
                 Icon::Music,
                 self.chord_numerals,

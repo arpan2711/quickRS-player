@@ -40,7 +40,7 @@ pub fn multiplier(streak: u32) -> u32 {
 }
 const LEGATO: Techs = Techs(Techs::HAMMER_ON.0 | Techs::PULL_OFF.0 | Techs::TAP.0);
 /// Natural harmonic fret → semitones above the open string.
-const HARMONIC_SEMITONES: [(i32, i32); 9] = [
+pub const HARMONIC_SEMITONES: [(i32, i32); 9] = [
     (12, 12),
     (7, 19),
     (19, 19),

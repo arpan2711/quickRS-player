@@ -1866,8 +1866,8 @@ impl Rack {
                     xr.width() * 0.5,
                     Stroke::new(1.0, Color32::from_white_alpha(60)),
                 );
-                let s = xr.width() * 0.2;
-                let st_ = Stroke::new(1.6, Color32::WHITE);
+                let s = xr.width() * 0.22;
+                let st_ = Stroke::new(1.4, Color32::WHITE);
                 let c = xr.center();
                 p.line_segment([c + vec2(-s, -s), c + vec2(s, s)], st_);
                 p.line_segment([c + vec2(-s, s), c + vec2(s, -s)], st_);
@@ -3803,8 +3803,11 @@ impl Rack {
 /// P37.6c).
 pub fn chip_keys(r: Rect) -> (Rect, Rect) {
     let d = px(18.0);
+    // (the remove key: small, and up above the unit's corner, so it doesn't hide the unit; the owner found the
+    // bigger one over the pedal too much)
+    let dx = px(13.0);
     (
-        Rect::from_center_size(pos2(r.max.x - px(3.0), r.min.y + px(3.0)), Vec2::splat(d)),
+        Rect::from_center_size(pos2(r.max.x - px(2.0), r.min.y - px(5.0)), Vec2::splat(dx)),
         Rect::from_center_size(pos2(r.max.x - px(3.0), r.max.y - px(3.0)), Vec2::splat(d)),
     )
 }
