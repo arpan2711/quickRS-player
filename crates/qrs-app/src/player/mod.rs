@@ -3817,7 +3817,7 @@ impl PlayerView {
             Align2::LEFT_TOP,
             Some(more_max),
         );
-        let strings = self.transposed_input_string_names().join(" ");
+        let strings = self.chart_string_names().join(" ");
         cut_tip(
             ui,
             mr,
@@ -3882,7 +3882,7 @@ impl PlayerView {
             x = snap(nr.max.x);
         }
         if ipx(tx + tw - x) > ipx(px(60.0)) {
-            let names = format!("   {}", self.transposed_input_string_names().join(" "));
+            let names = format!("   {}", self.chart_string_names().join(" "));
             txt(
                 &p,
                 &names,

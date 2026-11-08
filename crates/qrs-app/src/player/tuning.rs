@@ -153,17 +153,15 @@ impl Offer {
         } else {
             format!("{n} semitones")
         };
-        if self.k < 0 {
-            format!(
-                "The track is in {}, {how} below standard. Tune down to it, or shift the guitar input down to play in {}.",
-                self.now, self.then
-            )
+        let (relative, tune, shift) = if self.k < 0 {
+            ("below", "down", "down")
         } else {
-            format!(
-                "The track is in {}, {how} above standard. Tune up to it, or shift the guitar input up to play in {}.",
-                self.now, self.then
-            )
-        }
+            ("above", "up", "up")
+        };
+        format!(
+            "Your guitar needs to be in {} with this input shift ({how} {relative} standard). Tune {tune} to it, or shift the guitar input {shift} to play in {}.",
+            self.now, self.then
+        )
     }
 
     /// The card's key: "Play in E Standard (input −1)", "Play in E Standard (no shift)".
@@ -228,7 +226,7 @@ mod tests {
         assert_eq!(o.key(), "Play in E Standard (input \u{2212}1)");
         assert!(
             o.words()
-                .starts_with("The track is in Eb Standard, a semitone below standard. Tune down")
+                .starts_with("Your guitar needs to be in Eb Standard with this input shift")
         );
         // Drop C#: shift the guitar input down to play in Drop D
         let o = offer(&[-3, -1, -1, -1, -1, -1], false, 0, 12).unwrap();
@@ -237,7 +235,9 @@ mod tests {
         let o = offer(&[0; 6], false, -2, 12).unwrap();
         assert_eq!(o.k, 2);
         assert_eq!(o.to_pitch, 0);
+        assert!(o.words().contains("F# Standard"), "{}", o.words());
         assert!(o.words().contains("shift the guitar input up"), "{}", o.words());
+        assert!(!o.words().contains("The track is in F#"), "{}", o.words());
         assert_eq!(o.key(), "Play in E Standard (no shift)");
         // Already physically in E, or an open tuning: no card
         assert_eq!(offer(&[-1; 6], false, -1, 12), None);

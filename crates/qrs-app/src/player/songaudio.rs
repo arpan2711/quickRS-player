@@ -68,7 +68,8 @@ impl Mixer {
     /// What's kept in userdata.json.
     fn saved(&self) -> SongAudio {
         let mut a = SongAudio {
-            pitch: self.pitch,
+            // SongAudio.pitch retains the old backing-track-shift sign convention.
+            pitch: -self.pitch,
             ..Default::default()
         };
         if let Some(set) = &self.stems
@@ -125,6 +126,11 @@ fn shifted_tuning_name(offsets: &[i32], is_bass: bool, semitones: i32) -> String
     qrs_formats::model::tuning_name(&shifted, is_bass)
 }
 
+fn chart_string_names(opens: &[i32], is_bass: bool) -> Vec<&'static str> {
+    let names: Vec<&'static str> = opens.iter().map(|&m| qrs_formats::model::note_name(m)).collect();
+    qrs_formats::model::string_labels(&names, is_bass)
+}
+
 impl PlayerView {
     /// The song's open strings. Input transposition does not change the track or the chart.
     pub(super) fn sounding_opens(&self) -> Vec<i32> {
@@ -142,16 +148,9 @@ impl PlayerView {
         qrs_formats::model::tuning_name(&self.chart.arr.tuning, self.chart.arr.is_bass)
     }
 
-    /// The open-string names after the selected input transpose.
-    pub(super) fn transposed_input_string_names(&self) -> Vec<&'static str> {
-        let names: Vec<&'static str> = self
-            .chart
-            .arr
-            .open_string_midi()
-            .into_iter()
-            .map(|m| qrs_formats::model::note_name(m + self.mixer.pitch))
-            .collect();
-        qrs_formats::model::string_labels(&names, self.chart.arr.is_bass)
+    /// The chart's open strings; input transpose changes the reading, not the tuner targets.
+    pub(super) fn chart_string_names(&self) -> Vec<&'static str> {
+        chart_string_names(&self.chart.arr.open_string_midi(), self.chart.arr.is_bass)
     }
 
     /// A fresh scorer for the chart, compensating for the guitar input's pitch shift.
@@ -366,12 +365,16 @@ mod tests {
     }
 
     #[test]
-    fn saved_track_shift_is_reinterpreted_as_the_opposite_input_shift() {
+    fn saved_pitch_migrates_to_input_shift_and_round_trips() {
         let saved = SongAudio {
             pitch: 3,
             ..Default::default()
         };
-        assert_eq!(Mixer::new(None, &saved).pitch, -3);
+        let mixer = Mixer::new(None, &saved);
+        assert_eq!(mixer.pitch, -3);
+        let saved_again = mixer.saved();
+        assert_eq!(saved_again.pitch, 3);
+        assert_eq!(Mixer::new(None, &saved_again).pitch, -3);
     }
 
     #[test]
@@ -380,5 +383,13 @@ mod tests {
         assert_eq!(shifted_tuning_name(&e, false, 0), "E Standard");
         assert_eq!(shifted_tuning_name(&e, false, -1), "Eb Standard");
         assert_eq!(shifted_tuning_name(&e, false, -2), "D Standard");
+    }
+
+    #[test]
+    fn chart_string_labels_stay_at_chart_pitch() {
+        assert_eq!(
+            chart_string_names(&[39, 44, 49, 54, 58, 63], false),
+            ["Eb", "Ab", "C#", "F#", "Bb", "eb"]
+        );
     }
 }
