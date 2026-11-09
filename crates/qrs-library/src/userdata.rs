@@ -812,7 +812,11 @@ mod tests {
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("qrs-ud-{}-{name}", std::process::id()));
         let _ = std::fs::create_dir_all(&d);
-        d.join("userdata.json")
+        // (afresh: the folder is named by the process id, which Windows reuses, so an old run's file could be there:
+        // playlists_and_aliases found its "Gig" now and then)
+        let f = d.join("userdata.json");
+        let _ = std::fs::remove_file(&f);
+        f
     }
 
     #[test]

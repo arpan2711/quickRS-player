@@ -98,6 +98,11 @@ need to choose.
 *Buffer* sets the block size. Smaller is less delay; if you hear crackles,
 make it bigger.
 
+Since 0.5.6 quickRS tries each ASIO driver in a separate helper before using
+it, so a driver that crashes can't take quickRS with it. A driver that
+crashed is left out until quickRS restarts, and Settings > *Sound* > *All
+devices* names it; the interface usually still works through WASAPI.
+
 On macOS quickRS uses Core Audio, which needs none of this; ASIO and
 *Low-latency output* don't apply there.
 

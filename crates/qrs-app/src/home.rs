@@ -1346,7 +1346,9 @@ fn random_tool(ui: &Ui, ctx: &egui::Context, left: egui::Pos2) -> egui::Response
         11.0,
         CapOn::Material,
     );
-    resp.on_hover_text("Open a random song from your whole library (Ctrl+R)")
+    resp.on_hover_text(
+        qrs_ui::text::os_keys("Open a random song from your whole library (Ctrl+R)").into_owned(),
+    )
 }
 
 pub fn songs(n: usize) -> String {

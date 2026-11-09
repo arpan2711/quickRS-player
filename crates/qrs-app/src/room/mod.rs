@@ -1160,9 +1160,9 @@ impl RoomView {
             .iter()
             .map(|c| draw::chip_w(&ctx, c.1, true, 11.5) + px(6.0))
             .sum();
+        // ("edited" goes on the small caps line over the title: beside the chips it ran into Catalogue, issue #6)
         let edited = self.tab == Tab::Rig && self.edited(st) && self.rack.can_undo();
-        let ew = if edited { px(110.0) } else { 0.0 };
-        let cx0 = (cat_r.min.x - px(24.0) - ew - cw).max(r.min.x + px(420.0));
+        let cx0 = (cat_r.min.x - px(24.0) - cw).max(r.min.x + px(420.0));
         let mut cx = cx0;
         if self.tab == Tab::Sounds {
             if link_key(
@@ -1184,22 +1184,12 @@ impl RoomView {
                     self.set_source(st, *s);
                 }
             }
-            if edited {
-                text::draw(
-                    &p,
-                    "edited \u{b7} Ctrl Z",
-                    pos2(cx + px(8.0), r.center().y),
-                    Align2::LEFT_CENTER,
-                    Style::new(11.5, 700, th.accent_ink),
-                    None,
-                );
-            }
         }
         // the title: what you hear, and where it came from
         let tx0 = home.max.x + px(16.0);
         let room_w = cx0 - tx0 - px(16.0);
         let (sub, title) = self.what_you_hear(st, src);
-        text::caps(
+        let sub_r = text::caps(
             &p,
             &sub,
             pos2(tx0, r.min.y + px(6.0)),
@@ -1208,6 +1198,24 @@ impl RoomView {
             Align2::LEFT_CENTER,
             Some(room_w),
         );
+        if edited {
+            // after the line, in the accent, as much as there's room for
+            let left = tx0 + room_w - sub_r.max.x;
+            let long = "  \u{b7}  EDITED  \u{b7}  CTRL Z UNDOES";
+            let fits = |s: &str| text::width(&ctx, s, Style::caps(10.5, th.accent_ink)) <= left;
+            let note = if fits(long) { long } else { "  \u{b7}  EDITED" };
+            if fits(note) {
+                text::caps(
+                    &p,
+                    note,
+                    pos2(sub_r.max.x, r.min.y + px(6.0)),
+                    10.5,
+                    th.accent_ink,
+                    Align2::LEFT_CENTER,
+                    None,
+                );
+            }
+        }
         text::draw(
             &p,
             &title,

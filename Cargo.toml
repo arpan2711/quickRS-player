@@ -1,9 +1,11 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# (a patched copy of a dependency, not ours: see [patch.crates-io])
+exclude = ["vendor"]
 
 [workspace.package]
-version = "0.5.5"
+version = "0.5.6"
 edition = "2024"
 license = "MIT"
 rust-version = "1.90"
@@ -75,3 +77,8 @@ inherits = "release"
 lto = false
 codegen-units = 16
 incremental = true
+
+# asio-sys with one addition (D186, issue #1): a process can be told which ASIO drivers it may see and load, so
+# quickRS loads only drivers a helper process loaded safely first. Remove when upstream has something like it.
+[patch.crates-io]
+asio-sys = { path = "vendor/asio-sys" }

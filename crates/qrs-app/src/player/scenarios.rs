@@ -130,6 +130,7 @@ impl H {
             song: None,
             stems: None,
             audio_error: String::new(),
+            key: None,
         };
         let mut p = PlayerView::new(&mut st, loaded);
         // the engine on the null devices, a silent guitar plugged in; the clock held (stepped by `tick`)

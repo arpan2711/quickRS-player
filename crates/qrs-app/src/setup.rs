@@ -573,7 +573,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
         };
-        crate::keyfile::write(&path, k(0xab), k(0xcd)).unwrap();
+        crate::keyfile::write(&path, k(0xab), k(0xcd), None).unwrap();
         let (_, state) = crate::keyfile::load(std::slice::from_ref(&path));
         assert!(matches!(state, crate::keyfile::KeyState::Found { .. }));
         let _ = std::fs::remove_dir_all(&dir);

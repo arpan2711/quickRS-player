@@ -94,7 +94,9 @@ tuning and `0:00` for the length.
 1. Press `F2` (Settings) and open *Library*. Scroll down to *RS KEYS*.
 2. Paste the PSARC key into *PSARC key*, and the SNG key into *SNG key*. Each
    box checks the key as you type. If you have a whole `keys.json` text,
-   paste it into either box and both are filled.
+   paste it into any box and they are all filled. Songs from RS's Mac edition
+   (files ending `_m.psarc`) also need the Mac SNG key: paste it into
+   *Mac SNG key*. If your other keys already work, paste only that one.
 3. Press *Save keys*. quickRS writes `keys.json` to its
    [data folder](INSTALL.md#where-your-data-lives) and reads the songs that
    were waiting for keys straight away. There's no need to restart or press
@@ -103,7 +105,7 @@ tuning and `0:00` for the length.
 *Load keys file...* uses a `keys.json` you already have instead.
 
 The top of the card says what quickRS found: *Keys found: psarc songs play*
-(and which file), *No keys yet* (and where it looked), *Only one of the two
+(with *the Mac key too* when it has that one, and which file), *No keys yet* (and where it looked), *Only one of the two
 keys*, or *Your keys file doesn't read* (and why).
 
 ![The keys in Settings > Library, labelled](../screenshots/settings-keys-labelled.png)

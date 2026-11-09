@@ -342,9 +342,10 @@ fn capture_ns(info: &cpal::InputCallbackInfo) -> u64 {
     now_ns().saturating_sub(t.callback.duration_since(t.capture).as_nanos() as u64)
 }
 
-fn playback_ns(info: &cpal::OutputCallbackInfo) -> u64 {
+/// When this output block will be heard: now plus the delay the device reports, steadied (`SteadyLag`, P51.4).
+fn playback_ns(info: &cpal::OutputCallbackInfo, lag: &mut crate::clock::SteadyLag) -> u64 {
     let t = info.timestamp();
-    now_ns() + t.playback.duration_since(t.callback).as_nanos() as u64
+    now_ns() + lag.delay(t.playback.duration_since(t.callback).as_nanos() as u64)
 }
 
 /// What a stream thread builds: an input, an output, or both (duplex). (Sent once per stream: size is fine.)
@@ -451,13 +452,14 @@ pub fn open(
                         let (cfg, fmt) = outc.ok_or("no output config")?;
                         let ch = cfg.channels as usize;
                         let mut buf = vec![0.0f32; 16384];
+                        let mut lag = crate::clock::SteadyLag::default();
                         streams.push(
                             dev.build_output_stream_raw(
                                 cfg,
                                 fmt,
                                 move |data: &mut cpal::Data, info| {
                                     let n = data.len().min(buf.len());
-                                    s.process(&mut buf[..n], ch, playback_ns(info));
+                                    s.process(&mut buf[..n], ch, playback_ns(info, &mut lag));
                                     from_f32(&buf[..n], data);
                                 },
                                 on_err(f_out),
@@ -493,13 +495,14 @@ pub fn open(
                             .map_err(|e| e.to_string())?,
                         );
                         let mut obuf = vec![0.0f32; 16384];
+                        let mut lag = crate::clock::SteadyLag::default();
                         streams.push(
                             dev.build_output_stream_raw(
                                 ocfg,
                                 ofmt,
                                 move |data: &mut cpal::Data, info| {
                                     let n = data.len().min(obuf.len());
-                                    let play = playback_ns(info);
+                                    let play = playback_ns(info, &mut lag);
                                     match shared.try_lock() {
                                         Some(mut g) => {
                                             let (d, pending, t) = &mut *g;

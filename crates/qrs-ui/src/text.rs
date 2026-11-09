@@ -53,10 +53,19 @@ pub fn install(ctx: &egui::Context) {
         .insert("bravura".into(), Arc::new(FontData::from_static(BRAVURA)));
     defs.families
         .insert(FontFamily::Name("music".into()), vec!["bravura".into()]);
-    let fonts_dir =
+    // the system's symbol font: Segoe UI Symbol on Windows, Apple Symbols on a Mac (it had none, so ⌘ and the like
+    // had no glyph, P51.1), DejaVu Sans on Linux
+    let windows_fonts =
         std::path::PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()))
             .join("Fonts");
-    if let Ok(bytes) = std::fs::read(fonts_dir.join("seguisym.ttf")) {
+    let symbol_fonts = [
+        windows_fonts.join("seguisym.ttf"),
+        "/System/Library/Fonts/Apple Symbols.ttf".into(),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".into(),
+        "/usr/share/fonts/TTF/DejaVuSans.ttf".into(),
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf".into(),
+    ];
+    if let Some(bytes) = symbol_fonts.iter().find_map(|f| std::fs::read(f).ok()) {
         let leaked: &'static [u8] = Box::leak(bytes.clone().into_boxed_slice());
         if let Some(f) = pyfont::Face::new(leaked) {
             let _ = SYMBOL_FACE.set(f);
@@ -319,6 +328,7 @@ pub fn width(ctx: &egui::Context, text: &str, st: Style) -> f32 {
     if text.is_empty() {
         return 0.0;
     }
+    let text = &*os_keys(text);
     (width_px(ctx, text, st) / ctx.pixels_per_point() as f64) as f32
 }
 
@@ -446,6 +456,7 @@ pub fn draw(p: &Painter, text: &str, pos: Pos2, anchor: Align2, st: Style, max_w
     if text.is_empty() {
         return Rect::from_min_size(pos, egui::Vec2::ZERO);
     }
+    let text = &*os_keys(text);
     let ctx = p.ctx();
     let ppp = p.pixels_per_point() as f64;
     let s = match max_w {
@@ -473,6 +484,38 @@ pub fn caps(
     max_w: Option<f32>,
 ) -> Rect {
     draw(p, text, pos, anchor, Style::caps(size, color), max_w)
+}
+
+/// Key names as this computer's keyboard has them (P51.1): on a Mac "Ctrl" is ⌘, which the shortcuts already take
+/// there (egui's `command`): "Ctrl S" and "Ctrl+S" are "⌘S", a keycap "Ctrl" is "⌘"; "Cmd" without a font with ⌘.
+/// Everything drawn or measured here goes through it, so a hint written once reads right on both.
+/// (QUICKRS_MAC_KEYS=1 shows the Mac's names elsewhere, for screenshots.)
+pub fn os_keys(text: &str) -> std::borrow::Cow<'_, str> {
+    static MAC: OnceLock<bool> = OnceLock::new();
+    let mac = *MAC.get_or_init(|| {
+        cfg!(target_os = "macos") || std::env::var("QUICKRS_MAC_KEYS").is_ok_and(|v| v == "1")
+    });
+    if !mac || !(text.contains("Ctrl") || text.contains("CTRL")) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let glyph = SYMBOL_FACE.get().is_some_and(|f| f.has('\u{2318}'));
+    std::borrow::Cow::Owned(mac_keys(text, glyph))
+}
+
+/// `os_keys` on a Mac: with the ⌘ glyph or without it.
+fn mac_keys(text: &str, glyph: bool) -> String {
+    // (small caps lines write it CTRL)
+    let mut t = text.to_string();
+    for (ctrl, cmd) in [("Ctrl", "Cmd"), ("CTRL", "CMD")] {
+        t = if glyph {
+            t.replace(&format!("{ctrl}+"), "\u{2318}")
+                .replace(&format!("{ctrl} "), "\u{2318}")
+                .replace(ctrl, "\u{2318}")
+        } else {
+            t.replace(ctrl, cmd)
+        };
+    }
+    t
 }
 
 /// Words wrapped into lines no wider than `max_w`.
@@ -503,6 +546,9 @@ pub fn wrap(ctx: &egui::Context, text: &str, st: Style, max_w: f32) -> Vec<Strin
 pub fn draw_runs(p: &Painter, runs: &[(&str, Style)], pos: Pos2, anchor: Align2) -> Rect {
     let ctx = p.ctx();
     let ppp = p.pixels_per_point() as f64;
+    let runs: Vec<(std::borrow::Cow<str>, Style)> = runs.iter().map(|(t, st)| (os_keys(t), *st)).collect();
+    let runs: Vec<(&str, Style)> = runs.iter().map(|(t, st)| (&**t, *st)).collect();
+    let runs = &runs[..];
     let Some(&(t0, s0)) = runs.first() else {
         return Rect::from_min_size(pos, egui::Vec2::ZERO);
     };
@@ -520,4 +566,28 @@ pub fn draw_runs(p: &Painter, runs: &[(&str, Style)], pos: Pos2, anchor: Align2)
         Pos2::new((left / ppp) as f32, (top / ppp) as f32),
         egui::vec2((w / ppp) as f32, (h / ppp) as f32),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_macs_key_names() {
+        assert_eq!(mac_keys("Save  Ctrl S", true), "Save  \u{2318}S");
+        assert_eq!(
+            mac_keys("press Ctrl+P (or Add to playlist)", true),
+            "press \u{2318}P (or Add to playlist)"
+        );
+        assert_eq!(mac_keys("Ctrl", true), "\u{2318}");
+        assert_eq!(
+            mac_keys("Ctrl-drag over the tab", true),
+            "\u{2318}-drag over the tab"
+        );
+        assert_eq!(mac_keys("Ctrl S", false), "Cmd S");
+        assert_eq!(
+            mac_keys("EDITED  \u{b7}  CTRL Z UNDOES", true),
+            "EDITED  \u{b7}  \u{2318}Z UNDOES"
+        );
+    }
 }

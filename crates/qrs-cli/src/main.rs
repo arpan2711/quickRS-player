@@ -635,6 +635,8 @@ fn cmd_convert_folder(keys: &Keys, from: &Path, to: &Path, dir: bool, force: boo
 }
 
 fn main() -> ExitCode {
+    // (the ASIO helper, run by this program itself, exits here; issue #1, D186)
+    qrs_audio::backend::asio_helper();
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,

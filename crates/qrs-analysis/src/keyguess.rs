@@ -71,6 +71,49 @@ pub fn key_of(notes: impl IntoIterator<Item = (i32, f64)>) -> Option<Key> {
     (hist.iter().sum::<f64>() >= MIN_WEIGHT).then(|| best_key(&hist).0)
 }
 
+/// One key for a whole song from all its parts (P49.1, the notation reviews: each part guessed its own, and a blues lead
+/// came out "Eb minor" while its rhythm and bass parts said Eb major). Each part counts alike (its histogram
+/// normalised), so the harmony of the rhythm and bass parts outweighs a lead's blue notes; and a minor guess whose
+/// major third is about as strong as its minor third is the major key (a blues: the major triad under b3 and b7).
+pub fn parts_key<'a>(arrs: impl IntoIterator<Item = &'a qrs_formats::model::Arrangement>) -> Option<Key> {
+    let mut hist = [0.0; 12];
+    let mut any = false;
+    for arr in arrs {
+        let opens = arr.open_string_midi();
+        let mut h = [0.0; 12];
+        for n in arr
+            .notes
+            .iter()
+            .chain(arr.chords.iter().flat_map(|c| c.notes.iter()))
+        {
+            h[crate::detect::note_midi(&opens, n).rem_euclid(12) as usize] += n.sustain.max(0.15);
+        }
+        let sum: f64 = h.iter().sum();
+        if sum < MIN_WEIGHT {
+            continue;
+        }
+        any = true;
+        for i in 0..12 {
+            hist[i] += h[i] / sum;
+        }
+    }
+    if !any {
+        return None;
+    }
+    Some(blues_major(best_key(&hist).0, &hist))
+}
+
+/// A minor key whose major third is nearly as strong as its minor third: the major key (a blues).
+fn blues_major(key: Key, hist: &[f64; 12]) -> Key {
+    let (t, mode) = key;
+    let t = t as usize;
+    if mode == Mode::Minor && hist[(t + 4) % 12] >= 0.6 * hist[(t + 3) % 12] {
+        (t as u8, Mode::Major)
+    } else {
+        key
+    }
+}
+
 /// A part's own key: its notes and its chords' notes, each by how long it sounds (an open sustain counts as 0.15 s),
 /// at the pitches its tuning plays them.
 pub fn song_key(arr: &qrs_formats::model::Arrangement) -> Option<Key> {
@@ -154,6 +197,18 @@ pub fn key_label((t, m): Key) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_blues_is_its_major_key() {
+        // E with its b3 (G) strong and its major third (G#) about as strong: E major, not E minor
+        let mut h = [0.0; 12];
+        for (pc, w) in [(4, 10.0), (7, 6.0), (8, 5.0), (9, 4.0), (11, 6.0), (2, 4.0)] {
+            h[pc] = w;
+        }
+        assert_eq!(blues_major((4, Mode::Minor), &h), (4, Mode::Major));
+        // a plain minor song (no major third) stays minor
+        h[8] = 0.5;
+        assert_eq!(blues_major((4, Mode::Minor), &h), (4, Mode::Minor));
+    }
     use super::*;
 
     #[test]

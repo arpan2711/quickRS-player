@@ -322,8 +322,8 @@ pub fn decrypt_chart(data: &[u8], keys: &Keys, platform: Platform) -> Result<Vec
     }
     if platform == Platform::Mac && keys.sng_mac.is_none() {
         return Err(Error::KeyMissing(
-            "This is a Mac package and its charts need the Mac SNG key. Add \"sng_mac_key\" to keys.json \
-             or set RSPLAY_SNG_MAC_KEY."
+            "a song from RS's Mac edition: it needs the Mac SNG key (Settings > Library > RS keys; \
+             sng_mac_key in keys.json)"
                 .into(),
         ));
     }

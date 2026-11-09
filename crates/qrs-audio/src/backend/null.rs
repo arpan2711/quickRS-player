@@ -74,10 +74,10 @@ impl Drop for NullStream {
 
 /// Screenshot mode's stand-in for the guitar interface, as the Python app's screenshot tool fakes it
 /// (`tools/screenshots.py` FakeEngine and FakeRing): a steady Eb3 three cents sharp on the first channel, under the
-/// name "NUX Audio (ASIO)" with its latencies. Listed only after `enable_stand_in` (quickrs --screenshots); its
+/// name "Guitar Interface (ASIO)" with an interface's latencies. Listed only after `enable_stand_in` (quickrs --screenshots); its
 /// output side, like "null", is heard by no one.
 pub const STAND_IN: &str = "null:stand-in";
-pub const STAND_IN_NAME: &str = "NUX Audio (ASIO)";
+pub const STAND_IN_NAME: &str = "Guitar Interface (ASIO)";
 static STAND_IN_LISTED: AtomicBool = AtomicBool::new(false);
 
 /// The stand-in's name: STAND_IN_NAME, or QUICKRS_SHOT_DEVICE (the shared screenshots show a Real Tone Cable).

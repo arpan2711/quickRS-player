@@ -120,8 +120,9 @@ pub fn check_key(text: &str) -> Result<Option<keys::Key>, String> {
     parse_hex_key(&hex, "key").map(Some).map_err(|e| e.to_string())
 }
 
-/// A whole keys.json pasted into a key box: its psarc and sng keys as text (None when it isn't one).
-pub fn split_pasted(text: &str) -> Option<(String, String)> {
+/// A whole keys.json pasted into a key box: its psarc, sng and Mac sng keys as text (None when it isn't one; a key
+/// it hasn't is "").
+pub fn split_pasted(text: &str) -> Option<(String, String, String)> {
     if !text.contains("psarc_key") && !text.contains("sng_key") {
         return None;
     }
@@ -130,11 +131,11 @@ pub fn split_pasted(text: &str) -> Option<(String, String)> {
         k.map(|k| k.iter().map(|b| format!("{b:02x}")).collect::<String>())
             .unwrap_or_default()
     };
-    Some((hex(k.psarc), hex(k.sng)))
+    Some((hex(k.psarc), hex(k.sng), hex(k.sng_mac)))
 }
 
-/// Write the two keys to `path` as keys.json (a Mac SNG key already in a keys file there is kept).
-pub fn write(path: &Path, psarc: keys::Key, sng: keys::Key) -> std::io::Result<()> {
+/// Write the keys to `path` as keys.json; without a Mac SNG key, one already in a keys file there is kept.
+pub fn write(path: &Path, psarc: keys::Key, sng: keys::Key, mac: Option<keys::Key>) -> std::io::Result<()> {
     let old_mac = std::fs::read_to_string(path)
         .ok()
         .and_then(|t| qrs_formats::keys_from_text(&t, "keys.json").ok())
@@ -142,7 +143,7 @@ pub fn write(path: &Path, psarc: keys::Key, sng: keys::Key) -> std::io::Result<(
     let k = Keys {
         psarc: Some(psarc),
         sng: Some(sng),
-        sng_mac: old_mac,
+        sng_mac: mac.or(old_mac),
         source: None,
     };
     qrs_library::paths::write_atomic(path, &keys::keys_to_json(&k))
@@ -245,7 +246,7 @@ mod tests {
         assert!(check_key(&A.replace('1', "g")).unwrap_err().contains("hex digit"));
         assert_eq!(
             split_pasted(&format!(r#"{{"psarc_key": "{A}", "sng_key": "{B}"}}"#)),
-            Some((A.to_string(), B.to_string()))
+            Some((A.to_string(), B.to_string(), String::new()))
         );
         assert_eq!(split_pasted(A), None);
     }
@@ -259,12 +260,16 @@ mod tests {
             format!(r#"{{"psarc_key": "{B}", "sng_key": "{B}", "sng_mac_key": "{A}"}}"#),
         )
         .unwrap();
-        write(&path, [1; 32], [2; 32]).unwrap();
+        write(&path, [1; 32], [2; 32], None).unwrap();
         let k = qrs_formats::load_keys(Some(&path), &[]).unwrap();
         assert_eq!(
             (k.psarc, k.sng, k.sng_mac),
             (Some([1; 32]), Some([2; 32]), Some([1; 32]))
         );
+        // a Mac key given replaces it (P51.2, Settings' third box)
+        write(&path, [1; 32], [2; 32], Some([3; 32])).unwrap();
+        let k = qrs_formats::load_keys(Some(&path), &[]).unwrap();
+        assert_eq!(k.sng_mac, Some([3; 32]));
         let _ = std::fs::remove_dir_all(&d);
     }
 

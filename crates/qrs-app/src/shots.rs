@@ -176,7 +176,7 @@ impl Shots {
             ("31_results_practice", Page::PlayerAt("results_practice")),
             ("32_no_audio", Page::PlayerAt("no_audio")),
         ];
-        let own: [(&str, Page, ThemeName); 127] = [
+        let own: [(&str, Page, ThemeName); 128] = [
             // sight reading on the tab page (P44.1): notation over the tab, and notation only
             ("13p_tab_both", Page::PlayerAt("tab_both"), mid),
             ("13p_tab_staff", Page::PlayerAt("tab_staff"), mid),
@@ -266,6 +266,8 @@ impl Shots {
             ),
             ("20b_settings_input_level", Page::Settings("audio_level"), mid),
             ("20d_settings_low_latency", Page::Settings("audio_lowlat"), mid),
+            // (issue #1: All devices open, where an ASIO driver left out is said; QUICKRS_ASIO_CRASH=<driver> shows one)
+            ("20f_settings_all_devices", Page::Settings("audio_devices"), mid),
             ("20c_settings_updates", Page::Settings("updates"), mid),
             // the settings redesign (P35, D92): the new pages, and each in Daylight
             ("20_settings_timing", Page::Settings("timing"), mid),

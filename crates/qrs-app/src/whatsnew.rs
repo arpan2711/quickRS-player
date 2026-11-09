@@ -24,12 +24,12 @@ pub const STARTS: u64 = 2;
 
 /// What's new in this version, a line each (the card lists them after an update).
 pub const WHATS_NEW: [&str; 6] = [
-    "Sight reading: standard notation above the tab or instead of it (the staff key, or S)",
-    "Five tuner faces: rack lamps, needle meter, strobe, pedal and digital (the dots beside TUNER)",
-    "The tuner opens on the song's tuning, sets any string to any note and knows a bass from a guitar",
-    "The highway shows accents, hammer-ons and pull-offs on open strings, and bends in chords",
-    "RS Highway full screen fills the window, with your score at the top right",
-    "Highway fixes: rounded corners, and no stray line through incoming notes",
+    "Sight reading reads like a tab book: one key per song, Tune down notes, beat 3 shown, shuffles, slurs, bends and slides",
+    "An ASIO driver that crashes (a Line 6 HX Stomp's did) can't close quickRS any more: it's left out, and Settings says so",
+    "The screen stays on while a song plays or a recording runs",
+    "Mac: key hints show the Command key, and Settings > Library has a box for the Mac SNG key (RS's Mac songs)",
+    "A jump in the sound device's timing no longer freezes the picture (a Mac stutter)",
+    "The amp room's \"edited\" note no longer covers the Catalogue button",
 ];
 
 /// Run once at start (before the first-time setup is checked): records this version as the last run and says
