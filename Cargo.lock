@@ -359,8 +359,6 @@ dependencies = [
 [[package]]
 name = "asio-sys"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "477f1cf5b65679fc2e5422af426f87becba79d1cfa2cd77eff3433e36c8021b9"
 dependencies = [
  "bindgen 0.72.1",
  "cc",
@@ -3362,7 +3360,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qrs-analysis"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "qrs-formats",
  "realfft",
@@ -3371,7 +3369,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-app"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3397,8 +3395,9 @@ dependencies = [
 
 [[package]]
 name = "qrs-audio"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
+ "asio-sys",
  "cpal",
  "crossbeam-channel",
  "lewton",
@@ -3420,7 +3419,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-cli"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -3437,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-convert"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "eframe",
  "image",
@@ -3450,7 +3449,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-formats"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "aes",
  "flate2",
@@ -3465,7 +3464,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-library"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "chrono",
  "directories",
@@ -3478,7 +3477,7 @@ dependencies = [
 
 [[package]]
 name = "qrs-ui"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "egui",
  "harfrust",

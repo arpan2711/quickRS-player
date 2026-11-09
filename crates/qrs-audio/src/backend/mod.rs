@@ -215,6 +215,26 @@ pub fn enumerate_except(skip: Option<Backend>) -> Vec<DeviceInfo> {
     out
 }
 
+/// Call first thing in `main` (D186): run as the ASIO helper (`--asio-probe`) this does its job and exits; otherwise
+/// ASIO drivers are from now on loaded in a helper process first, so one that crashes can't take quickRS with it.
+/// Nothing elsewhere (no ASIO).
+pub fn asio_helper() {
+    #[cfg(all(windows, feature = "asio"))]
+    asio::helper();
+}
+
+/// The ASIO drivers left out because they crashed or hung the helper (none elsewhere).
+pub fn asio_left_out() -> Vec<String> {
+    #[cfg(all(windows, feature = "asio"))]
+    {
+        asio::left_out()
+    }
+    #[cfg(not(all(windows, feature = "asio")))]
+    {
+        Vec::new()
+    }
+}
+
 /// The ASIO drivers installed (names only; nothing is loaded).
 pub fn asio_driver_names() -> Vec<String> {
     #[cfg(all(windows, feature = "asio"))]

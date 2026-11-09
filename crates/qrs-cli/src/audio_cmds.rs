@@ -49,6 +49,10 @@ pub fn devices(args: DeviceArgs) -> anyhow::Result<()> {
     let dirs = library_dirs(args.config.as_deref());
     let list = qrs_audio::backend::enumerate();
     let rs = devices::rs_setup::find_setup(&dirs);
+    for n in qrs_audio::backend::asio_left_out() {
+        println!("ASIO driver left out: \"{n}\" crashed when it was loaded (in a helper; quickRS goes on without it)
+");
+    }
     println!("Inputs (best first):");
     for r in rank_inputs(&list, rs.as_ref()) {
         let d = &r.device;

@@ -200,7 +200,7 @@ pub const GLOSSARY: &[(&str, &str)] = &[
     ),
     (
         "modeller",
-        "A box (like a NUX) that makes its own amp sound. Set it to a clean preset when quickRS's amps play.",
+        "A box (an amp modeller) that makes its own amp sound. Set it to a clean preset when quickRS's amps play.",
     ),
     ("dry", "Your instrument as it comes in: no amp, no effects."),
     (

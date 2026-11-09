@@ -30,6 +30,8 @@ pub struct Loaded {
     /// A stemmed feedpak's stems (`song` is their mix as the pack sets it).
     pub stems: Option<std::sync::Arc<StemSet>>,
     pub audio_error: String,
+    /// The song's key from all its parts (P49.1: one key signature per song, `keyguess::parts_key`), at sounding pitch.
+    pub key: Option<qrs_analysis::keyguess::Key>,
 }
 
 pub struct Loading {
@@ -53,6 +55,15 @@ impl Loading {
                     let sk = (!entry.song_key.is_empty()).then_some(entry.song_key.as_str());
                     let mut pkg = Package::open(&entry.path, &keys, sk).map_err(|e| e.to_string())?;
                     let arr = pkg.load(Some(&part_key), 1.0).map_err(|e| e.to_string())?;
+                    // the song's key from every part (a part that won't load is left out)
+                    let others: Vec<Arrangement> = pkg
+                        .arrangements
+                        .clone()
+                        .iter()
+                        .filter(|i| i.key != part_key)
+                        .filter_map(|i| pkg.load_info(i, 1.0).ok())
+                        .collect();
+                    let key = qrs_analysis::keyguess::parts_key(std::iter::once(&arr).chain(others.iter()));
                     // lyrics are a nice-to-have: never block the song on them
                     let lyrics = pkg.load_lyrics().unwrap_or_default();
                     let mut audio_error = String::new();
@@ -100,6 +111,7 @@ impl Loading {
                         song,
                         stems,
                         audio_error,
+                        key,
                     })
                 })();
                 let _ = tx.send(res);

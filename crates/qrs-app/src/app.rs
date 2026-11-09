@@ -186,6 +186,10 @@ pub struct QuickRs {
     /// Dev builds (D67): the watch for a new build at the exe's path, whether its "waiting for a pause" notice was
     /// given; after a swap, the song to open again and then where to seek to (and play on or not).
     devswap: Option<crate::devswap::DevSwap>,
+    /// The screen kept on while a song plays or a recording runs (P51.3).
+    awake: crate::awake::Awake,
+    /// Output timestamp jumps last logged, and when (P51.4).
+    lag_jumps_logged: (u64, std::time::Instant),
     swap_said: bool,
     /// When this app, a new build started, began closing for it.
     swap_closing: Option<std::time::Instant>,
@@ -214,8 +218,10 @@ impl QuickRs {
         });
         // screenshots never open a sound device (D13: nothing audible at night, and nothing of the owner's moves):
         // their guitar is the stand-in on the no-device backend
-        // (nor does drive mode, D180: a test copy beside the owner's quickRS mustn't take the owner's interface)
-        let mode = if shots.is_some() || crate::drive::on() {
+        // (nor does drive mode, D180: a test copy beside the owner's quickRS mustn't take the owner's interface;
+        // QUICKRS_DRIVE_AUDIO=1 does, on a machine handed over for tests: the real output's timing, P51.4)
+        let drive_audio = std::env::var("QUICKRS_DRIVE_AUDIO").is_ok_and(|v| v == "1");
+        let mode = if shots.is_some() || (crate::drive::on() && !drive_audio) {
             AudioMode::Shots
         } else if args.silent {
             AudioMode::Silent
@@ -258,6 +264,8 @@ impl QuickRs {
             backdrop: Backdrop::default(),
             dlg_backdrop: Backdrop::default(),
             devstatus: DevStatus::default(),
+            awake: Default::default(),
+            lag_jumps_logged: (0, std::time::Instant::now()),
             board_input: None,
             notewidget: NoteWidget::default(),
             shot_applied: None,
@@ -1042,7 +1050,8 @@ impl QuickRs {
             shots::Page::NoteWidget | shots::Page::NoteWidgetChords => self.lib.view = View::Home,
             shots::Page::DeviceOffer => {
                 self.lib.view = View::Home;
-                self.devstatus.stage("NUX Audio", "audio interface (ASIO driver)");
+                self.devstatus
+                    .stage("Guitar Interface", "audio interface (ASIO driver)");
             }
             shots::Page::Library => {
                 self.lib.view = View::All;
@@ -1511,6 +1520,21 @@ impl eframe::App for QuickRs {
         }
         self.state.refresh();
         self.check_setup();
+        // the screen stays on while a song plays or a recording runs (issue #7: it went dark mid-song)
+        let busy =
+            self.player.as_ref().is_some_and(|p| p.transport.playing()) || self.state.rec.status().is_some();
+        self.awake.set(busy && self.shots.is_none());
+        // output timestamps the song clock ignored (P51.4): logged, at most every 10 s
+        let jumps = qrs_audio::clock::LAG_JUMPS.load(std::sync::atomic::Ordering::Relaxed);
+        if jumps != self.lag_jumps_logged.0 && self.lag_jumps_logged.1.elapsed().as_secs() >= 10 {
+            let max = qrs_audio::clock::LAG_JUMP_MAX_NS.load(std::sync::atomic::Ordering::Relaxed);
+            crate::applog::write(&format!(
+                "audio: {} output timestamp(s) jumped and were ignored so far (largest {:.0} ms)",
+                jumps,
+                max as f64 / 1e6
+            ));
+            self.lag_jumps_logged = (jumps, std::time::Instant::now());
+        }
         // a new dev build at the exe's path (D67): swap it in, unless a song is playing or a recording running
         if let Some(ds) = &mut self.devswap
             && ds.poll()

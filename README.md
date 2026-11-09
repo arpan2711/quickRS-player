@@ -38,17 +38,15 @@ AI model, no upload, and the same take always gets the same answer. See
 
 ### Download
 
-* **Windows 10 or 11 (64-bit):** `quickRS-0.5.5-windows-x64.zip` from the
+* **Windows 10 or 11 (64-bit):** `quickRS-0.5.6-windows-x64.zip` from the
   [latest release](https://github.com/arpan2711/quickRS-player/releases/latest).
   There is no installer: unzip it and run `quickrs.exe`.
-* **macOS 11 or later (beta):** `quickRS-0.5.4-macos-universal.dmg` (or the
-  `.zip`) from the [0.5.4 release](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.4) (0.5.5 is
-  Windows only for now).
-  One app for Apple silicon and Intel
-  Macs. Its tests run on GitHub's Macs, but it hasn't been tried on a real Mac
-  since 0.3.0 (reports welcome), and it isn't notarised by Apple, so the
-  first start takes an extra step. See [docs/INSTALL.md](docs/INSTALL.md#macos).
-  On a Mac, the keys written Ctrl in these docs are Cmd (a take is `Cmd+R`).
+* **macOS 11 or later (beta):** `quickRS-0.5.6-macos-universal.dmg` (or the
+  `.zip`) from the same release. One app for Apple silicon and Intel Macs.
+  0.5.6 was tried on a MacBook (Apple silicon, macOS 15) before release; it
+  isn't notarised by Apple, so the first start takes an extra step. See
+  [docs/INSTALL.md](docs/INSTALL.md#macos). On a Mac, the app's key hints show
+  ⌘, and the keys written Ctrl in these docs are Cmd (a take is `Cmd+R`).
 
 No songs and no Rocksmith keys are included.
 
@@ -107,6 +105,18 @@ Easy to miss, and some of the best parts. `F1` in a song lists every key.
 * **Sounds late?** `,` and `.` nudge the sync, `Ctrl+,` and `Ctrl+.` your
   guitar's timing.
 
+
+### What's new in 0.5.6
+
+* **Sight reading reads like a tab book**: one key for the whole song, a *Tune down ½ step* note for Eb and D tunings
+  (written as fingered, with fingered chord names), beat 3 always shown, shuffles written as eighths, rests and ties
+  the way books group them, and slurs, slides, bends, palm mutes, harmonics, accents, vibrato and let ring on the staff.
+* **A crashing ASIO driver can't close quickRS**: each driver is tried in a separate helper first, and one that crashes
+  (a Line 6 HX Stomp's did, #1) is left out; Settings > *Sound* > *All devices* says which.
+* **The screen stays on** while a song plays or a recording runs (Windows and Mac, #7).
+* **Mac**: the key hints show ⌘, Settings > *Library* has a box for the Mac SNG key (#8), the amp room's *edited*
+  note no longer covers *Catalogue* (#6), and a jump in the sound device's timing no longer freezes the picture (#9).
+  See the [0.5.6 release notes](https://github.com/arpan2711/quickRS-player/releases/tag/v0.5.6).
 
 ### What's new in 0.5.5
 

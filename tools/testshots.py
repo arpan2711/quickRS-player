@@ -59,8 +59,12 @@ def render(exe, out, a):
     env = dict(os.environ)
     env["QUICKRS_DATA"] = str(DATA)
     env["QUICKRS_SHOTS"] = a.shots
-    for k in ("QUICKRS_SHOT_SONG", "QUICKRS_SHOT_SEQ", "QUICKRS_SHOT_JUDGE"):
+    for k in ("QUICKRS_SHOT_SONG", "QUICKRS_SHOT_SEQ", "QUICKRS_SHOT_JUDGE", "QUICKRS_SHOT_PART", "QUICKRS_SHOT_AT"):
         env.pop(k, None)
+    if a.part:
+        env["QUICKRS_SHOT_PART"] = a.part
+    if a.at is not None:
+        env["QUICKRS_SHOT_AT"] = str(a.at)
     if a.song:
         env["QUICKRS_SHOT_SONG"] = a.song
     if a.seq:
@@ -106,6 +110,8 @@ def main():
     ap.add_argument("--shots", help="shot names, comma-separated (an exact name takes only that shot)")
     ap.add_argument("--song", help="part of the song's title")
     ap.add_argument("--seq", help="song times (rising, comma-separated) or t0:t1:fps")
+    ap.add_argument("--part", help="the part's key: lead, rhythm, bass, combo, lead2, ...")
+    ap.add_argument("--at", type=float, help="the moment of the song, in seconds (QUICKRS_SHOT_AT)")
     ap.add_argument("--judge", choices=["hit", "late", "early", "miss"])
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="config for this run only")
     ap.add_argument("--size", default="1600x900")

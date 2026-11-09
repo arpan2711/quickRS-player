@@ -53,7 +53,8 @@ The Mac version is a beta. It runs on macOS 11 (Big Sur) or later, on Apple
 silicon and Intel Macs (one universal app), built from the same source as the
 Windows version. So far it's been tested on one Mac (a MacBook Air with Apple
 silicon, macOS 15, a Focusrite Scarlett Solo), so please report what goes wrong.
-On a Mac, the keys written Ctrl in these docs are Cmd (a take is `Cmd+R`).
+On a Mac, the app's key hints show ⌘, and the keys written Ctrl in these docs are Cmd (a take is
+`Cmd+R`).
 
 1. Open the [latest release](https://github.com/arpan2711/quickRS-player/releases/latest)
    and download `quickRS-0.3.0-macos-universal.dmg`. (The

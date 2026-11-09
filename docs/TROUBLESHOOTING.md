@@ -15,6 +15,9 @@ please [report it](#reporting-a-bug).
 * [Everything is late or early](#everything-is-late-or-early)
 * [Clicks or crackles](#clicks-or-crackles)
 * [The update didn't install](#the-update-didnt-install)
+* [A song needs the Mac SNG key](#a-song-needs-the-mac-sng-key)
+* [quickRS closed when I switched my interface on](#quickrs-closed-when-i-switched-my-interface-on)
+* [The screen goes dark during a song](#the-screen-goes-dark-during-a-song)
 * [Windows or macOS won't open it](#windows-or-macos-wont-open-it)
 * [The window flashes and closes](#the-window-flashes-and-closes)
 
@@ -177,6 +180,30 @@ output* off.
 * No notice at all: check *Check for updates on start* in Settings >
   *Updates*, or press *Check for updates* there. A version you skipped shows
   there with *Offer it again*.
+
+
+### A song needs the Mac SNG key
+
+Songs from RS's Mac edition (files ending `_m.psarc`) are encrypted with a
+third key. Open Settings (`F2`) > *Library* > *RS KEYS*, paste it into *Mac
+SNG key* and press *Save keys*; your other keys stay as they are. See
+[GETTING-SONGS](GETTING-SONGS.md#paste-them-in-settings).
+
+
+### quickRS closed when I switched my interface on
+
+Before 0.5.6, an interface whose ASIO driver crashes (a Line 6 HX Stomp's,
+#1) closed quickRS as soon as Windows saw it, whatever device was chosen.
+Since 0.5.6 that driver is left out and Settings > *Sound* > *All devices*
+says so; pick the interface's WASAPI entry, and check the maker's site for a
+newer driver.
+
+
+### The screen goes dark during a song
+
+Since 0.5.6 quickRS keeps the screen on while a song plays or a recording
+runs, on Windows and macOS, and lets it sleep again when you pause. On Linux
+it doesn't yet: set the screen's blank time longer in your desktop's settings.
 
 
 ### Windows or macOS won't open it

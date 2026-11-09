@@ -179,6 +179,8 @@ pub struct SettingsView {
     /// (looked for once).
     psarc_in: String,
     sng_in: String,
+    /// The Mac SNG key box (optional: RS's own Mac packages need it, P51.2).
+    mac_in: String,
     key_note: Option<(String, bool)>,
     dlc_found: Option<Vec<std::path::PathBuf>>,
     /// Set with `closed`: open the first-time setup (P23.14), on this page if set (Tone's Suggested captures: "nam").
@@ -225,6 +227,7 @@ impl SettingsView {
             guide_flow: None,
             psarc_in: String::new(),
             sng_in: String::new(),
+            mac_in: String::new(),
             key_note: None,
             dlc_found: None,
             first_setup: false,
@@ -312,6 +315,13 @@ impl SettingsView {
             self.section = sound_id();
             self.folds.open("trim");
             self.scroll = 2000.0;
+            return;
+        }
+        if section == "audio_devices" {
+            // (the screenshots: the Sound page's All devices open, at the end, issue #1)
+            self.section = sound_id();
+            self.folds.open("devices");
+            self.scroll = 4000.0;
             return;
         }
         if section == "audio_lowlat" || section == "timing_lowlat" {

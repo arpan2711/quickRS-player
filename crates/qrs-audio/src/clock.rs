@@ -18,6 +18,49 @@ pub fn now_ns() -> u64 {
     epoch().elapsed().as_nanos() as u64
 }
 
+/// The delay an output reports from its callback to when the block is heard, steadied (P51.4, issue #9). The song
+/// clock never runs backwards, so one block whose reported delay jumps far ahead holds the picture still until real
+/// time catches up (a Mac tester's video: the whole window froze 0.35 s and 1.2 s and carried on without catching up,
+/// the sound fine). A block more than `TOLERANCE` off the running delay takes the running one; a new delay that keeps
+/// up for `ADOPT` blocks running (a real change: another device, Bluetooth) is taken. Real-time safe (no allocation).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SteadyLag {
+    est: Option<f64>,
+    off: u32,
+}
+
+/// Output delays ignored so far by `SteadyLag` (all streams), and the largest jump (ns), for the log.
+pub static LAG_JUMPS: AtomicU64 = AtomicU64::new(0);
+pub static LAG_JUMP_MAX_NS: AtomicU64 = AtomicU64::new(0);
+
+impl SteadyLag {
+    pub const TOLERANCE_NS: f64 = 20e6;
+    pub const ADOPT: u32 = 24;
+
+    /// The delay (ns) to stamp this block with, from the one reported.
+    pub fn delay(&mut self, reported_ns: u64) -> u64 {
+        let raw = reported_ns as f64;
+        let Some(est) = self.est else {
+            self.est = Some(raw);
+            return reported_ns;
+        };
+        if (raw - est).abs() <= Self::TOLERANCE_NS {
+            self.off = 0;
+            self.est = Some(est + (raw - est) * 0.05);
+            return reported_ns;
+        }
+        self.off += 1;
+        if self.off >= Self::ADOPT {
+            self.off = 0;
+            self.est = Some(raw);
+            return reported_ns;
+        }
+        LAG_JUMPS.fetch_add(1, Ordering::Relaxed);
+        LAG_JUMP_MAX_NS.fetch_max((raw - est).abs() as u64, Ordering::Relaxed);
+        est.max(0.0) as u64
+    }
+}
+
 /// What the output side publishes every block: the song time heard at a wall-clock instant.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SongClock {
@@ -108,6 +151,25 @@ impl AtomicF32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_jump_in_the_reported_delay_is_ignored_and_a_lasting_change_taken() {
+        let mut l = super::SteadyLag::default();
+        let ms = |v: f64| (v * 1e6) as u64;
+        assert_eq!(l.delay(ms(12.0)), ms(12.0));
+        assert_eq!(l.delay(ms(13.0)), ms(13.0)); // jitter passes
+        // one block says 1.2 s: the running delay instead
+        let d = l.delay(ms(1200.0));
+        assert!(d < ms(14.0) && d > ms(11.0), "{d}");
+        assert_eq!(l.delay(ms(12.5)), ms(12.5));
+        // a real change (another device) is taken once it lasts
+        let mut last = 0;
+        for _ in 0..super::SteadyLag::ADOPT {
+            last = l.delay(ms(180.0));
+        }
+        assert_eq!(last, ms(180.0));
+        assert_eq!(l.delay(ms(181.0)), ms(181.0));
+    }
+
     use super::*;
 
     #[test]

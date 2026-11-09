@@ -522,7 +522,7 @@ impl SettingsView {
                     + px(6.0)
                     + 2.0 * l12
                     + px(18.0)
-                    + 2.0 * (l13 + px(6.0) + box_h + px(4.0) + l12 + px(10.0))
+                    + 3.0 * (l13 + px(6.0) + box_h + px(4.0) + l12 + px(10.0))
                     + 2.0 * l12
                     + px(14.0)
                     + px(46.0)
@@ -551,7 +551,11 @@ impl SettingsView {
         };
         let (status, color, detail) = match &st.key_state {
             KeyState::Found { path, misnamed } => (
-                "Keys found: psarc songs play".to_string(),
+                if st.keys.sng_mac.is_some() {
+                    "Keys found: psarc songs play (the Mac key too)".to_string()
+                } else {
+                    "Keys found: psarc songs play".to_string()
+                },
                 th.hit,
                 match path {
                     Some(p) if *misnamed => (
@@ -612,10 +616,18 @@ impl SettingsView {
             .y;
         text::draw(&p, &detail.1, pos2(x, ly), Align2::LEFT_TOP, cs, Some(wd));
         y += 2.0 * l12 + px(18.0);
-        // the two boxes; a whole keys.json pasted into either fills both
+        // the boxes; a whole keys.json pasted into any fills them all
         let mut pasted = None;
-        for (which, label) in [("psarc", "PSARC key"), ("sng", "SNG key")] {
-            text::draw(
+        for (which, label, note) in [
+            ("psarc", "PSARC key", ""),
+            ("sng", "SNG key", ""),
+            (
+                "mac",
+                "Mac SNG key",
+                "optional: only RS's own songs from its Mac edition need it",
+            ),
+        ] {
+            let lr = text::draw(
                 &p,
                 label,
                 pos2(x, y),
@@ -623,18 +635,28 @@ impl SettingsView {
                 Style::new(13.0, 700, th.text),
                 None,
             );
+            if !note.is_empty() {
+                text::draw(
+                    &p,
+                    note,
+                    pos2(lr.max.x + px(10.0), lr.center().y),
+                    Align2::LEFT_CENTER,
+                    Style::new(12.0, 500, th.caption),
+                    Some(x + wd - lr.max.x - px(10.0)),
+                );
+            }
             y += l13 + px(6.0);
             let r = Rect::from_min_size(pos2(x, y), vec2(wd, box_h));
-            let value = if which == "psarc" {
-                &mut self.psarc_in
-            } else {
-                &mut self.sng_in
+            let value = match which {
+                "psarc" => &mut self.psarc_in,
+                "sng" => &mut self.sng_in,
+                _ => &mut self.mac_in,
             };
             let resp = text_box(ui, r, which, value, "64 hex characters");
             if resp.changed()
-                && let Some(both) = keyfile::split_pasted(value)
+                && let Some(all) = keyfile::split_pasted(value)
             {
-                pasted = Some(both);
+                pasted = Some(all);
             }
             let (msg, ok) = match keyfile::check_key(value) {
                 Ok(None) => (String::new(), true),
@@ -652,14 +674,15 @@ impl SettingsView {
             );
             y += l12 + px(10.0);
         }
-        if let Some((a, b)) = pasted {
+        if let Some((a, b, m)) = pasted {
             self.psarc_in = a;
             self.sng_in = b;
+            self.mac_in = m;
         }
         let save_path = st.data.keys();
         let hy = text::draw(
             &p,
-            "quickRS doesn't come with the keys. A whole keys.json pasted into either box fills both.",
+            "quickRS doesn't come with the keys. A whole keys.json pasted into any box fills them all.",
             pos2(x, y),
             Align2::LEFT_TOP,
             cs,
@@ -676,8 +699,7 @@ impl SettingsView {
             Some(wd),
         );
         y += 2.0 * l12 + px(14.0);
-        let ready = matches!(keyfile::check_key(&self.psarc_in), Ok(Some(_)))
-            && matches!(keyfile::check_key(&self.sng_in), Ok(Some(_)));
+        let ready = self.keys_to_save(st).is_ok();
         let sw = widgets::button_width(&ctx, "Save keys", "", 14.0, false);
         let save = Rect::from_min_size(pos2(x, y), vec2(sw, px(46.0)));
         self.button(
@@ -721,16 +743,40 @@ impl SettingsView {
         card.max.y
     }
 
-    /// Save the keys typed in the boxes as keys.json, and use them.
-    pub(super) fn save_keys(&mut self, st: &mut AppState) {
-        let (Ok(Some(a)), Ok(Some(b))) = (
+    /// The keys the boxes would save: the two typed in (and a Mac key if typed), or a Mac key alone added to the
+    /// keys in use (P51.2: someone whose keys work adds only the third).
+    fn keys_to_save(
+        &self,
+        st: &AppState,
+    ) -> Result<
+        (
+            qrs_formats::keys::Key,
+            qrs_formats::keys::Key,
+            Option<qrs_formats::keys::Key>,
+        ),
+        String,
+    > {
+        let bad = || "Both keys are needed, 64 hex characters each".to_string();
+        let mac = keyfile::check_key(&self.mac_in).map_err(|e| format!("Mac SNG key: {e}"))?;
+        match (
             keyfile::check_key(&self.psarc_in),
             keyfile::check_key(&self.sng_in),
-        ) else {
-            self.key_note = Some(("Both keys are needed, 64 hex characters each".into(), false));
-            return;
-        };
-        self.write_keys(st, a, b);
+        ) {
+            (Ok(Some(a)), Ok(Some(b))) => Ok((a, b, mac)),
+            (Ok(None), Ok(None)) => match (mac, st.keys.psarc, st.keys.sng) {
+                (Some(m), Some(a), Some(b)) => Ok((a, b, Some(m))),
+                _ => Err(bad()),
+            },
+            _ => Err(bad()),
+        }
+    }
+
+    /// Save the keys typed in the boxes as keys.json, and use them.
+    pub(super) fn save_keys(&mut self, st: &mut AppState) {
+        match self.keys_to_save(st) {
+            Ok((a, b, m)) => self.write_keys(st, a, b, m),
+            Err(e) => self.key_note = Some((e, false)),
+        }
     }
 
     /// Load a keys file picked in the system's dialog (keys.json, keys.json.txt...) and save it as keys.json.
@@ -751,19 +797,26 @@ impl SettingsView {
             .unwrap_or_default();
         match qrs_formats::keys_from_text(&text, &name) {
             Ok(k) => match (k.psarc, k.sng) {
-                (Some(a), Some(b)) => self.write_keys(st, a, b),
+                (Some(a), Some(b)) => self.write_keys(st, a, b, k.sng_mac),
                 _ => self.key_note = Some((format!("{name} needs both psarc_key and sng_key"), false)),
             },
             Err(e) => self.key_note = Some((e.to_string(), false)),
         }
     }
 
-    fn write_keys(&mut self, st: &mut AppState, a: qrs_formats::keys::Key, b: qrs_formats::keys::Key) {
+    fn write_keys(
+        &mut self,
+        st: &mut AppState,
+        a: qrs_formats::keys::Key,
+        b: qrs_formats::keys::Key,
+        mac: Option<qrs_formats::keys::Key>,
+    ) {
         let path = st.data.keys();
-        match keyfile::write(&path, a, b) {
+        match keyfile::write(&path, a, b, mac) {
             Ok(()) => {
                 self.psarc_in.clear();
                 self.sng_in.clear();
+                self.mac_in.clear();
                 st.reload_keys();
                 let ok = matches!(st.key_state, KeyState::Found { .. });
                 self.key_note = Some(if ok {

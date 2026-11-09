@@ -257,7 +257,7 @@ pub fn random_key(ui: &Ui, rect: Rect, id: impl egui::AsId, tip: &str) -> egui::
     let down = resp.is_pointer_button_down_on();
     let c = rect.center() + vec2(0.0, if down { pixels(1.0) } else { 0.0 });
     icons::icon(p, Icon::Shuffle, c, 17.0, if hot { th.text } else { th.text_2 });
-    resp.on_hover_text(tip)
+    resp.on_hover_text(qrs_ui::text::os_keys(tip).into_owned())
 }
 
 impl View {

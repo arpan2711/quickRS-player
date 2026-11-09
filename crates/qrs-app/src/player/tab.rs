@@ -778,7 +778,8 @@ impl TabView {
         // (compact: the section labels share the chord names' line, and the margins are tighter)
         self.top_m = ipx(if self.compact { 46.0 } else { 72.0 });
         self.band_m = ipx(if self.compact { 26.0 } else { 30.0 });
-        let lane_h = if c.notation && chart.rhythm.is_some() && c.score.tab() {
+        // (with the staff shown its rhythm is the one: the tab's own rhythm row would contradict a shuffle, P49)
+        let lane_h = if c.notation && chart.rhythm.is_some() && c.score.tab() && !c.score.staff() {
             ipx(if self.compact { 40.0 } else { 46.0 })
         } else {
             0.0
@@ -831,8 +832,29 @@ impl TabView {
                 lower_bound(&times, m.end - 1e-3),
             );
             let ts = &times[i0..i1.max(i0)];
+            // the staff's notes need room too (P49): a bar the tab sees as empty or sparse can hold held notes, rests
+            // and a slide-out that the staff draws
+            let staff_need = match &chart.rhythm {
+                Some(rh) if c.score.staff() => {
+                    let (a, b) = (
+                        lower_bound(&rh.staff_times, m.start - 1e-4),
+                        lower_bound(&rh.staff_times, m.end - 1e-4),
+                    );
+                    let n = rh.staff[a..b.max(a)].iter().filter(|p| !p.bar_rest).count() as f64;
+                    if n > 0.0 {
+                        n * 3.2 * self.sp + 3.0 * self.sp
+                    } else {
+                        0.0
+                    }
+                }
+                _ => 0.0,
+            };
             if ts.is_empty() {
-                m.w = (40.0 * s).max(m.beats as f64 * 16.0 * s * wzoom);
+                m.w = self.row_w.min(
+                    (40.0 * s)
+                        .max(m.beats as f64 * 16.0 * s * wzoom)
+                        .max(staff_need + 2.0 * self.pad),
+                );
                 continue;
             }
             let span = m.end - m.start;
@@ -875,6 +897,7 @@ impl TabView {
                     p_w = w;
                 }
             }
+            need = need.max(staff_need);
             m.w = self
                 .row_w
                 .min((m.beats as f64 * beat_px).max(need + 2.0 * self.pad));
@@ -1541,6 +1564,10 @@ impl TabView {
                     Some(key) if !ch.name.trim().is_empty() => {
                         qrs_analysis::chordname::name_in_key(ch.name.trim(), key).into()
                     }
+                    // (with the staff written as fingered, P49: the fingered name, the sounding one after it)
+                    _ if c.score.staff() && chart.written_shift != 0 && !ch.name.trim().is_empty() => {
+                        staff::fingered_name(chart, ch.name.trim()).into()
+                    }
                     _ => ch.name.as_str().into(),
                 };
                 if !name.is_empty() && (last_name != Some(ch.name.as_str()) || at - last_x > 160.0 * s) {
@@ -1784,7 +1811,7 @@ impl TabView {
                     }
                 }
             }
-            if c.notation && c.ear.is_none() && c.score.tab() {
+            if c.notation && c.ear.is_none() && c.score.tab() && !c.score.staff() {
                 self.draw_rhythm(&pc, c, y0 + self.staff_h + ipx(10.0), r_start, r_end);
             }
         }

@@ -17,6 +17,7 @@ mod app;
 mod applog;
 #[cfg(feature = "nux")]
 mod assets;
+mod awake;
 mod backdrop;
 mod calibrate;
 mod captures;
@@ -118,6 +119,8 @@ fn attach_console() {
 }
 
 fn main() -> anyhow::Result<()> {
+    // (the ASIO helper, run by quickRS itself, exits here; issue #1, D186)
+    qrs_audio::backend::asio_helper();
     applog::mark_start();
     // the log from the start, so a window that never opens still leaves a reason (P28.3)
     applog::init(qrs_library::paths::DataDir::locate().cache());
@@ -174,8 +177,10 @@ fn main() -> anyhow::Result<()> {
         viewport = viewport.with_maximized(r.maximized).with_fullscreen(r.fullscreen);
     }
     // drive mode (D180): off-screen and not taking focus, so the owner's screen and typing are left alone
+    // (QUICKRS_DRIVE_SHOW=1: on screen, for timing a machine handed over for tests: a Mac throttles a window it can't
+    // see, P51.4)
     drive::check()?;
-    if drive::on() {
+    if drive::on() && std::env::var("QUICKRS_DRIVE_SHOW").is_err() {
         viewport = viewport
             .with_position([-30000.0, -30000.0])
             .with_active(false)

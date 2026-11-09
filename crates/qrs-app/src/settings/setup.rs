@@ -1072,9 +1072,10 @@ impl FirstSetup {
                 );
             }
         }
-        if let Some((a, b)) = pasted {
+        if let Some((a, b, m)) = pasted {
             self.view.psarc_in = a;
             self.view.sng_in = b;
+            self.view.mac_in = m;
         }
         y += box_h + px(20.0);
         let ready = matches!(keyfile::check_key(&self.view.psarc_in), Ok(Some(_)))

@@ -234,8 +234,58 @@ pub struct Chart {
     pub shape_starts: Vec<f64>,
     pub shape_new: Vec<bool>,
     pub shape_picked: Vec<bool>,
-    /// The part's own key, from its notes (`keyguess::song_key`): the chord names as numbers go by it.
+    /// The song's key at sounding pitch (P49.1: from all its parts when the player has them, `keyguess::parts_key`;
+    /// else this part's own, `keyguess::song_key`): the chord names as numbers go by it.
     pub key: Option<qrs_analysis::keyguess::Key>,
+    /// Semitones the notation is written above sounding pitch (P49.1): a tuning that moves every string alike (Eb or
+    /// D standard) is written as fingered, as books do, with `tune_note` saying so; 0 for standard and drop tunings.
+    pub written_shift: i32,
+    /// The tuning note over the staff ("Tune down ½ step", "6 = D", both), empty for standard tuning.
+    pub tune_note: String,
+}
+
+/// How a tuning is written (P49.1): (semitones written above sounding, the note over the staff). The offset most
+/// strings share (above the lowest) is taken out and named ("Tune down ½ step"); strings that differ from it are
+/// named by number and the note they're tuned to as written ("6 = D", a drop tuning).
+pub fn written_tuning(offsets: &[i32], n_strings: usize, open_midi: &[i32]) -> (i32, String) {
+    let n = n_strings.clamp(1, offsets.len().max(1));
+    let offs: Vec<i32> = (0..n).map(|i| offsets.get(i).copied().unwrap_or(0)).collect();
+    // the most common offset among the strings above the lowest (all of them for a 1-string chart)
+    let pool = if offs.len() > 1 { &offs[1..] } else { &offs[..] };
+    let common = pool
+        .iter()
+        .copied()
+        .max_by_key(|&o| (pool.iter().filter(|&&x| x == o).count(), -(o.abs())))
+        .unwrap_or(0);
+    let shift = if (-5..=2).contains(&common) { -common } else { 0 };
+    let mut parts: Vec<String> = Vec::new();
+    if shift != 0 {
+        let amount = match shift.abs() {
+            1 => "½ step".to_string(),
+            2 => "1 step".to_string(),
+            3 => "1½ steps".to_string(),
+            4 => "2 steps".to_string(),
+            k => format!("{k} semitones"),
+        };
+        // (and the strings it gives, low to high, as books print them: "Tune down ½ step: Eb Ab Db Gb Bb Eb")
+        const SOUND: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+        let strings: Vec<&str> = (0..n)
+            .map(|i| SOUND[open_midi.get(i).copied().unwrap_or(0).rem_euclid(12) as usize])
+            .collect();
+        parts.push(format!(
+            "Tune {} {amount}: {}",
+            if shift > 0 { "down" } else { "up" },
+            strings.join(" ")
+        ));
+    }
+    const NAMES: [&str; 12] = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+    for (i, &o) in offs.iter().enumerate() {
+        if o + shift != 0 {
+            let written = open_midi.get(i).copied().unwrap_or(0) + shift;
+            parts.push(format!("{} = {}", n - i, NAMES[written.rem_euclid(12) as usize]));
+        }
+    }
+    (shift, parts.join(";  "))
 }
 
 impl Chart {
@@ -352,6 +402,8 @@ impl Chart {
             n_strings: arr.string_count(),
             string_names: arr.string_labels(),
             key: qrs_analysis::keyguess::song_key(&arr),
+            written_shift: 0,
+            tune_note: String::new(),
             arr,
             glyphs,
             gtimes,
@@ -372,6 +424,9 @@ impl Chart {
             shape_picked,
         };
         chart.build_rhythm(nota);
+        let (shift, note) = written_tuning(&chart.arr.tuning, chart.n_strings, &chart.opens);
+        chart.written_shift = shift;
+        chart.tune_note = note;
         chart
     }
 
@@ -608,6 +663,8 @@ pub struct PlayerView {
     pub(super) tuner_edit: bool,
     /// The string the tuner tunes to alone (a click on its key), however far off.
     pub(super) tuner_lock: Option<usize>,
+    /// The song's key from all its parts (P49.1), kept for every part loaded later.
+    pub(super) song_key: Option<qrs_analysis::keyguess::Key>,
     /// The tuner's face (P48.3; config `tuner_face`) and its moving parts.
     pub(super) tuner_face: tuner_face::Face,
     pub(super) tuner_anim: tuner_face::Anim,
@@ -745,6 +802,7 @@ impl PlayerView {
             song,
             stems,
             audio_error,
+            key: song_key,
         } = loaded;
         let nota = Nota::from_config(st);
         let mut audio_error = audio_error;
@@ -784,7 +842,10 @@ impl PlayerView {
             .find(|a| a.key == part)
             .map(|a| a.name.clone())
             .unwrap_or_else(|| arr.name.clone());
-        let chart = Chart::new(arr, transport.duration(), &nota);
+        let mut chart = Chart::new(arr, transport.duration(), &nota);
+        if song_key.is_some() {
+            chart.key = song_key; // (P49.1: one key for the song, from all its parts)
+        }
         let scorer = Scorer::new(&chart.arr);
         let ids = st.ids(g);
         let sid = entry.id();
@@ -860,6 +921,7 @@ impl PlayerView {
             tuner_custom: None,
             tuner_edit: false,
             tuner_lock: None,
+            song_key,
             tuner_face: tuner_face::Face::parse(&st.config.str("tuner_face", "")),
             tuner_anim: Default::default(),
             tuner_hist: VecDeque::new(),
@@ -1112,6 +1174,9 @@ impl PlayerView {
         self.nbn_release(true); // the note waited at was the old chart's
         let started = self.started_playing();
         self.chart = Chart::new(arr, self.transport.duration(), &self.nota);
+        if self.song_key.is_some() {
+            self.chart.key = self.song_key;
+        }
         self.revealed = vec![false; self.chart.glyphs.len()];
         if let Some(c) = self.coach.as_mut() {
             // the item's notes as this part has them; the ones found stay found
@@ -3283,6 +3348,9 @@ impl PlayerView {
             self.shot_arr = Some(base);
         }
         self.chart = Chart::new(arr, self.transport.duration(), &self.nota);
+        if self.song_key.is_some() {
+            self.chart.key = self.song_key;
+        }
         self.revealed = vec![false; self.chart.glyphs.len()];
         self.scorer = self.new_scorer();
         self.relink_glyphs();
@@ -6534,6 +6602,36 @@ fn techify(arr: &mut Arrangement, kind: &str, t0: f64, t1: f64) {
 
 #[cfg(test)]
 mod tests {
+    use super::written_tuning;
+
+    #[test]
+    fn tunings_are_written_as_books_write_them() {
+        // standard: nothing to say
+        assert_eq!(
+            written_tuning(&[0; 6], 6, &[40, 45, 50, 55, 59, 64]),
+            (0, String::new())
+        );
+        // Eb standard: written as fingered, a half step up
+        let eb = [39, 44, 49, 54, 58, 63];
+        assert_eq!(
+            written_tuning(&[-1; 6], 6, &eb),
+            (1, "Tune down ½ step: Eb Ab Db Gb Bb Eb".to_string())
+        );
+        // drop D: at pitch, the dropped string named
+        let dd = [38, 45, 50, 55, 59, 64];
+        assert_eq!(
+            written_tuning(&[-2, 0, 0, 0, 0, 0], 6, &dd),
+            (0, "6 = D".to_string())
+        );
+        // drop C# (Eb with the low string down a whole step): written as drop D, a half step down
+        let dcs = [37, 44, 49, 54, 58, 63];
+        assert_eq!(
+            written_tuning(&[-3, -1, -1, -1, -1, -1], 6, &dcs),
+            (1, "Tune down ½ step: Db Ab Db Gb Bb Eb;  6 = D".to_string())
+        );
+        // a 4-string bass in D standard
+        assert_eq!(written_tuning(&[-2; 4], 4, &[26, 31, 36, 41]).0, 2);
+    }
     use super::snap_at;
 
     #[test]

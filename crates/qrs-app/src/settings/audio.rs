@@ -1082,14 +1082,30 @@ impl SettingsView {
                 ..Default::default()
             },
         );
+        // (an ASIO driver that crashed the helper when it was loaded, issue #1: said here, where you'd look for it)
+        let left = qrs_audio::backend::asio_left_out();
+        let (note, lines) = if left.is_empty() {
+            ("after plugging something in that isn't listed".to_string(), 1)
+        } else {
+            (
+                format!(
+                    "Left out: the ASIO driver {} crashed when it was tried (its device may still be here without ASIO)",
+                    left.iter()
+                        .map(|n| format!("\"{n}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                2,
+            )
+        };
         caption_lines(
             ui.painter(),
-            "after plugging something in that isn't listed",
+            &note,
             x + bw + px(16.0),
-            y + px(14.0),
+            y + px(if lines == 1 { 14.0 } else { 6.0 }),
             body.max.x - x - bw - px(16.0),
             12.0,
-            1,
+            lines,
         );
         y += px(46.0) + px(14.0);
         let gap = px(24.0);

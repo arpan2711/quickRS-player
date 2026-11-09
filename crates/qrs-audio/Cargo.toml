@@ -12,7 +12,7 @@ workspace = true
 [features]
 default = []
 # ASIO through cpal (needs LIBCLANG_PATH; the ASIO SDK is downloaded by the build)
-asio = ["cpal/asio"]
+asio = ["cpal/asio", "dep:asio-sys"]
 # the real units' names in brackets beside the soundalike models (the owner's build only, D42, D58)
 brands = []
 
@@ -35,6 +35,8 @@ nam-rs = "0.4.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-core.workspace = true
+# (the patched copy in vendor/: which drivers this process may load, D186)
+asio-sys = { version = "0.4", optional = true }
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
