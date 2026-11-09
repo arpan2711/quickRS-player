@@ -359,6 +359,8 @@ dependencies = [
 [[package]]
 name = "asio-sys"
 version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "477f1cf5b65679fc2e5422af426f87becba79d1cfa2cd77eff3433e36c8021b9"
 dependencies = [
  "bindgen 0.72.1",
  "cc",
@@ -3398,6 +3400,7 @@ name = "qrs-audio"
 version = "0.5.6"
 dependencies = [
  "asio-sys",
+ "cc",
  "cpal",
  "crossbeam-channel",
  "lewton",

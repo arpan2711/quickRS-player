@@ -888,6 +888,12 @@ fn the_tuner_is_the_songs_and_each_string_can_be_set() {
     let (name, song) = h.p.tuner_targets();
     assert_eq!(song, vec![40, 45, 50, 55, 59, 64], "a guitar part: six strings");
     assert!(name.contains("this song"), "{name}");
+    h.p.mixer.pitch = 1;
+    assert_eq!(
+        h.p.tuner_targets(),
+        ("E Standard (input +1 → F Standard)".to_string(), song.clone())
+    );
+    h.p.mixer.pitch = 0;
     assert_eq!(h.p.tuner_inst(), Instrument::Guitar);
     // the low string a whole step down by hand: Drop D, named, and the retune card stands aside
     let mut t = song.clone();

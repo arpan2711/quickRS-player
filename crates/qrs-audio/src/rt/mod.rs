@@ -14,6 +14,7 @@ pub mod input;
 pub mod jam;
 pub mod onset;
 pub mod output;
+mod pitch;
 pub mod record;
 pub mod rewind;
 pub mod ring;
@@ -314,6 +315,8 @@ pub enum InCmd {
     OnsetFloor(f32),
     /// The input is a bass: its own pluck detector (D176).
     OnsetBass(bool),
+    /// Transpose the monitored guitar, in semitones (-12..=12).
+    InputTranspose(f32, Option<input::MonitorPitchShifter>),
     /// Hand the guitar (dry and toned) to the output even with monitoring off (for the looper and Rewind).
     Feed(bool),
 }
@@ -325,6 +328,7 @@ pub enum Trash {
     Clip(Arc<Clip>),
     Tone(Box<dyn ToneProcessor>),
     Pedal(Box<dyn crate::board::Pedal>),
+    InputPitch(input::MonitorPitchShifter),
     Cushion(Box<output::Cushion>),
     Kit(Arc<crate::jam::DrumKit>),
     Backing(Arc<crate::jam::BackingClip>),

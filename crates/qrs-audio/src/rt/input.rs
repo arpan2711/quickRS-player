@@ -7,6 +7,9 @@ use std::sync::atomic::Ordering;
 use super::onset::{Onset, OnsetDetector};
 use super::{InCmd, LinearResampler, MAX_IN_CHANNELS, Shared, ToneProcessor, Trash, discard};
 use crate::clock::now_ns;
+use crate::stretch::MAX_SEMITONES;
+
+pub use super::pitch::MonitorPitchShifter;
 
 /// Where the monitored guitar goes.
 pub enum MonitorSink {
@@ -34,6 +37,8 @@ pub struct InputSide {
     /// Hand the guitar on even with monitoring off (the looper, Rewind).
     feed: bool,
     input_gain: f32,
+    /// Streaming pitch shifter used only on the monitor signal, never on capture/scoring samples.
+    pitch_shifter: Option<MonitorPitchShifter>,
     tone: Option<Box<dyn ToneProcessor>>,
     /// The tone being faded out after a swap (`Some(None)`: fading out from the dry guitar), and how far.
     fading: Option<Option<Box<dyn ToneProcessor>>>,
@@ -71,6 +76,7 @@ pub struct InputConfig {
     pub input_gain: f32,
     pub onset_floor: f32,
     pub onset_bass: bool,
+    pub input_transpose: f32,
     pub max_block: usize,
 }
 
@@ -89,6 +95,14 @@ impl InputSide {
         detector.bass = cfg.onset_bass;
         shared.capture.set_rate(cfg.rate);
         let cap = cfg.max_block.max(64);
+        let input_transpose = cfg
+            .input_transpose
+            .clamp(-(MAX_SEMITONES as f32), MAX_SEMITONES as f32);
+        let pitch_shifter = if input_transpose == 0.0 {
+            None
+        } else {
+            MonitorPitchShifter::new(cfg.rate, input_transpose)
+        };
         InputSide {
             rate: cfg.rate,
             shared,
@@ -100,6 +114,7 @@ impl InputSide {
             monitor: cfg.monitor,
             feed: cfg.feed,
             input_gain: cfg.input_gain,
+            pitch_shifter,
             tone,
             fading: None,
             fade_pos: 0,
@@ -155,6 +170,20 @@ impl InputSide {
                 InCmd::InputGain(g) => self.input_gain = g,
                 InCmd::OnsetFloor(f) => self.detector.min_energy = f,
                 InCmd::OnsetBass(b) => self.detector.bass = b,
+                InCmd::InputTranspose(semitones, shifter) => {
+                    if semitones != 0.0
+                        && let Some(current) = self.pitch_shifter.as_mut()
+                    {
+                        current.set_semitones(semitones);
+                        if let Some(redundant) = shifter {
+                            discard(&mut self.trash, Trash::InputPitch(redundant));
+                        }
+                        continue;
+                    }
+                    if let Some(old) = std::mem::replace(&mut self.pitch_shifter, shifter) {
+                        discard(&mut self.trash, Trash::InputPitch(old));
+                    }
+                }
             }
         }
     }
@@ -191,7 +220,7 @@ impl InputSide {
         self.apply_commands();
         let channels = channels.max(1);
         let frames = (data.len() / channels).min(self.mono.len());
-        let sh = &self.shared;
+        let sh = self.shared.clone();
         sh.in_callbacks.fetch_add(1, Ordering::Relaxed);
         sh.last_in_ns.store(t0, Ordering::Relaxed);
         sh.in_channels.store(channels as u32, Ordering::Relaxed);
@@ -274,7 +303,7 @@ impl InputSide {
 
         // the guitar to hear
         let mut out_len = 0;
-        if self.monitor || self.feed {
+        if self.monitor || self.feed || self.pitch_shifter.is_some() {
             let g = self.input_gain;
             for ((o, d), s) in self.shaped[..frames]
                 .iter_mut()
@@ -284,6 +313,11 @@ impl InputSide {
                 *o = s * g;
                 *d = *o;
             }
+            if let Some(shifter) = self.pitch_shifter.as_mut() {
+                shifter.process(&mut self.shaped[..frames]);
+            }
+        }
+        if self.monitor || self.feed {
             if self.fading.is_some() {
                 self.faded[..frames].copy_from_slice(&self.shaped[..frames]);
                 if let Some(Some(old)) = self.fading.as_mut() {
@@ -376,5 +410,164 @@ mod dc_tests {
         let peak = tail.iter().fold(0.0f32, |a, b| a.max(b.abs()));
         assert!(mean.abs() < 0.01, "offset left: {mean}");
         assert!(peak > 0.48, "the low B kept: {peak}");
+    }
+}
+
+#[cfg(test)]
+mod transpose_tests {
+    use super::*;
+    use crate::rt::{InCmd, Shared, Trash};
+
+    fn frequency(samples: &[f32], rate: u32) -> f64 {
+        let crossings = samples.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+        crossings as f64 * rate as f64 / samples.len() as f64
+    }
+
+    fn make_input(rate: u32, shift: f32) -> InputSide {
+        let (_cmd_tx, cmd_rx) = rtrb::RingBuffer::<InCmd>::new(8);
+        let (trash, _trash_rx) = rtrb::RingBuffer::<Trash>::new(8);
+        let (onsets, _onsets_rx) = rtrb::RingBuffer::new(128);
+        InputSide::new(
+            InputConfig {
+                rate,
+                channel: 0,
+                monitor: true,
+                feed: false,
+                input_gain: 1.0,
+                onset_floor: 0.004,
+                onset_bass: false,
+                input_transpose: shift,
+                max_block: 256,
+            },
+            Arc::new(Shared::new(17)),
+            cmd_rx,
+            trash,
+            onsets,
+            MonitorSink::Duplex,
+            None,
+        )
+    }
+
+    #[test]
+    fn live_transpose_latency_is_bounded_at_common_sample_rates() {
+        for rate in [44_100, 48_000, 96_000] {
+            let mut input = make_input(rate, -1.0);
+
+            // Measure a new note after silence in the callback path too, not just the library's latency report.
+            let mut output = Vec::new();
+            let block = 128;
+            let onset = rate as usize / 4;
+            for start in (0..rate as usize / 2).step_by(block) {
+                let samples: Vec<f32> = (start..start + block)
+                    .map(|i| {
+                        if i < onset {
+                            0.0
+                        } else {
+                            (0.5 * (std::f64::consts::TAU * 220.0 * (i - onset) as f64 / rate as f64).sin())
+                                as f32
+                        }
+                    })
+                    .collect();
+                let (wet, _) = input.process_block(&samples, 1, 0);
+                output.extend_from_slice(wet);
+            }
+            let heard = output[onset..]
+                .iter()
+                .position(|v| v.abs() > 0.02)
+                .expect("monitor never produced the note");
+            assert!(
+                heard as f64 / (rate as f64) < 0.015,
+                "{rate}: onset delay {heard} frames"
+            );
+        }
+    }
+
+    #[test]
+    fn low_guitar_notes_keep_the_requested_pitch() {
+        for (hz, shift) in [(82.41_f64, -1.0_f32), (110.0, -5.0), (220.0, 2.0)] {
+            let rate = 48_000;
+            let mut input = make_input(rate, shift);
+            let mut output = Vec::new();
+            for start in (0..rate).step_by(256) {
+                let samples: Vec<f32> = (start..start + 256)
+                    .map(|i| (0.5 * (std::f64::consts::TAU * hz * i as f64 / rate as f64).sin()) as f32)
+                    .collect();
+                let (wet, _) = input.process_block(&samples, 1, 0);
+                output.extend_from_slice(wet);
+            }
+            let (actual, _) = qrs_analysis::pitch::mpm_pitch(
+                &mut qrs_analysis::spectrum::Spectra::new(),
+                &output[output.len() - 8192..],
+                rate,
+                30.0,
+                1000.0,
+                0.9,
+            );
+            let expected = hz * 2f64.powf(shift as f64 / 12.0);
+            let cents = 1200.0 * (actual / expected).log2();
+            assert!(
+                cents.abs() < 20.0,
+                "{hz} Hz shifted {shift}: {actual} Hz, {cents} cents"
+            );
+        }
+    }
+
+    #[test]
+    fn live_monitor_shifts_but_capture_stays_at_the_input_pitch() {
+        let rate = 48_000;
+        let shared = Arc::new(Shared::new(17));
+        let (mut cmd_tx, cmd_rx) = rtrb::RingBuffer::<InCmd>::new(8);
+        let (trash, _trash_rx) = rtrb::RingBuffer::<Trash>::new(8);
+        let (onsets, _onsets_rx) = rtrb::RingBuffer::new(128);
+        let mut input = InputSide::new(
+            InputConfig {
+                rate,
+                channel: 0,
+                monitor: true,
+                feed: false,
+                input_gain: 1.0,
+                onset_floor: 0.0,
+                onset_bass: false,
+                input_transpose: 0.0,
+                max_block: 512,
+            },
+            shared.clone(),
+            cmd_rx,
+            trash,
+            onsets,
+            MonitorSink::Duplex,
+            None,
+        );
+        let shifter = MonitorPitchShifter::new(rate, -12.0).unwrap();
+        cmd_tx.push(InCmd::InputTranspose(-12.0, Some(shifter))).unwrap();
+
+        let mut phase = 0.0f64;
+        let mut output = Vec::new();
+        for block in 0..180 {
+            if block == 90 {
+                let shifter = MonitorPitchShifter::new(rate, -1.0).unwrap();
+                cmd_tx.push(InCmd::InputTranspose(-1.0, Some(shifter))).unwrap();
+            }
+            let mut samples = Vec::with_capacity(512);
+            for _ in 0..512 {
+                samples.push((phase.sin() * 0.5) as f32);
+                phase += std::f64::consts::TAU * 440.0 / rate as f64;
+            }
+            let (wet, _) = input.process_block(&samples, 1, block * 512 * 1_000_000_000 / rate as u64);
+            output.extend_from_slice(wet);
+        }
+
+        let transition = &output[90 * 512..90 * 512 + 2048];
+        for block in transition.chunks_exact(128) {
+            let rms = (block.iter().map(|x| x * x).sum::<f32>() / block.len() as f32).sqrt();
+            assert!(rms > 0.02, "transpose change caused a monitor dropout");
+        }
+        let monitor_tail = &output[output.len() - 8192..];
+        let expected = 440.0 * 2f64.powf(-1.0 / 12.0);
+        assert!((frequency(monitor_tail, rate) - expected).abs() < 4.0);
+
+        let mut captured = vec![0.0; 8192];
+        assert!(shared.capture.latest(&mut captured).is_some());
+        assert!((frequency(&captured, rate) - 440.0).abs() < 4.0);
     }
 }

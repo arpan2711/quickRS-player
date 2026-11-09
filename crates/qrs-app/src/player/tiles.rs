@@ -436,11 +436,12 @@ impl PlayerView {
         let name = if self.mixer.pitch == 0 {
             format!("{} (this song)", self.chart.arr.tuning_name())
         } else {
-            // the song is pitch-shifted: tune to what it sounds like
+            // The input is shifted; show its physical tuning while the tuner still targets the track.
             format!(
-                "{} (song {})",
+                "{} (input {} → {})",
                 self.sounding_tuning_name(),
-                super::songaudio::pitch_short(self.mixer.pitch)
+                super::songaudio::pitch_short(self.mixer.pitch),
+                self.transposed_input_tuning_name()
             )
         };
         let opens = self.sounding_opens();
@@ -1950,7 +1951,7 @@ impl PlayerView {
         card.max.y
     }
 
-    /// The tuning card's offer for the song as it sounds now (the tuner on "this song"'s tuning, not hidden).
+    /// The tuning card's offer for the guitar input (the tuner on "this song"'s tuning, not hidden).
     fn retune_offer(&self) -> Option<super::tuning::Offer> {
         if self.retune_hidden || self.tuner_custom.is_some() {
             return None;
@@ -1963,7 +1964,7 @@ impl PlayerView {
         )
     }
 
-    /// The tuning card in `r`: the line, the key that shifts the song, a × that hides it for this song.
+    /// The tuning card in `r`: the line, the key that shifts the input, a × that hides it for this song.
     fn draw_retune_card(&mut self, ui: &Ui, r: Rect, o: &super::tuning::Offer) {
         let p = ui.painter().clone();
         let th = t();
@@ -2013,7 +2014,7 @@ impl PlayerView {
         )
         .on_hover_text(
             self.instrument.say(
-                "Shifts the song's pitch (and the scoring) to match your guitar; the tab stays as written",
+                "Shifts the guitar input (and scoring) to match the track; the tab and backing track stay as written",
             ),
         )
         .clicked()

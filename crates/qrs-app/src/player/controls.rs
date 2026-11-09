@@ -929,7 +929,7 @@ impl PlayerView {
         r.max.y
     }
 
-    /// PITCH: a stepper in semitones and Original pitch. Returns its bottom.
+    /// PITCH: a stepper in semitones and No shift. Returns its bottom.
     fn draw_pitch_card(&mut self, ui: &Ui, x: f32, y: f32, w: f32) -> f32 {
         let p = ui.painter().clone();
         let h = px(PAD) * 2.0 + px(26.0) + px(KEY_H);
@@ -942,7 +942,7 @@ impl PlayerView {
             lx,
             rx,
             y + px(PAD),
-            "the tab stays as written",
+            "shifts guitar input; track stays put",
             &["Shift", "↑", "↓"],
         );
         let pitch = self.mixer.pitch;
@@ -958,7 +958,7 @@ impl PlayerView {
         self.key_btn(
             ui,
             Rect::from_min_max(pos2(right + px(12.0), yy), pos2(rx, yy + px(KEY_H))),
-            "Original pitch",
+            "No shift",
             "",
             "pitch0",
             pitch == 0,

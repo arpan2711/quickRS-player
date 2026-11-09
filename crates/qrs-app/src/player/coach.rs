@@ -1185,6 +1185,7 @@ impl PlayerView {
         let step = self.coach.as_ref().map(|c| c.step);
         let act = self.page().map(|p| p.act);
         for (_, midi) in heard {
+            let midi = midi.map(|m| m + self.mixer.pitch as f64);
             match (step, act) {
                 (Some(Step::Run), _) | (Some(Step::Page(_)), Some(Activity::Run)) => {
                     self.coach_run_note(midi)
@@ -1412,8 +1413,7 @@ impl PlayerView {
             self.transport.pause();
         }
         if let Some(song) = self.transport.song().cloned() {
-            self.synth
-                .start_track(song, a, b, self.offset, speed, self.mixer.pitch as f32, false);
+            self.synth.start_track(song, a, b, self.offset, speed, 0.0, false);
         }
     }
 

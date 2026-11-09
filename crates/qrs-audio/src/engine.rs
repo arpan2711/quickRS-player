@@ -123,6 +123,7 @@ struct Persist {
     monitor: bool,
     channel: i32,
     input_gain: f32,
+    input_transpose: f32,
     onset_floor: f32,
     onset_bass: bool,
     tone: ToneSpec,
@@ -140,6 +141,7 @@ impl Default for Persist {
             monitor: true,
             channel: 0,
             input_gain: 1.0,
+            input_transpose: 0.0,
             onset_floor: 0.004,
             onset_bass: false,
             tone: ToneSpec::AsIs,
@@ -726,6 +728,34 @@ impl Engine {
         let g = 10f32.powf(db / 20.0);
         self.inner.ctl.lock().persist.input_gain = g;
         self.inp(InCmd::InputGain(g));
+    }
+
+    /// Shift the live guitar monitor without changing captured/scoring samples.
+    pub fn set_input_transpose(&self, semitones: f32) {
+        let mut semitones = if semitones.is_finite() {
+            semitones.clamp(
+                -(crate::stretch::MAX_SEMITONES as f32),
+                crate::stretch::MAX_SEMITONES as f32,
+            )
+        } else {
+            0.0
+        };
+        let rate = {
+            let mut ctl = self.inner.ctl.lock();
+            ctl.persist.input_transpose = semitones;
+            ctl.status.input.as_ref().map(|info| info.rate)
+        };
+        let shifter = if semitones == 0.0 {
+            None
+        } else {
+            rate.and_then(|rate| crate::rt::input::MonitorPitchShifter::new(rate, semitones))
+        };
+        if rate.is_some() && semitones != 0.0 && shifter.is_none() {
+            log::warn!("could not create the live monitor pitch shifter; leaving input unshifted");
+            semitones = 0.0;
+            self.inner.ctl.lock().persist.input_transpose = 0.0;
+        }
+        self.inp(InCmd::InputTranspose(semitones, shifter));
     }
 
     /// Minimum pluck energy (raise for a microphone in a noisy room).
@@ -1358,6 +1388,7 @@ fn input_side(
             monitor: persist.monitor,
             feed: persist.jam.feed(),
             input_gain: persist.input_gain,
+            input_transpose: persist.input_transpose,
             onset_floor: persist.onset_floor,
             onset_bass: persist.onset_bass,
             max_block: info.max_block.max(info.block).max(4096),
