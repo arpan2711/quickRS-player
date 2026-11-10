@@ -7,6 +7,7 @@ picked and lets you choose something else.
 
 * [The guided setup](#the-guided-setup)
 * [Inputs](#inputs)
+* [Input channels](#input-channels)
 * [ASIO and WASAPI](#asio-and-wasapi)
 * [Calibrating your input](#calibrating-your-input)
 * [Hearing your guitar](#hearing-your-guitar)
@@ -28,7 +29,8 @@ Every step has *Back*, *Skip* and *Next* (or `Backspace`, `S` and `Enter`).
 1. **Pick your guitar's input.** Plug the guitar in first. *Automatic* picks
    the best input it finds; pick yours if it chose wrong. On an interface,
    pick the channel the guitar is on, or leave it on *Automatic* and play a
-   few clear notes.
+   few clear notes. See [Input channels](#input-channels) for interfaces
+   with several inputs.
 2. **Pick where you hear it**: speakers or headphones.
 3. **Is it working?** Play and watch the meter. It says, in words, whether
    nothing is coming in, it's very quiet, it's a good level, a little hot, or
@@ -62,7 +64,7 @@ pedalboard.
 **An audio interface** (Focusrite, Behringer, and so on). Plug the guitar into
 an instrument (Hi-Z or INST) input. quickRS finds which channel the guitar is
 on from the first clear notes you play; *INPUT CHANNEL* in Settings > *Sound*
-sets it by hand.
+sets it by hand. See [Input channels](#input-channels).
 
 **An amp modeller or multi-effects over USB.** It works like an interface.
 Set *This input is* to *Amp* so quickRS plays your sound as it is and doesn't
@@ -80,6 +82,31 @@ new guitar input is offered to you.
 
 On a Mac the first use of an input brings up macOS's microphone question. See
 [INSTALL](INSTALL.md#macos).
+
+
+### Input channels
+
+*INPUT CHANNEL* shows every channel reported by the selected input, not just
+the first four. This applies to audio interfaces and USB modellers, whether
+they use ASIO, WASAPI or the system's audio driver. An eight-channel input,
+for example, offers *In 1* through *In 8*.
+
+The choices are the same in Settings > *Sound* and the guided
+setup's input step (also in its level check when there's room for the channel
+panel). They wrap into extra rows to fit the width, with room for their
+meters; the surrounding cards grow to fit.
+
+* **Auto** finds the guitar's channel from the first clear notes you play.
+* **Channel 1**, **Channel 2**, or **In 1**, **In 2**, and so on listen to
+  just that channel. A one-channel input shows only *Channel 1*.
+* **Both mixed** (two inputs) or **All** (more inputs) mixes all the input
+  channels instead of picking one.
+
+Individual level meters and automatic channel detection cover the first
+**16 channels**. This isn't a limit on the channels you can pick: select a
+higher channel by hand, and use the main input level meter to check its
+signal. Its individual channel meter stays dark. For a two-input interface,
+the choices and their behaviour are unchanged.
 
 
 ### ASIO and WASAPI

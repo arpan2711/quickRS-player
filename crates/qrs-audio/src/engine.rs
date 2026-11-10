@@ -93,8 +93,9 @@ pub struct Meters {
     /// Guitar channel peak and level (RMS), 0..1.
     pub peak: f32,
     pub level: f32,
-    /// Peak of every input channel (for picking the guitar channel).
+    /// Peaks of the first MAX_IN_CHANNELS inputs (for automatic channel selection).
     pub channels: [f32; crate::rt::MAX_IN_CHANNELS],
+    /// Total input channels; may exceed the number of individual meters in `channels`.
     pub channel_count: usize,
     pub output_peak: f32,
     /// The guitar's peak after the tone (the pedalboard's output).

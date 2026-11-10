@@ -72,7 +72,7 @@ impl Duplex {
     }
 }
 
-/// Input channels metered individually (the rest are ignored).
+/// Maximum input channels metered individually and considered for automatic selection, not a stream limit.
 pub const MAX_IN_CHANNELS: usize = 16;
 
 /// State published by the audio threads for everyone else.
