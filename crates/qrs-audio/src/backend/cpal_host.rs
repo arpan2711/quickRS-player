@@ -16,7 +16,8 @@ use crossbeam_channel::bounded;
 use parking_lot::Mutex;
 
 use super::{
-    Backend, BufferSize, DeviceId, DeviceInfo, Failure, Hardware, OpenError, Stream, StreamInfo, oerr,
+    Backend, BufferSize, Bus, DeviceId, DeviceInfo, Failure, Hardware, OpenError, Port, Stream, StreamInfo,
+    oerr,
 };
 use crate::clock::now_ns;
 use crate::rt::Duplex;
@@ -25,6 +26,10 @@ use crate::rt::output::OutputSide;
 
 /// The device id meaning "whatever the system default is right now".
 pub const DEFAULT: &str = "default";
+
+/// Frames per callback asked of PulseAudio / PipeWire when nothing else is chosen (about 6 ms at 44.1 kHz).
+#[cfg(target_os = "linux")]
+const PULSE_FRAMES: u32 = 256;
 
 pub fn host(id: Option<cpal::HostId>) -> Result<cpal::Host, String> {
     match id {
@@ -35,6 +40,85 @@ pub fn host(id: Option<cpal::HostId>) -> Result<cpal::Host, String> {
 
 fn device_name(d: &cpal::Device) -> String {
     d.description().map(|x| x.name().to_string()).unwrap_or_default()
+}
+
+/// The host's own id for a device (a PulseAudio sink or source name, an ALSA pcm, an Android device number), which
+/// tells apart devices that share a name; the name where there's none.
+fn device_key(d: &cpal::Device) -> String {
+    d.id()
+        .map(|i| i.id().to_string())
+        .ok()
+        .filter(|k| !k.is_empty())
+        .unwrap_or_else(|| device_name(d))
+}
+
+/// What the host tells about the hardware behind a device: how it's connected and what kind of port it is.
+fn hardware_of(d: &cpal::Device) -> Hardware {
+    use cpal::{DeviceType as T, InterfaceType as I};
+    let mut hw = Hardware::default();
+    let Ok(desc) = d.description() else { return hw };
+    hw.bus = match desc.interface_type() {
+        I::Usb => Bus::Usb,
+        I::Bluetooth => Bus::Bluetooth,
+        I::BuiltIn | I::Pci => Bus::Pci,
+        I::Virtual | I::Aggregate => Bus::Virtual,
+        _ => Bus::Unknown,
+    };
+    hw.port = match (desc.device_type(), desc.interface_type()) {
+        (_, I::Hdmi | I::DisplayPort) => Port::Hdmi,
+        (T::Earpiece | T::Handset, _) => Port::Earpiece,
+        (T::Speaker, _) => Port::Speaker,
+        (T::Microphone, _) => Port::Microphone,
+        // (a USB headset is often how Android names a USB audio interface: not the device's own jack)
+        (T::Headphones | T::Headset, i) if !matches!(i, I::Usb | I::Bluetooth) => Port::Headphones,
+        _ => Port::Unknown,
+    };
+    #[cfg(target_os = "linux")]
+    if hw.bus == Bus::Unknown {
+        linux_hardware(&device_key(d), &mut hw);
+    }
+    hw
+}
+
+/// Linux: the bus and port from the device's id, a PulseAudio / PipeWire name ("alsa_input.usb-Ember_Nanocore_…",
+/// "alsa_output.pci-0000_00_1b.0.hdmi-stereo", "….monitor", "bluez_output.…") or an ALSA pcm ("null",
+/// "plughw:CARD=Nanocore,DEV=0"; a card on USB has /proc/asound/<card>/usbid).
+#[cfg(target_os = "linux")]
+fn linux_hardware(key: &str, hw: &mut Hardware) {
+    let k = key.to_lowercase();
+    if k.contains("hdmi") {
+        hw.port = Port::Hdmi;
+    }
+    if k.starts_with("alsa_input.") || k.starts_with("alsa_output.") {
+        hw.bus = if k.ends_with(".monitor") {
+            // (what an output plays, recorded: not a guitar)
+            Bus::Virtual
+        } else if k.contains(".usb-") {
+            Bus::Usb
+        } else if k.contains(".pci-") || k.contains(".platform-") {
+            Bus::Pci
+        } else {
+            Bus::Unknown
+        };
+    } else if k.starts_with("bluez_") {
+        hw.bus = Bus::Bluetooth;
+    } else if k == "null" {
+        hw.bus = Bus::Virtual;
+    } else if let Some(card) = key
+        .split("CARD=")
+        .nth(1)
+        .map(|c| c.split(',').next().unwrap_or(c))
+    {
+        let usbid = std::fs::read_to_string(format!("/proc/asound/{card}/usbid")).ok();
+        hw.bus = if usbid.is_some() { Bus::Usb } else { Bus::Pci };
+        hw.usb = usbid.as_deref().and_then(|v| {
+            let (a, b) = v.trim().split_once(':')?;
+            Some((u16::from_str_radix(a, 16).ok()?, u16::from_str_radix(b, 16).ok()?))
+        });
+    } else if k.contains('.') || k.contains("sink") || k.contains("source") {
+        // PipeWire's own nodes (filter chains, EasyEffects, a null sink): software
+        hw.bus = Bus::Virtual;
+    }
 }
 
 /// Devices of a host. With `defaults_only`, just the two "System default" entries.
@@ -69,7 +153,8 @@ pub fn enumerate(host_id: Option<cpal::HostId>, backend: Backend, defaults_only:
                 default_rate: rate,
                 is_default_input: input,
                 is_default_output: !input,
-                hardware: Hardware::default(),
+                // (what the default is right now: the automatic output can tell the guitar interface from speakers)
+                hardware: hardware_of(&d),
             });
         }
         if defaults_only {
@@ -77,6 +162,7 @@ pub fn enumerate(host_id: Option<cpal::HostId>, backend: Backend, defaults_only:
         }
     }
     let Ok(devices) = h.devices() else { return out };
+    let first = out.len();
     for d in devices {
         let name = device_name(&d);
         if name.is_empty() {
@@ -90,7 +176,7 @@ pub fn enumerate(host_id: Option<cpal::HostId>, backend: Backend, defaults_only:
         out.push(DeviceInfo {
             id: DeviceId {
                 backend,
-                id: name.clone(),
+                id: device_key(&d),
             },
             name,
             input_channels: inp.as_ref().map(|c| c.channels()).unwrap_or(0),
@@ -103,8 +189,23 @@ pub fn enumerate(host_id: Option<cpal::HostId>, backend: Backend, defaults_only:
                 .unwrap_or(48000),
             is_default_input: false,
             is_default_output: false,
-            hardware: Hardware::default(),
+            hardware: hardware_of(&d),
         });
+    }
+    // devices sharing a name (ALSA lists a card as hw, plughw, sysdefault, front, ...): the id after it, so the
+    // list says which is which
+    let names: Vec<(String, bool)> = out[first..]
+        .iter()
+        .map(|d| (d.name.clone(), d.input_channels > 0))
+        .collect();
+    for d in &mut out[first..] {
+        let same = names
+            .iter()
+            .filter(|(n, i)| *n == d.name && *i == (d.input_channels > 0))
+            .count();
+        if same > 1 && d.id.id != d.name {
+            d.name = format!("{} [{}]", d.name, d.id.id);
+        }
     }
     out
 }
@@ -120,7 +221,30 @@ fn find_device(h: &cpal::Host, id: &str, input: bool) -> Option<cpal::Device> {
                 h.default_output_device()
             }
         }
-        name => h.devices().ok()?.find(|d| device_name(d) == name),
+        key => {
+            // the right direction only (Android lists a USB interface's input and output under one name)
+            let side = |d: &cpal::Device| {
+                if input {
+                    d.default_input_config().is_ok()
+                } else {
+                    d.default_output_config().is_ok()
+                }
+            };
+            let devices: Vec<cpal::Device> = h.devices().ok()?.filter(side).collect();
+            // by the host's id; else by name (a choice saved before devices had ids, or with a "[id]" added)
+            let pos = devices
+                .iter()
+                .position(|d| device_key(d) == key)
+                .or_else(|| devices.iter().position(|d| device_name(d) == key))
+                .or_else(|| {
+                    devices.iter().position(|d| {
+                        key.strip_suffix(']')
+                            .and_then(|k| k.rsplit_once(" ["))
+                            .is_some_and(|(_, k)| device_key(d) == k)
+                    })
+                })?;
+            devices.into_iter().nth(pos)
+        }
     }
 }
 
@@ -176,11 +300,23 @@ fn pick_config(
             .map(|c| c.collect())
             .unwrap_or_default()
     };
+    // a range in the device's own sample format where there is one, else the best there is (PulseAudio lists
+    // every format, 8-bit first)
+    let def_fmt = fmt;
+    let fmt_rank = |f: SampleFormat| match f {
+        f if f == def_fmt => 0,
+        SampleFormat::F32 => 1,
+        SampleFormat::I32 => 2,
+        SampleFormat::I24 => 3,
+        SampleFormat::I16 => 4,
+        _ => 9,
+    };
     if let Some(r) = rate
         && r != cfg.sample_rate
         && let Some(range) = ranges
             .iter()
-            .find(|c| c.channels() == cfg.channels && c.min_sample_rate() <= r && r <= c.max_sample_rate())
+            .filter(|c| c.channels() == cfg.channels && c.min_sample_rate() <= r && r <= c.max_sample_rate())
+            .min_by_key(|c| fmt_rank(c.sample_format()))
     {
         cfg.sample_rate = r;
         fmt = range.sample_format();
@@ -189,7 +325,7 @@ fn pick_config(
         && let Some(range) = ranges
             .iter()
             .filter(|c| c.channels() >= min_channels)
-            .min_by_key(|c| c.channels())
+            .min_by_key(|c| (c.channels(), fmt_rank(c.sample_format())))
     {
         cfg.channels = range.channels();
         fmt = range.sample_format();
@@ -337,15 +473,22 @@ pub fn open(
                 let dev =
                     find_device(&h, &o.id, o.input).ok_or_else(|| format!("{} isn't connected", o.id))?;
                 let name = device_name(&dev);
+                #[allow(unused_mut)]
+                let mut buffer = o.buffer;
+                // PulseAudio's own default is a long buffer (the guitar would be heard late): ask for a short one
+                #[cfg(target_os = "linux")]
+                if buffer == BufferSize::Default && h.id() == cpal::HostId::PulseAudio {
+                    buffer = BufferSize::Frames(PULSE_FRAMES);
+                }
                 let inc = if o.input {
-                    Some(pick_config(&dev, true, o.buffer, o.rate, 1)?)
+                    Some(pick_config(&dev, true, buffer, o.rate, 1)?)
                 } else {
                     None
                 };
                 let outc = if o.output {
                     // a duplex output runs at the input's rate (one driver, one clock)
                     let rate = inc.as_ref().map(|c| c.0.sample_rate).or(o.rate);
-                    Some(pick_config(&dev, false, o.buffer, rate, o.out_channels)?)
+                    Some(pick_config(&dev, false, buffer, rate, o.out_channels)?)
                 } else {
                     None
                 };

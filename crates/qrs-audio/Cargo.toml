@@ -33,6 +33,11 @@ crossbeam-channel.workspace = true
 realfft.workspace = true
 parking_lot.workspace = true
 
+# Linux: PulseAudio / PipeWire (through pipewire-pulse) before ALSA: every input and output by its own name, shared
+# with other programs, so the guitar interface and the laptop's speakers can be used at once (pure Rust, no libpulse)
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { workspace = true, features = ["pulseaudio"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-core.workspace = true
 windows = { workspace = true, features = [

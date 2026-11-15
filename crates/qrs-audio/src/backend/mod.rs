@@ -73,6 +73,23 @@ pub struct Hardware {
     /// The adapter's own name (e.g. "Rocksmith Guitar Adapter"), when different from the endpoint name.
     pub adapter_name: String,
     pub bus: Bus,
+    /// What kind of port it is, where the system says (Android, PipeWire): a built-in speaker, headphones, ...
+    #[serde(default)]
+    pub port: Port,
+}
+
+/// The kind of port behind a device, where the system tells us (for picking the output automatically).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Port {
+    #[default]
+    Unknown,
+    Speaker,
+    /// Wired headphones or a wired headset in the device's own jack.
+    Headphones,
+    /// A phone's earpiece (never picked for music).
+    Earpiece,
+    Microphone,
+    Hdmi,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::rocksmith::RocksmithSetup;
-use crate::backend::{Backend, Bus, DeviceInfo};
+use crate::backend::{Backend, Bus, DeviceInfo, Port};
 
 pub const RTC_VID_PID: (u16, u16) = (0x12BA, 0x00FF);
 
@@ -196,7 +196,15 @@ pub fn rank_inputs(devices: &[DeviceInfo], rs: Option<&RocksmithSetup>) -> Vec<R
                         || t.contains("guitar")
                         || t.contains(" inst");
                     let brand = has_any(&t, &INTERFACE_BRANDS);
-                    let mic = has_any(&t, &MIC_WORDS) || (t.starts_with("microphone") && !brand);
+                    // (Android calls many USB audio interfaces a "USB headset": on USB that word isn't a mic)
+                    let words = if d.hardware.bus == Bus::Usb {
+                        t.replace("(headset)", "")
+                    } else {
+                        t.clone()
+                    };
+                    let mic = has_any(&words, &MIC_WORDS)
+                        || (words.contains("microphone") && !brand)
+                        || (d.hardware.port == Port::Microphone && d.hardware.bus != Bus::Usb);
                     let has_asio_twin = asio_names.iter().any(|n| !n.is_empty() && t.contains(n.as_str()));
                     match (d.hardware.bus, desc_line || brand, mic) {
                         (_, true, _) if has_asio_twin => (
@@ -212,7 +220,9 @@ pub fn rank_inputs(devices: &[DeviceInfo], rs: Option<&RocksmithSetup>) -> Vec<R
                             InputKind::Microphone,
                             "microphone (for an acoustic guitar)".into(),
                         ),
-                        (Bus::Usb, _, _) => (400, InputKind::Other, "USB audio input".into()),
+                        // a USB input that isn't a mic or a webcam: a guitar interface or an amp modeller that
+                        // doesn't say so in its name (heard through the speakers, waited for when unplugged)
+                        (Bus::Usb, _, _) => (400, InputKind::Interface, "USB audio input".into()),
                         (Bus::Pci, _, _) => (200, InputKind::Microphone, "built-in input".into()),
                         _ => (250, InputKind::Other, "audio input".into()),
                     }
@@ -291,6 +301,7 @@ mod tests {
                 instance_paths: vec![path.into()],
                 adapter_name: adapter.into(),
                 bus,
+                ..Default::default()
             },
         }
     }

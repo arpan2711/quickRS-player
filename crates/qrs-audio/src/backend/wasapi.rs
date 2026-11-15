@@ -308,6 +308,7 @@ fn hardware(store: &IPropertyStore) -> Hardware {
         instance_paths: if path.is_empty() { vec![] } else { vec![path] },
         adapter_name: prop_string(store, &PKEY_ADAPTER_NAME).unwrap_or_default(),
         bus,
+        ..Default::default()
     }
 }
 

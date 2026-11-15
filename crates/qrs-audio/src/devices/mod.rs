@@ -18,7 +18,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
-use crate::backend::{self, Backend, BufferSize, DeviceEvent, DeviceInfo};
+use crate::backend::{self, Backend, BufferSize, Bus, DeviceEvent, DeviceInfo, Port};
 use crate::engine::{Engine, Event, InputRoute, Route};
 use rank::{InputKind, RankedInput, rank_inputs, suggest_channel};
 use rocksmith::RocksmithSetup;
@@ -113,6 +113,50 @@ fn find<'a>(devices: &'a [DeviceInfo], p: &DevicePref, input: bool) -> Option<&'
         .or_else(|| devices.iter().filter(ok).find(|d| d.name == p.name))
 }
 
+/// The device's own speakers or headphone jack (no USB, Bluetooth, HDMI or earpiece).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn is_local_output(d: &DeviceInfo) -> bool {
+    d.output_channels > 0
+        && !rank::is_virtual(d)
+        && !matches!(d.hardware.port, Port::Hdmi | Port::Earpiece | Port::Microphone)
+        && (d.hardware.bus == Bus::Pci
+            || (d.hardware.port == Port::Headphones && !matches!(d.hardware.bus, Bus::Usb | Bus::Bluetooth)))
+}
+
+/// Linux and Android, on Automatic: with the guitar on a USB interface, the system often makes that interface its
+/// output too (PipeWire switches to a device plugged in; Android routes everything to USB audio). The guitar is
+/// then heard from the interface, not from the computer or tablet it's plugged into: the device's own speakers (or
+/// headphones in its jack) instead. None when the system's output is already one of those, or there's none.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn local_output<'a>(
+    input: Option<&RankedInput>,
+    default: Option<&DeviceInfo>,
+    devices: &'a [DeviceInfo],
+) -> Option<&'a DeviceInfo> {
+    let on_usb = input.is_some_and(|i| i.device.hardware.bus == Bus::Usb);
+    if !on_usb || default.is_some_and(is_local_output) {
+        return None;
+    }
+    let rank = |d: &&DeviceInfo| match d.hardware.port {
+        Port::Headphones => 0,
+        Port::Speaker => 1,
+        _ => 2,
+    };
+    devices
+        .iter()
+        .filter(|d| d.id.backend == Backend::System && d.id.id != "default-out" && is_local_output(d))
+        .min_by_key(rank)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn local_output<'a>(
+    _input: Option<&RankedInput>,
+    _default: Option<&DeviceInfo>,
+    _devices: &'a [DeviceInfo],
+) -> Option<&'a DeviceInfo> {
+    None
+}
+
 /// The route for these preferences and devices.
 pub fn plan(prefs: &AudioPrefs, devices: &[DeviceInfo], rs: Option<&RocksmithSetup>) -> Plan {
     let rs = if prefs.use_rocksmith { rs } else { None };
@@ -200,7 +244,19 @@ pub fn plan(prefs: &AudioPrefs, devices: &[DeviceInfo], rs: Option<&RocksmithSet
                 {
                     Some(i.device.clone())
                 }
-                _ => default_out(),
+                _ => {
+                    let d = default_out();
+                    match local_output(input.as_ref(), d.as_ref(), devices) {
+                        Some(l) => {
+                            notes.push(format!(
+                                "playing through {} (the guitar interface is the system's output)",
+                                l.label()
+                            ));
+                            Some(l.clone())
+                        }
+                        None => d,
+                    }
+                }
             }
         }
     };
@@ -703,6 +759,238 @@ mod tests {
         c.exclusive = true;
         assert!(!same_but_channel(&c, &a));
         assert!(!same_but_channel(&Route::default(), &a));
+    }
+
+    /// A device as the System backend lists it, with its id, bus and port.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn sys(id: &str, name: &str, ins: u16, outs: u16, bus: Bus, port: Port) -> DeviceInfo {
+        DeviceInfo {
+            id: DeviceId {
+                backend: Backend::System,
+                id: id.into(),
+            },
+            name: name.into(),
+            input_channels: ins,
+            output_channels: outs,
+            input_channel_names: vec![],
+            default_rate: 48000,
+            is_default_input: id == "default-in",
+            is_default_output: id == "default-out",
+            hardware: Hardware {
+                bus,
+                port,
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The owner's laptop on PipeWire (2026-11-15) with an Ember Nanocore plugged in: PipeWire made the Nanocore
+    /// the default input and output.
+    #[cfg(target_os = "linux")]
+    fn laptop_with_nanocore() -> Vec<DeviceInfo> {
+        let (u, p, v, n) = (Bus::Usb, Bus::Pci, Bus::Virtual, Port::Unknown);
+        vec![
+            sys(
+                "default-in",
+                "System default input (Nanocore Analog Stereo)",
+                2,
+                0,
+                u,
+                n,
+            ),
+            sys(
+                "default-out",
+                "System default output (Nanocore Analog Stereo)",
+                0,
+                2,
+                u,
+                n,
+            ),
+            sys(
+                "alsa_output.usb-Ember_Nanocore_2021031001-00.analog-stereo",
+                "Nanocore Analog Stereo",
+                0,
+                2,
+                u,
+                n,
+            ),
+            sys(
+                "alsa_output.pci-0000_00_03.0.hdmi-stereo",
+                "Built-in Audio Digital Stereo (HDMI)",
+                0,
+                2,
+                p,
+                Port::Hdmi,
+            ),
+            sys(
+                "alsa_output.pci-0000_00_1b.0.analog-stereo",
+                "Built-in Audio Analog Stereo",
+                0,
+                2,
+                p,
+                n,
+            ),
+            sys(
+                "alsa_output.usb-Ember_Nanocore_2021031001-00.analog-stereo.monitor",
+                "Monitor of Nanocore Analog Stereo",
+                2,
+                0,
+                v,
+                n,
+            ),
+            sys(
+                "alsa_input.usb-Ember_Nanocore_2021031001-00.analog-stereo",
+                "Nanocore Analog Stereo",
+                2,
+                0,
+                u,
+                n,
+            ),
+            sys(
+                "alsa_input.pci-0000_00_1b.0.analog-stereo",
+                "Built-in Audio Analog Stereo",
+                2,
+                0,
+                p,
+                n,
+            ),
+        ]
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_usb_guitar_is_heard_through_the_laptop() {
+        let p = plan(&AudioPrefs::default(), &laptop_with_nanocore(), None);
+        let i = p.input.as_ref().unwrap();
+        assert_eq!(
+            i.device.id.id,
+            "alsa_input.usb-Ember_Nanocore_2021031001-00.analog-stereo"
+        );
+        assert_eq!(i.kind, InputKind::Interface, "{}", i.reason);
+        assert_eq!(
+            p.output.as_ref().unwrap().id.id,
+            "alsa_output.pci-0000_00_1b.0.analog-stereo"
+        );
+        // the laptop is the system output already: that's followed
+        let mut all = laptop_with_nanocore();
+        all[1] = sys(
+            "default-out",
+            "System default output (Built-in Audio)",
+            0,
+            2,
+            Bus::Pci,
+            Port::Unknown,
+        );
+        assert_eq!(
+            plan(&AudioPrefs::default(), &all, None).output.unwrap().id.id,
+            "default-out"
+        );
+        // an output chosen by hand is kept
+        let nano = all[2].clone();
+        let prefs = AudioPrefs {
+            output: Choice::Device(DevicePref::of(&nano)),
+            ..Default::default()
+        };
+        assert_eq!(
+            plan(&prefs, &laptop_with_nanocore(), None).output.unwrap().id,
+            nano.id
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_null_and_monitor_inputs_are_never_picked() {
+        let (n, v) = (Port::Unknown, Bus::Virtual);
+        let all = vec![
+            sys(
+                "null",
+                "Discard all samples (playback) or generate zero samples (capture)",
+                2,
+                2,
+                v,
+                n,
+            ),
+            sys(
+                "alsa_output.pci-0000_00_1b.0.analog-stereo.monitor",
+                "Monitor of Built-in Audio",
+                2,
+                0,
+                v,
+                n,
+            ),
+            sys(
+                "alsa_input.pci-0000_00_1b.0.analog-stereo",
+                "Built-in Audio Analog Stereo",
+                2,
+                0,
+                Bus::Pci,
+                n,
+            ),
+        ];
+        let p = plan(&AudioPrefs::default(), &all, None);
+        assert_eq!(
+            p.input.unwrap().device.id.id,
+            "alsa_input.pci-0000_00_1b.0.analog-stereo"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn android_usb_headset_interface_is_a_guitar_heard_on_the_tablet() {
+        // (as AAudio lists a tablet with a class-compliant interface that Android calls a USB headset)
+        let (u, b, x) = (Bus::Usb, Bus::Pci, Bus::Unknown);
+        let all = vec![
+            sys(
+                "default-in",
+                "System default input (Default Device)",
+                2,
+                0,
+                x,
+                Port::Unknown,
+            ),
+            sys(
+                "default-out",
+                "System default output (Default Device)",
+                0,
+                2,
+                x,
+                Port::Unknown,
+            ),
+            sys("7", "Redmi Pad 2 Pro (Microphone)", 2, 0, b, Port::Microphone),
+            sys("3", "Redmi Pad 2 Pro (Earpiece)", 0, 1, b, Port::Earpiece),
+            sys("2", "Redmi Pad 2 Pro (Speaker)", 0, 2, b, Port::Speaker),
+            sys("31", "Nanocore (Headset)", 2, 0, u, Port::Unknown),
+            sys("30", "Nanocore (Headset)", 0, 2, u, Port::Unknown),
+        ];
+        let p = plan(&AudioPrefs::default(), &all, None);
+        let i = p.input.as_ref().unwrap();
+        assert_eq!(i.device.id.id, "31");
+        assert_eq!(i.kind, InputKind::Interface, "{}", i.reason);
+        assert_eq!(p.output.as_ref().unwrap().id.id, "2");
+        // headphones in the tablet's jack win over its speaker
+        let mut with_phones = all.clone();
+        with_phones.push(sys(
+            "40",
+            "Redmi Pad 2 Pro (Headphones)",
+            0,
+            2,
+            x,
+            Port::Headphones,
+        ));
+        assert_eq!(
+            plan(&AudioPrefs::default(), &with_phones, None)
+                .output
+                .unwrap()
+                .id
+                .id,
+            "40"
+        );
+        // the tablet's own mic is a microphone (not heard through its speaker)
+        let mic = rank_inputs(&all, None)
+            .into_iter()
+            .find(|r| r.device.id.id == "7")
+            .unwrap();
+        assert_eq!(mic.kind, InputKind::Microphone);
     }
 
     #[test]
