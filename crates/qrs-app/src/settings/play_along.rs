@@ -195,7 +195,7 @@ impl Run {
     }
 
     /// The run's verdict. `onset`: the pluck threshold (RMS), for "too soft".
-    fn outcome(&self, onset: f32) -> Outcome {
+    fn outcome(&self, onset: f32, limit: f64) -> Outcome {
         let times: Vec<f64> = self.tune.iter().map(|n| n.time()).collect();
         let m = pc::match_plucks(&times, &self.plucks);
         let played = self
@@ -224,7 +224,7 @@ impl Run {
                 }
             })
             .collect();
-        pc::assess(played, m.doubles)
+        pc::assess_for(played, m.doubles, limit)
     }
 }
 
@@ -379,7 +379,7 @@ impl SettingsView {
         if !run.tick(midi, level, io) {
             return;
         }
-        let o = run.outcome(onset);
+        let o = run.outcome(onset, tc::offset_limit(&super::timing_tool::route(st)));
         play.run = None;
         if o.ok() {
             play.set = Some(save_guitar_run(st, &o.fit));
