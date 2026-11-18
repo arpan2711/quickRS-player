@@ -389,12 +389,19 @@ impl Outcome {
 /// The run's verdict: the plucks' timing (every note a pluck landed on, the wrong ones too: it's the timing that's
 /// measured), whether it's trusted, and the note check's diagnosis.
 pub fn assess(played: Vec<Played>, doubles: usize) -> Outcome {
+    assess_for(played, doubles, tc::SANE_OFFSET)
+}
+
+/// `assess`, with the size limit of the route (`timing_cal::offset_limit`).
+pub fn assess_for(played: Vec<Played>, doubles: usize, limit: f64) -> Outcome {
     let dts: Vec<f64> = played.iter().filter_map(|p| p.result.dt).collect();
     let fit = tc::fit(&dts);
     let problem = if fit.n < need(played.len()) {
         Some(tc::Problem::Missed)
     } else if fit.ci > tc::MAX_CI {
         Some(tc::Problem::Scattered)
+    } else if fit.offset.abs() > limit {
+        Some(tc::Problem::TooFar)
     } else {
         None
     };
@@ -501,6 +508,7 @@ pub fn timing_words(o: &Outcome, inst: Instrument, delay: &str) -> String {
             o.fit.spread * 1000.0,
             inst.noun()
         ),
+        Some(tc::Problem::TooFar) => tc::too_far_words(o.fit.offset),
     }
 }
 
@@ -763,6 +771,20 @@ mod tests {
         let o = run(&t, &plucks(&t, 0.0, 0.045, 7), &[], &[]);
         assert_eq!(o.problem, Some(tc::Problem::Scattered), "{o:?}");
         assert!(timing_words(&o, Instrument::Bass, "").contains("spread too widely"));
+    }
+
+    #[test]
+    fn a_steady_run_far_from_the_beat_is_held_back() {
+        let t = tune(Instrument::Guitar);
+        // 116 ms ahead of the tune, steadily: not set, and told why (the first calibration did set it)
+        let o = run(&t, &plucks(&t, -0.116, 0.006, 4), &[], &[]);
+        assert_eq!(o.problem, Some(tc::Problem::TooFar), "{o:?}");
+        assert!(!o.ok());
+        let w = timing_words(&o, Instrument::Guitar, "");
+        assert!(w.contains("ahead of the beat") && w.contains("left as it was"), "{w}");
+        // a slow output's limit lets it through
+        let played: Vec<Played> = o.played.clone();
+        assert!(assess_for(played, 0, tc::GUITAR_RANGE.1).ok());
     }
 
     #[test]

@@ -284,11 +284,12 @@ impl SettingsView {
     fn draw_offsets(&mut self, ui: &mut Ui, st: &mut AppState, body: Rect, y: f32) -> f32 {
         let gap = px(24.0);
         let colw = snap((body.width() - gap) / 2.0);
-        let left = Rect::from_min_size(pos2(body.min.x, y), vec2(colw, body.height()));
-        match self.draw_screen_card(ui, st, left) {
+        // (the guitar's delay on the left and the screen's on the right, as the calibration tool lays its two runs out)
+        let right = Rect::from_min_size(pos2(body.min.x + colw + gap, y), vec2(colw, body.height()));
+        match self.draw_screen_card(ui, st, right) {
             Some(bottom) => {
-                let right = Rect::from_min_size(pos2(body.min.x + colw + gap, y), vec2(colw, body.height()));
-                self.draw_hits(ui, st, right, false).max(bottom)
+                let left = Rect::from_min_size(pos2(body.min.x, y), vec2(colw, body.height()));
+                self.draw_hits(ui, st, left, false).max(bottom)
             }
             None => self.draw_hits(
                 ui,

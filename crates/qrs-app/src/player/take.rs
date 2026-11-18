@@ -962,7 +962,23 @@ impl PlayerView {
         let going = s.going();
         let done = s.report.is_some();
         let listening = s.listen.is_some();
-        let room = Rect::from_min_max(pos2(x, y), pos2(x + w, r_row1.min.y - px(10.0)));
+        // (a take is the best witness to the timing: 30+ notes of the song as played to what's heard; when they sat
+        // one way, offer the delay that centres them: `gtime_set`, as the results card's offer does)
+        let offer = s
+            .report
+            .as_ref()
+            .filter(|_| !going)
+            .and_then(|r| {
+                crate::timing_cal::take_offer(r.timing.n, r.timing.median_ms, r.timing.spread_ms)
+                    .map(|d| (d, r.timing.median_ms))
+            });
+        let r_offer = Rect::from_min_size(pos2(x, r_row1.min.y - bh - px(8.0)), vec2(w, bh));
+        let room_end = if offer.is_some() {
+            r_offer.min.y - px(26.0)
+        } else {
+            r_row1.min.y - px(10.0)
+        };
+        let room = Rect::from_min_max(pos2(x, y), pos2(x + w, room_end));
         if let Some(r) = s.report.clone().filter(|_| !going) {
             if let Some(t0) = self.draw_take_report(ui, &p, &r, room) {
                 acts.push(format!("take:bar:{t0}"));
@@ -984,6 +1000,35 @@ impl PlayerView {
         } else {
             ("Record again", !done)
         };
+        if let Some((d, median)) = offer {
+            let target = crate::timing_cal::ms_round(self.input_offset + d);
+            txt(
+                &p,
+                &format!(
+                    "Your notes ran {:.0} ms {} on average.",
+                    median.abs(),
+                    if median < 0.0 { "early" } else { "late" }
+                ),
+                pos2(x, r_offer.min.y - px(19.0)),
+                12.0,
+                th.caption,
+                600,
+                Align2::LEFT_TOP,
+                Some(w),
+            );
+            if button(
+                ui,
+                r_offer,
+                "take-offer",
+                &format!("Set delay to {}", crate::settings::delay_label(target)),
+                "",
+                style(false),
+            )
+            .clicked()
+            {
+                acts.push(format!("gtime_set:{target}"));
+            }
+        }
         if button(ui, r_row1, "take-rec", label, "Ctrl R", style(primary)).clicked() {
             acts.push("take:record".into());
         }
