@@ -351,8 +351,10 @@ impl Level {
     }
 }
 
-/// Share of the strong peaks the expected notes may fail to explain.
-pub const FOREIGN_MAX: f64 = 0.2;
+/// Share of the strong peaks the expected notes may fail to explain. 0.25 (was 0.2): the owner's song takes had right
+/// chords at 0.2-0.25 (+6 of 326 live); "shape a string over" false accepts 11% -> 16% on the bench. 0.3 and up let
+/// clearly different chords through.
+pub const FOREIGN_MAX: f64 = 0.25;
 const PEAK_FRAC: f64 = 0.15;
 const HARMONIC_TOL: f64 = 0.025;
 /// Hz; wrong notes show up clearly below this.
@@ -535,10 +537,14 @@ fn group_present_as(
 }
 
 /// Whether `present` (of `group_present_in`) is enough of the group: `need` of its pitches, and for a chord of
-/// two or more pitch classes, two of them (a power chord's root and its octave alone are one note, not the chord).
+/// two or more pitch classes, two of them (a power chord's root and its octave alone are one note, not the chord),
+/// unless it's the same chord struck again (every pitch a repeat): then its root and octave are enough. On the owner's
+/// song takes the repeats' fifth often showed no peak of its own (+9 of 326 chords live); on the synthetic bench only
+/// "shape a string over" accepts more (16% -> 19%).
 pub fn enough(g: &NoteGroup, present: &[i32]) -> bool {
     let classes = |v: &[i32]| v.iter().map(|m| m.rem_euclid(12)).collect::<BTreeSet<_>>().len();
-    present.len() >= need(g) && classes(present) >= classes(&g.midis).min(2)
+    let again = g.midis.len() >= 2 && g.midis.iter().all(|m| g.repeats.contains(m));
+    present.len() >= need(g) && (again || classes(present) >= classes(&g.midis).min(2))
 }
 
 pub fn explain(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>) -> Verdict {
@@ -1665,6 +1671,20 @@ mod tests {
         let g = &build_groups(&chords(&[(1.0, &A5)]))[0];
         assert!(!enough(g, &[45, 57]));
         assert!(enough(g, &[45, 52]));
+    }
+
+    /// The same power chord struck again (a quick repeat): its root and octave are enough, as its fifth's own peak
+    /// is often too weak to show on the strikes after the first. The first strike still needs two pitch classes.
+    #[test]
+    fn a_repeated_power_chord_counts_by_its_root_and_octave() {
+        let gs = build_groups(&chords(&[(1.0, &A5), (1.157, &A5)]));
+        assert!(!enough(&gs[0], &[45, 57]));
+        assert!(enough(&gs[1], &[45, 57]));
+        assert!(!enough(&gs[1], &[45]));
+        // another chord after it isn't a repeat: it needs two of its own pitch classes
+        let e5: [(i32, i32); 3] = [(0, 0), (1, 2), (2, 2)];
+        let gs = build_groups(&chords(&[(1.0, &A5), (1.157, &e5)]));
+        assert!(!enough(&gs[1], &[40, 52]));
     }
 
     /// A slow strum can make a second pluck 50 ms in (its later strings); it is the same strum, not an early

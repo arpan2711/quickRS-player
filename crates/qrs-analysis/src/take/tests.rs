@@ -751,10 +751,14 @@ fn a_chord_struck_again_with_a_quiet_root_is_still_the_chord() {
     let r = run(&a, render(&quiet, 0.0, 2.0, 1.0, 0.0), 0.0, 2.0, 1.0);
     assert_eq!(statuses(&r), vec![Status::Hit; 3], "{}", r.text(100));
 
-    // the fifth never played (root and octave: another sound), the strike repeated: its string is no peak
+    // the fifth never played (root and octave): the first strike is another sound and stays wrong; the same chord
+    // struck again counts by its root and octave, as the scorer takes it (`detect::enough`: a repeat's fifth is often
+    // too weak to show in real playing)
     let no_fifth: Vec<Played> = notes.iter().filter(|n| n.string != 2).cloned().collect();
     let r = run(&a, render(&no_fifth, 0.0, 2.0, 1.0, 0.0), 0.0, 2.0, 1.0);
-    assert_eq!(statuses(&r)[1], Status::Wrong, "{}", r.text(100));
+    let st = statuses(&r);
+    assert_eq!(st[0], Status::Wrong, "{}", r.text(100));
+    assert_eq!(st[1], Status::Hit, "{}", r.text(100));
 }
 
 /// The same low note struck again a sixteenth later (the song's B2 B2): the note before still rings as loud as the
