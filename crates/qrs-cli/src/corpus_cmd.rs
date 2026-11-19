@@ -507,6 +507,83 @@ fn beat_name(beat: f64) -> String {
     format!("{}{}", whole as i32 + 1, sub)
 }
 
+/// An exercise of single notes only (what is struck at each tock, by the label's played notes) as guitar tab: the
+/// string is the line, the fret the number, one cell per click slot; a `*` marks a note a fret off on purpose.
+fn single_tab(ex: &Exercise) -> Option<String> {
+    let nl = char::from(10u8);
+    let mut cells: Vec<(f64, i32, i32, bool)> = Vec::new();
+    for e in &ex.events {
+        let (st, fr) = match &e.played {
+            Played::AsCharted if e.want.len() == 1 => e.want[0],
+            Played::Shape(p) if p.len() == 1 => p[0],
+            _ => return None,
+        };
+        cells.push((e.beat, st, fr, e.truth == Truth::Wrong));
+    }
+    let sub = ex.sub.max(1) as usize;
+    let slots = 4 * sub;
+    let bars = (cells.last()?.0 / 4.0).floor() as usize;
+    let per_block = (4 / sub).max(1);
+    let counts = ["1", "e", "&", "a"];
+    let mut out = String::new();
+    out.push_str("Read it like guitar tab: each line is a string, each number the fret, one number per tock you hear; ");
+    out.push_str("`---` is a silent slot, and `*` marks a note one fret off ON PURPOSE (play it as written).");
+    out.push(nl);
+    out.push(nl);
+    out.push_str("```");
+    out.push(nl);
+    let mut bar = 1;
+    while bar <= bars {
+        let last = (bar + per_block - 1).min(bars);
+        let mut head = String::from("   ");
+        let mut count = String::from("   ");
+        for b in bar..=last {
+            for k in 0..slots {
+                head.push_str(&format!("{:<3}", if k == 0 { format!("b{b}") } else { String::new() }));
+                let c = if k % sub == 0 {
+                    ((k / sub) + 1).to_string()
+                } else if sub == 4 {
+                    counts[k % 4].to_string()
+                } else {
+                    "&".to_string()
+                };
+                count.push_str(&format!("{c:<3}"));
+            }
+            head.push(' ');
+            count.push(' ');
+        }
+        out.push_str(head.trim_end());
+        out.push(nl);
+        if sub > 1 {
+            out.push_str(count.trim_end());
+            out.push(nl);
+        }
+        for (string, name) in [(5, "e"), (4, "B"), (3, "G"), (2, "D"), (1, "A"), (0, "E")] {
+            let mut line = format!("{name}|");
+            for b in bar..=last {
+                for k in 0..slots {
+                    let at = b as f64 * 4.0 + k as f64 / sub as f64;
+                    let cell = cells.iter().find(|c| (c.0 - at).abs() < 1e-6 && c.1 == string);
+                    let text = match cell {
+                        Some(&(_, _, fr, wrong)) => format!("{fr}{}", if wrong { "*" } else { "" }),
+                        None => String::new(),
+                    };
+                    line.push_str(&format!("{text:-<3}"));
+                }
+                line.push('|');
+            }
+            out.push_str(&line);
+            out.push(nl);
+        }
+        out.push(nl);
+        bar = last + 1;
+    }
+    out.push_str("```");
+    out.push(nl);
+    out.push(nl);
+    Some(out)
+}
+
 fn script(exs: &[Exercise]) -> String {
     let mut s = String::new();
     s.push_str(
@@ -546,6 +623,10 @@ fn script(exs: &[Exercise]) -> String {
             bars as f64 * 4.0 * 60.0 / ex.bpm,
             ex.about
         ));
+        if let Some(tab) = single_tab(ex) {
+            s.push_str(&tab);
+            continue;
+        }
         let names = ["1", "e", "&", "a"];
         let slot_names: Vec<&str> = match sub {
             4 => names.to_vec(),
