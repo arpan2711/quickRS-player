@@ -446,33 +446,30 @@ pub fn labels_json(ex: &Exercise) -> Value {
     })
 }
 
-/// A click track: four count-in beats, then a beat every `60 / bpm` to `end` seconds (the bar's first accented).
-pub fn click_track(bpm: f64, sub: u32, end: f64) -> Vec<f32> {
+/// A play-along track: a soft tick on every beat (the bar's first a little higher), and a loud bright "tock" at
+/// each time in `strikes`: strike when you hear one, and only then. The first four beats are a count-in.
+pub fn click_track(bpm: f64, strikes: &[f64], end: f64) -> Vec<f32> {
     let n = (end * RATE as f64) as usize;
     let mut x = vec![0.0f32; n];
-    let mut k = 0;
-    loop {
-        let t = k as f64 * 60.0 / bpm / sub as f64;
+    let mut put = |t: f64, freqs: &[f64], amp: f64, decay: f64, len: f64| {
         let at = (t * RATE as f64) as usize;
-        if at >= n {
-            break;
-        }
-        let beat = k % sub == 0;
-        let (f, a) = if !beat {
-            (700.0, 0.12) // a soft tick between the beats
-        } else if (k / sub) % 4 == 0 {
-            (1500.0, 0.6)
-        } else {
-            (1000.0, 0.4)
-        };
-        for i in 0..(0.03 * RATE as f64) as usize {
+        for i in 0..(len * RATE as f64) as usize {
             if at + i >= n {
                 break;
             }
             let s = i as f64 / RATE as f64;
-            x[at + i] += (a * (-s * 120.0).exp() * (std::f64::consts::TAU * f * s).sin()) as f32;
+            let v: f64 = freqs.iter().map(|f| (std::f64::consts::TAU * f * s).sin()).sum();
+            x[at + i] += (amp * (-s * decay).exp() * v / freqs.len() as f64) as f32;
         }
+    };
+    let mut k = 0;
+    while k as f64 * 60.0 / bpm < end {
+        let f = if k % 4 == 0 { 900.0 } else { 650.0 };
+        put(k as f64 * 60.0 / bpm, &[f], 0.2, 90.0, 0.04);
         k += 1;
+    }
+    for &t in strikes {
+        put(t, &[1800.0, 2700.0, 3300.0], 0.9, 45.0, 0.12);
     }
     x
 }
@@ -495,8 +492,8 @@ fn script(exs: &[Exercise]) -> String {
          ## How to record each exercise\n\n\
          1. Open a recorder that can record the guitar input (Audacity is free; use the Katana's USB input, mono,\n\
             48000 Hz if it lets you choose).\n\
-         2. Play the exercise's click track (`NAME.click.wav`) through your speakers or headphones from any media\n\
-            player. It counts in four beats; **play nothing until the count-in is over**.\n\
+         2. Play the exercise's play-along track (`NAME.click.wav`) through your speakers or headphones from any media\n\
+            player. It has a soft tick on every beat and a LOUD bright **tock** wherever you must strike: **strike exactly on every tock and never otherwise**. It counts in four beats first; play nothing until the count-in is over.\n\
          3. Order: **start recording, wait two seconds in silence, then start the click.** Then play the bars below\n\
             along with the click.\n\
          4. Stop recording after the last bar. Export as WAV and save it in this folder as `NAME.wav`\n\
@@ -566,7 +563,7 @@ fn script(exs: &[Exercise]) -> String {
 
 ");
         s.push_str("X = strike, o = do NOT strike (let the last chord ring), W = strike the deliberately wrong thing, . = silent. ");
-        s.push_str("Every slot is one tick of the click, and a bar is always four beats: **wait through the silent slots, they are part of the bar.**
+        s.push_str("Each X (and W) is one tock you will hear; the silent slots have none, so you simply do not play there. The grid is only a map of the tocks, and the list under it says which chord goes with each. Each bar is four beats long.
 
 ");
         // what to play in each bar
@@ -595,7 +592,7 @@ fn init(dir: &Path) -> anyhow::Result<()> {
     for ex in &exs {
         let end = ex.t(ex.events.last().map(|e| e.beat).unwrap_or(4.0) + 4.0);
         std::fs::write(dir.join(format!("{}.json", ex.name)), serde_json::to_string_pretty(&labels_json(ex))?)?;
-        qrs_analysis::take::write_wav_mono(&dir.join(format!("{}.click.wav", ex.name)), RATE, &click_track(ex.bpm, ex.sub, end))?;
+        qrs_analysis::take::write_wav_mono(&dir.join(format!("{}.click.wav", ex.name)), RATE, &click_track(ex.bpm, &ex.events.iter().filter(|e| e.truth != Truth::None).map(|e| ex.t(e.beat)).collect::<Vec<_>>(), end))?;
     }
     std::fs::write(dir.join("SCRIPT.md"), script(&exs))?;
     println!(
@@ -962,7 +959,7 @@ mod tests {
         assert!(s.contains("do NOT strike") && s.contains("repeat-fast"));
         assert_eq!(beat_name(4.25), "1e");
         assert_eq!(beat_name(6.5), "3&");
-        let click = click_track(95.0, 4, 5.0);
+        let click = click_track(95.0, &[2.0, 2.158], 5.0);
         assert!(click.iter().any(|v| v.abs() > 0.3) && click.len() == 5 * RATE as usize);
     }
 
