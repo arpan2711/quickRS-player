@@ -117,6 +117,8 @@ pub struct Ev {
 pub struct Exercise {
     pub name: &'static str,
     pub bpm: f64,
+    /// Click ticks per beat (4: a soft tick on every sixteenth, to play to).
+    pub sub: u32,
     pub about: &'static str,
     pub events: Vec<Ev>,
 }
@@ -199,6 +201,7 @@ pub fn exercises() -> Vec<Exercise> {
     }
     v.push(Exercise {
         name: "repeat-fast",
+        sub: 4,
         bpm: 95.0,
         about: "A power chord struck three times in a row, a sixteenth note apart (the Back in Black rhythm), then a rest.",
         events: ev,
@@ -213,6 +216,7 @@ pub fn exercises() -> Vec<Exercise> {
     }
     v.push(Exercise {
         name: "repeat-eighths",
+        sub: 2,
         bpm: 110.0,
         about: "A power chord struck on every eighth note for a bar, then the next chord.",
         events: ev,
@@ -242,6 +246,7 @@ pub fn exercises() -> Vec<Exercise> {
     }
     v.push(Exercise {
         name: "hold-skip",
+        sub: 4,
         bpm: 95.0,
         about: "Like the riff, but where the card says \"do NOT strike\" you let the chord ring: the game must not give credit for a chord that was not struck again.",
         events: ev,
@@ -298,6 +303,7 @@ pub fn exercises() -> Vec<Exercise> {
     }
     v.push(Exercise {
         name: "wrong-shapes",
+        sub: 1,
         bpm: 70.0,
         about: "Quarter notes: right chords mixed with wrong shapes, a muted strum, one string only, and a chord with one string left out.",
         events: ev,
@@ -315,6 +321,7 @@ pub fn exercises() -> Vec<Exercise> {
     }
     v.push(Exercise {
         name: "singles-low",
+        sub: 1,
         bpm: 80.0,
         about: "Single notes up and down frets 0-7 of the low E string, then the A string.",
         events: ev,
@@ -332,6 +339,7 @@ pub fn exercises() -> Vec<Exercise> {
     }
     v.push(Exercise {
         name: "singles-mid",
+        sub: 1,
         bpm: 80.0,
         about: "Single notes up and down frets 0-5 of the D, G and B strings.",
         events: ev,
@@ -359,6 +367,7 @@ pub fn exercises() -> Vec<Exercise> {
     }
     v.push(Exercise {
         name: "single-semitone",
+        sub: 1,
         bpm: 70.0,
         about: "Single notes in pairs: the right note, then the note a fret above or below it on the same string.",
         events: ev,
@@ -383,6 +392,7 @@ pub fn exercises() -> Vec<Exercise> {
     }
     v.push(Exercise {
         name: "open-strums",
+        sub: 2,
         bpm: 90.0,
         about: "Open chords strummed on four eighth notes each (down, down, up, up if you like).",
         events: ev,
@@ -437,17 +447,24 @@ pub fn labels_json(ex: &Exercise) -> Value {
 }
 
 /// A click track: four count-in beats, then a beat every `60 / bpm` to `end` seconds (the bar's first accented).
-pub fn click_track(bpm: f64, end: f64) -> Vec<f32> {
+pub fn click_track(bpm: f64, sub: u32, end: f64) -> Vec<f32> {
     let n = (end * RATE as f64) as usize;
     let mut x = vec![0.0f32; n];
     let mut k = 0;
     loop {
-        let t = k as f64 * 60.0 / bpm;
+        let t = k as f64 * 60.0 / bpm / sub as f64;
         let at = (t * RATE as f64) as usize;
         if at >= n {
             break;
         }
-        let (f, a) = if k % 4 == 0 { (1500.0, 0.6) } else { (1000.0, 0.4) };
+        let beat = k % sub == 0;
+        let (f, a) = if !beat {
+            (700.0, 0.12) // a soft tick between the beats
+        } else if (k / sub) % 4 == 0 {
+            (1500.0, 0.6)
+        } else {
+            (1000.0, 0.4)
+        };
         for i in 0..(0.03 * RATE as f64) as usize {
             if at + i >= n {
                 break;
@@ -497,7 +514,7 @@ fn script(exs: &[Exercise]) -> String {
         let mut bar = -1.0;
         let mut line = String::new();
         let mut first = true;
-        s.push_str("(Bar 1 starts right after the four count-in beats; [1] is the click's first beat of the bar, [1e] [1&] [1a] the sixteenths after it.)
+        s.push_str("(Bar 1 starts right after the four count-in beats. The numbers in [ ] say WHERE in the bar to strike: [1] on the click's first beat, [2] on the second beat, and so on. [1e] [1&] [1a] are NOT later beats: they are the quick ticks between beat 1 and beat 2, so [1] [1e] [1&] is three fast strikes inside ONE beat, all before beat 2. Count them aloud: 1 e & a, 2 e & a ... So '1 e &' is strike, strike, strike, then stay quiet on 'a'.)
 
 ");
         for e in &ex.events {
@@ -525,7 +542,7 @@ fn init(dir: &Path) -> anyhow::Result<()> {
     for ex in &exs {
         let end = ex.t(ex.events.last().map(|e| e.beat).unwrap_or(4.0) + 4.0);
         std::fs::write(dir.join(format!("{}.json", ex.name)), serde_json::to_string_pretty(&labels_json(ex))?)?;
-        qrs_analysis::take::write_wav_mono(&dir.join(format!("{}.click.wav", ex.name)), RATE, &click_track(ex.bpm, end))?;
+        qrs_analysis::take::write_wav_mono(&dir.join(format!("{}.click.wav", ex.name)), RATE, &click_track(ex.bpm, ex.sub, end))?;
     }
     std::fs::write(dir.join("SCRIPT.md"), script(&exs))?;
     println!(
@@ -892,7 +909,7 @@ mod tests {
         assert!(s.contains("do NOT strike") && s.contains("repeat-fast"));
         assert_eq!(beat_name(4.25), "1e");
         assert_eq!(beat_name(6.5), "3&");
-        let click = click_track(95.0, 5.0);
+        let click = click_track(95.0, 4, 5.0);
         assert!(click.iter().any(|v| v.abs() > 0.3) && click.len() == 5 * RATE as usize);
     }
 
@@ -914,6 +931,7 @@ mod tests {
         // a short exercise: one chord struck three times, left ringing once, a wrong chord, a muted strum
         let ex = Exercise {
             name: "t",
+            sub: 1,
             bpm: 95.0,
             about: "",
             events: vec![
