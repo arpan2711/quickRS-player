@@ -807,6 +807,8 @@ struct Ctx<'a> {
     rate: u32,
     sp: Spectra,
     cache: SpecCache,
+    /// The event being heard is a single note repeating a pitch of the groups before it.
+    same_pitch: bool,
 }
 
 impl Ctx<'_> {
@@ -1052,6 +1054,7 @@ pub fn analyse(input: &TakeInput, progress: &dyn Fn(f32), cancel: &AtomicBool) -
             map: HashMap::new(),
             binhz: 1.0,
         },
+        same_pitch: false,
     };
     let mut checked = HashMap::new();
     // pass 1, then centred on the take's own offset
@@ -1186,6 +1189,7 @@ pub fn analyse(input: &TakeInput, progress: &dyn Fn(f32), cancel: &AtomicBool) -
                 // a single note repeating the one before passes the scorer's test on that note still ringing:
                 // listen to what got louder instead
                 let repeat = expected.len() == 1 && e.group.repeats.contains(&expected[0].midi);
+                ctx.same_pitch = repeat;
                 // and a single note confirmed by its own pitch: the scorer's test lets through a neighbouring
                 // semitone that was just played (it counts as "still ringing", and leaks into the expected bin)
                 let confirmed = !ok || expected.len() != 1 || {
@@ -1530,7 +1534,16 @@ fn hear(ctx: &mut Ctx, pluck: usize, at: usize, next: usize, max_n: usize) -> Ve
     } else {
         0.0
     };
+    // (a single note, a pitch the groups before it had, no louder than what rings before it is that pitch struck again: what got louder is then only
+    // the attack's leftovers, a faint pitch of their own that is not the note's (a low B read as E3 or Eb3), so,
+    // when the window's own pitch is reasonably clear, it is read as it is)
+    let mut grew = max_n > 1 || !ctx.same_pitch || level > 1.1 * before;
+    if !grew {
+        let (_, clarity) = mpm_pitch(&mut ctx.sp, &ctx.x[at..at + n], ctx.rate, 60.0, 1400.0, 0.9);
+        grew = clarity < 0.5;
+    }
     if before > 0.3 * level
+        && grew
         && let (Some(mag), Some(prev)) = (ctx.spec(at, n), ctx.spec(pluck - n, n))
     {
         let grown: Vec<f64> = mag

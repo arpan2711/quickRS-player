@@ -49,6 +49,10 @@ pub struct ScoreArgs {
     /// only recordings whose name contains this
     #[arg(long)]
     pub only: Option<String>,
+    /// also run the take analysis (the report the app shows after a recording) on each recording, as if the
+    /// labels were the chart, and say how many right strikes it calls right and wrong ones it calls right
+    #[arg(long)]
+    pub take: bool,
 }
 
 pub fn run(cmd: Cmd) -> anyhow::Result<()> {
@@ -723,6 +727,8 @@ pub struct EvResult {
     /// The pluck detector found a strike within 60 ms.
     pub found: bool,
     pub why: String,
+    /// With `--take`: the take report (qrs-analysis take.rs, what the app shows after a recording) called it right.
+    pub report: Option<bool>,
 }
 
 struct Labelled {
@@ -870,6 +876,30 @@ fn score_one(wav: &Path, labels: &Path, a: &ScoreArgs) -> anyhow::Result<(Vec<Ev
         bail!("{}: {} chart groups for {} labelled events", name, judged.len(), ev.len());
     }
     let len = x.len() as f64 / RATE as f64;
+    let report: Option<Vec<bool>> = if a.take {
+        let nominal_items: Vec<Item> = ev
+            .iter()
+            .enumerate()
+            .map(|(i, e)| Item {
+                t: nominal[i],
+                want: e.want.clone(),
+                play: None,
+                judged: true,
+                palm: false,
+            })
+            .collect();
+        let input = qrs_analysis::take::TakeInput {
+            arr: chords_cmd::chart(&nominal_items),
+            from: 0.0,
+            to: len,
+            samples: x.clone(),
+            timing: qrs_analysis::take::TakeTiming::linear(RATE, 0.0, 1.0),
+        };
+        qrs_analysis::take::analyse(&input, &|_| {}, &std::sync::atomic::AtomicBool::new(false))
+            .map(|r| r.events.iter().map(|e| e.status == qrs_analysis::take::Status::Hit).collect())
+    } else {
+        None
+    };
     let mut out = Vec::new();
     let mut struck = 0;
     for (g, &i) in order.iter().enumerate() {
@@ -900,6 +930,7 @@ fn score_one(wav: &Path, labels: &Path, a: &ScoreArgs) -> anyhow::Result<(Vec<Ev
             accepted,
             found,
             why,
+            report: report.as_ref().and_then(|r| r.get(i)).copied(),
         });
     }
     let note = format!(
@@ -1006,6 +1037,35 @@ fn score_dir(a: &ScoreArgs) -> anyhow::Result<()> {
     let mut total = Tally::default();
     all.iter().for_each(|r| total.add(r));
     println!("\n== everything\n  {:<18} {}", "all", total.line());
+    if a.take {
+        println!("{}== the take report (what the app shows after a recording) on the same recordings", char::from(10u8));
+        let mut m: std::collections::BTreeMap<String, (u32, u32, u32, u32)> = std::collections::BTreeMap::new();
+        for r in &all {
+            let Some(hit) = r.report else { continue };
+            let e = m.entry(r.tag.clone()).or_default();
+            if r.truth == Truth::Right {
+                e.1 += 1;
+                e.0 += hit as u32;
+            } else {
+                e.3 += 1;
+                e.2 += hit as u32;
+            }
+        }
+        for (k, (ok, n, fk, fn_)) in &m {
+            println!("  {k:<18} right called right {ok:>3}/{n:<3}   |   wrong called right {fk:>3}/{fn_:<3}");
+        }
+        if a.why {
+            for r in all.iter().filter(|r| r.report.is_some_and(|h| h != (r.truth == Truth::Right))) {
+                println!(
+                    "  {} {:>7.2} s {:<28} the report says {}",
+                    r.rec,
+                    r.t,
+                    r.label,
+                    if r.truth == Truth::Right { "NOT right" } else { "right" }
+                );
+            }
+        }
+    }
     if a.why {
         println!("\n== what the game got wrong");
         for r in all.iter().filter(|r| (r.truth == Truth::Right) != r.accepted) {
@@ -1045,6 +1105,7 @@ fn score_dir(a: &ScoreArgs) -> anyhow::Result<()> {
                 accepted: r["accepted"].as_bool().unwrap_or(false),
                 found: r["found"].as_bool().unwrap_or(false),
                 why: String::new(),
+                report: None,
             });
         }
         println!("\n== against the baseline ({})", p.display());
@@ -1189,6 +1250,7 @@ mod tests {
             baseline: None,
             shift: None,
             only: None,
+            take: false,
         };
         let (rs, note) = score_one(&dir.join("t@crunch.wav"), &dir.join("t.json"), &a).unwrap();
         assert!(note.contains("shift +3.") || note.contains("shift +4."), "{note}");

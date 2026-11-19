@@ -756,3 +756,17 @@ fn a_chord_struck_again_with_a_quiet_root_is_still_the_chord() {
     let r = run(&a, render(&no_fifth, 0.0, 2.0, 1.0, 0.0), 0.0, 2.0, 1.0);
     assert_eq!(statuses(&r)[1], Status::Wrong, "{}", r.text(100));
 }
+
+/// The same low note struck again a sixteenth later (the song's B2 B2): the note before still rings as loud as the
+/// new one, so what "got louder" is only the attack's leftovers. Each is read as the note it is.
+#[test]
+fn a_low_note_struck_again_fast_is_read_as_that_note() {
+    let notes: Vec<Played> = [0.5, 0.66, 0.82, 1.5, 1.66]
+        .iter()
+        .map(|&t| p(t, 0, 7))
+        .collect();
+    let a = chart(&notes, 2.5);
+    let r = run(&a, render(&notes, 0.0, 2.0, 1.0, 0.0), 0.0, 2.0, 1.0);
+    assert_eq!(statuses(&r), vec![Status::Hit; 5], "{}", r.text(100));
+    assert!(r.events.iter().all(|e| e.played.iter().all(|p| p.midi == 47)), "{:?}", r.events);
+}
