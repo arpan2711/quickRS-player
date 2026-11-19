@@ -246,6 +246,28 @@ pub fn fundamental_present_in(mag: &[f64], binhz: f64, m: i32, prev: Option<&[f6
     Level::of(mag, binhz).is_some_and(|l| l.present(mag, binhz, m, prev, repeat, false))
 }
 
+/// How much of the spectrum's strongest peak a struck-again chord tone's own peak may be down to (`RINGING_SHARE`).
+pub const RINGING_SHARE: f64 = 0.04;
+
+/// Whether a chord's note `m`, struck again while it was still ringing (a quick repeat of the same chord), has a
+/// peak of its own at its fundamental (or, under 100 Hz, its 2nd harmonic): a local maximum, so not another note's
+/// skirt, with `RINGING_SHARE` of the strongest peak instead of `present`'s 0.12. Its lowest string is the weakest
+/// of a quick strum in a distorted tone (the take analysis found its D3 and A2 at 4-10% of the strongest partial in
+/// the strikes right after the first, 18-30% in the first), and its note is a clean peak where nothing sounds
+/// instead (no local maximum at all).
+pub fn fundamental_ringing_in(mag: &[f64], binhz: f64, m: i32) -> bool {
+    let Some(level) = Level::of(mag, binhz) else {
+        return false;
+    };
+    let f = midi_to_hz(m as f64);
+    let p = sharp_peak(mag, binhz, f, 0.03).max(if f < 100.0 {
+        sharp_peak(mag, binhz, 2.0 * f, 0.03)
+    } else {
+        0.0
+    });
+    p >= RINGING_SHARE * level.reference && p >= 8.0 * level.floor
+}
+
 /// A spectrum's strongest peak and median (35 Hz to 5 kHz), for the presence test.
 struct Level {
     reference: f64,
@@ -1230,6 +1252,37 @@ enum Place {
 
 #[cfg(test)]
 mod tests {
+    /// A spectrum (1 Hz bins to 6 kHz, a faint noise floor) with a peak of `h` at each (Hz, height).
+    fn spectrum_of(peaks: &[(usize, f64)]) -> Vec<f64> {
+        let mut mag = vec![0.01; 6000];
+        for &(hz, h) in peaks {
+            mag[hz] = h;
+            mag[hz - 1] = h * 0.3;
+            mag[hz + 1] = h * 0.3;
+        }
+        mag
+    }
+
+    #[test]
+    fn a_quiet_low_string_is_a_peak_of_its_own_only_if_it_is_one() {
+        // D5: D3 (147 Hz) a twentieth of the chord's strongest partial, A3 and D4 the strong ones
+        let quiet = spectrum_of(&[(147, 5.0), (220, 60.0), (294, 100.0)]);
+        assert!(!fundamental_present_in(&quiet, 1.0, 50, None, true), "present's 12% gate says no");
+        assert!(fundamental_ringing_in(&quiet, 1.0, 50));
+        // nothing at D3 at all
+        let none = spectrum_of(&[(220, 60.0), (294, 100.0)]);
+        assert!(!fundamental_ringing_in(&none, 1.0, 50));
+        // only the skirt of a louder note a semitone up (156 Hz, D#3), no peak at D3's own frequency
+        let mut skirt = spectrum_of(&[(156, 100.0), (220, 60.0)]);
+        for (k, v) in [(150, 8.0), (151, 12.0), (152, 20.0), (153, 40.0), (154, 70.0)] {
+            skirt[k] = v;
+        }
+        assert!(!fundamental_ringing_in(&skirt, 1.0, 50));
+        // a peak under a fortieth of the strongest is noise
+        let faint = spectrum_of(&[(147, 2.0), (220, 60.0), (294, 100.0)]);
+        assert!(!fundamental_ringing_in(&faint, 1.0, 50));
+    }
+
     use super::*;
     use qrs_formats::model::{Beat, Chord};
 

@@ -1559,8 +1559,9 @@ fn hear(ctx: &mut Ctx, pluck: usize, at: usize, next: usize, max_n: usize) -> Ve
 }
 
 /// A chord or double stop that passed the scorer's test (`detect::need` of its notes): which notes didn't sound. A
-/// shape of two or three missing one is wrong (a power chord without its fifth is another sound); four or more stay
-/// right with as many missing as the scorer forgives (half, D46), noted, unless a wrong fret sounded instead.
+/// double stop missing one is wrong; a chord of three or more stays right with as many missing as the scorer
+/// forgives (`detect::enough`: half of them, D46, and two pitch classes, so a power chord without its fifth is
+/// still wrong: another sound), noted, unless a wrong fret sounded instead.
 fn chord_notes(ctx: &mut Ctx, e: &Ev, at: usize, r: &mut EventResult) {
     let n = window_for(&e.group, ctx.rate);
     let skip = (ATTACK_SKIP * ctx.rate as f64) as usize;
@@ -1583,13 +1584,16 @@ fn chord_notes(ctx: &mut Ctx, e: &Ev, at: usize, r: &mut EventResult) {
                 detect::fundamental_present_in
             };
             // (without the louder-than-before test too: a bend's top may still be ringing on that pitch)
+            let repeat = e.group.repeats.contains(&p.midi);
             !test(
                 &mag,
                 binhz,
                 p.midi,
                 prev.as_deref().map(|v| &v[..]),
-                e.group.repeats.contains(&p.midi),
+                repeat,
             ) && !test(&mag, binhz, p.midi, None, true)
+                // (a chord struck again: its quiet low string is still a peak of its own)
+                && !(repeat && !octave_in_chord && detect::fundamental_ringing_in(&mag, binhz, p.midi))
         });
     }
     if missing.is_empty() {
@@ -1617,15 +1621,19 @@ fn chord_notes(ctx: &mut Ctx, e: &Ev, at: usize, r: &mut EventResult) {
             }
         }
     }
-    // four or more: as many as the scorer forgives (D46: half), unless a wrong fret sounded instead
-    let allowed = if r.expected.len() >= 4 && wrong_fret.is_empty() {
-        r.expected.len().saturating_sub(detect::need(&e.group))
-    } else {
-        0
-    };
+    // as many as the scorer forgives (`detect::enough`: D46, half of the notes and two of their pitch classes, so
+    // a three-note power chord without its root, struck again within a quarter second, is still the chord: the
+    // lowest string of a quick strum often barely rings), unless a wrong fret sounded instead
+    let sounded: Vec<i32> = r
+        .expected
+        .iter()
+        .filter(|p| !missing.contains(p))
+        .map(|p| p.midi)
+        .collect();
+    let forgiven = wrong_fret.is_empty() && detect::enough(&e.group, &sounded);
     r.played.extend(wrong_fret);
     r.played.sort_by_key(|p| p.string);
-    if missing.len() > allowed {
+    if !forgiven {
         r.status = Status::Wrong;
     } else {
         r.note = Some(format!(

@@ -1233,6 +1233,40 @@ fn run_take(arr: &Arrangement, path: &std::path::Path, args: &Args) -> anyhow::R
             100.0 * b as f64 / n
         );
     }
+    // repeated strikes (the same shape again within 0.25 s of the group before) against the rest, and for the
+    // misses which stage lost them: no pluck found near the chart time, a pluck whose sound the test refused, or
+    // a pluck whose sound passes the test but the pairing gave elsewhere.
+    {
+        let is_repeat = |i: usize| i > 0 && groups[i].t - groups[i - 1].t <= 0.25;
+        let near60 = |i: usize| {
+            plucks
+                .iter()
+                .any(|&p| (p as f64 / RATE as f64 - groups[i].t).abs() < 0.06)
+        };
+        for (label, rep) in [("first strikes", false), ("repeat strikes", true)] {
+            let ids: Vec<usize> = inside
+                .iter()
+                .copied()
+                .filter(|&i| groups[i].midis.len() >= 2 && is_repeat(i) == rep)
+                .collect();
+            if ids.is_empty() {
+                continue;
+            }
+            let hit = ids.iter().filter(|&&i| counted(&live[i])).count();
+            let lost: Vec<usize> = ids.iter().copied().filter(|&i| !counted(&live[i])).collect();
+            let no_pluck = lost.iter().filter(|&&i| !near60(i)).count();
+            let refused = lost
+                .iter()
+                .filter(|&&i| near60(i) && !counted(&ideal[i]))
+                .count();
+            println!(
+                "chord {label}: {} | live {hit} ({:.0}%) | lost: {no_pluck} no pluck within 60 ms, {refused} sound refused, {} paired elsewhere",
+                ids.len(),
+                100.0 * hit as f64 / ids.len() as f64,
+                lost.len() - no_pluck - refused
+            );
+        }
+    }
     let near = inside
         .iter()
         .filter(|&&i| {
