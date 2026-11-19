@@ -676,6 +676,52 @@ pub fn find_shift(strikes: &[f64], plucks: &[f64]) -> Option<(f64, usize)> {
     best.map(|(s, h, _)| (s, h))
 }
 
+/// Where each labelled strike really happened.
+pub struct Snapped {
+    /// Each event's time: the pluck it was struck at (nearest within 100 ms of its tock, the first of a strum's
+    /// plucks), else the tock's time.
+    pub times: Vec<f64>,
+    /// A strike was found for it.
+    pub found: Vec<bool>,
+    /// A "do not strike" event with a strike (an unclaimed pluck) within 80 ms.
+    pub struck_anyway: Vec<bool>,
+}
+
+pub fn snap_to_plucks(nominal: &[f64], truths: &[Truth], plucks: &[f64]) -> Snapped {
+    let n = nominal.len();
+    let mut used = vec![false; plucks.len()];
+    let mut times = nominal.to_vec();
+    let mut found = vec![false; n];
+    let mut last = f64::NEG_INFINITY;
+    for i in 0..n {
+        if truths[i] == Truth::None {
+            continue;
+        }
+        let best = (0..plucks.len())
+            .filter(|&j| !used[j] && (plucks[j] - nominal[i]).abs() <= 0.10 && plucks[j] > last + 0.05)
+            .min_by(|&a, &b| (plucks[a] - nominal[i]).abs().total_cmp(&(plucks[b] - nominal[i]).abs()));
+        let Some(mut j) = best else { continue };
+        while j > 0 && !used[j - 1] && plucks[j] - plucks[j - 1] < 0.07 {
+            j -= 1; // the strum's first string
+        }
+        times[i] = plucks[j];
+        found[i] = true;
+        last = plucks[j];
+        let mut k = j;
+        while k < plucks.len() && plucks[k] - plucks[j] < 0.07 {
+            used[k] = true; // (a strum's later strings)
+            k += 1;
+        }
+    }
+    let struck_anyway = (0..n)
+        .map(|i| {
+            truths[i] == Truth::None
+                && (0..plucks.len()).any(|j| !used[j] && (plucks[j] - nominal[i]).abs() <= 0.08)
+        })
+        .collect();
+    Snapped { times, found, struck_anyway }
+}
+
 fn score_one(wav: &Path, labels: &Path, a: &ScoreArgs) -> anyhow::Result<(Vec<EvResult>, String)> {
     let stem = wav.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
     let (name, tone) = match stem.split_once('@') {
@@ -696,12 +742,18 @@ fn score_one(wav: &Path, labels: &Path, a: &ScoreArgs) -> anyhow::Result<(Vec<Ev
         Some(s) => (s, 0),
         None => find_shift(&strikes, &plucks).context("no strikes or no plucks to line up")?,
     };
-    // the chart, on the recording's clock
-    let items: Vec<Item> = ev
+    // each strike on the time it was really struck (nearest pluck within 100 ms of the tock): a person is rarely
+    // within a sixteenth note of a click, and the strike beside it must not be taken for it
+    let nominal: Vec<f64> = ev.iter().map(|e| e.t + shift).collect();
+    let truths: Vec<Truth> = ev.iter().map(|e| e.truth).collect();
+    let snap = snap_to_plucks(&nominal, &truths, &plucks);
+    let mut order: Vec<usize> = (0..ev.len()).collect();
+    order.sort_by(|&i, &j| snap.times[i].total_cmp(&snap.times[j]));
+    let items: Vec<Item> = order
         .iter()
-        .map(|e| Item {
-            t: e.t + shift,
-            want: e.want.clone(),
+        .map(|&i| Item {
+            t: snap.times[i],
+            want: ev[i].want.clone(),
             play: None,
             judged: true,
             palm: false,
@@ -714,16 +766,22 @@ fn score_one(wav: &Path, labels: &Path, a: &ScoreArgs) -> anyhow::Result<(Vec<Ev
     }
     let len = x.len() as f64 / RATE as f64;
     let mut out = Vec::new();
-    for (i, e) in ev.iter().enumerate() {
-        let t = e.t + shift;
+    let mut struck = 0;
+    for (g, &i) in order.iter().enumerate() {
+        let e = &ev[i];
+        let t = snap.times[i];
         if t < 0.3 || t > len - 0.5 {
             continue; // not in the recording
         }
-        let accepted = !matches!(judged[i], Some(Judgement::Miss) | None);
-        let found = plucks.iter().any(|&p| (p - t).abs() < 0.06);
+        if snap.struck_anyway[i] {
+            struck += 1; // the card said not to strike and a strike is there: not a test of the game
+            continue;
+        }
+        let accepted = !matches!(judged[g], Some(Judgement::Miss) | None);
+        let found = snap.found[i];
         let wrong = (e.truth == Truth::Right) != accepted;
         let why = if a.why && wrong {
-            chords_cmd::why(&arr, &x, &plucks_i, i)
+            chords_cmd::why(&arr, &x, &plucks_i, g)
         } else {
             String::new()
         };
@@ -740,10 +798,15 @@ fn score_one(wav: &Path, labels: &Path, a: &ScoreArgs) -> anyhow::Result<(Vec<Ev
         });
     }
     let note = format!(
-        "{stem}: shift {shift:+.3} s{}, {} plucks, {} strikes",
+        "{stem}: shift {shift:+.3} s{}, {} plucks, {} strikes{}",
         if a.shift.is_some() { String::new() } else { format!(" ({matched} of {} strikes lined up)", strikes.len()) },
         plucks.len(),
-        strikes.len()
+        strikes.len(),
+        if struck > 0 {
+            format!("; {struck} \"do NOT strike\" slots left out because a strike is there (you struck where the card said not to)")
+        } else {
+            String::new()
+        }
     );
     Ok((out, note))
 }
@@ -961,6 +1024,23 @@ mod tests {
         assert_eq!(beat_name(6.5), "3&");
         let click = click_track(95.0, &[2.0, 2.158], 5.0);
         assert!(click.iter().any(|v| v.abs() > 0.3) && click.len() == 5 * RATE as usize);
+    }
+
+    #[test]
+    fn strikes_are_snapped_to_the_plucks_beside_their_tocks() {
+        // tocks at 1.0 (right), 1.158 (right), 1.316 (do not); the player struck at 0.93, 1.25 (late) and
+        // 1.33 on the third tock's slot
+        let nominal = [1.0, 1.158, 1.316, 3.0];
+        let truths = [Truth::Right, Truth::Right, Truth::None, Truth::None];
+        let s = snap_to_plucks(&nominal, &truths, &[0.93, 1.25, 1.33]);
+        assert_eq!(s.found, vec![true, true, false, false]);
+        assert!((s.times[0] - 0.93).abs() < 1e-9 && (s.times[1] - 1.25).abs() < 1e-9);
+        // 1.33 is the third slot's own pluck, but the second strike was the nearer to take 1.25 first, so 1.33 is
+        // left over: the player struck where the card said not to
+        assert_eq!(s.struck_anyway, vec![false, false, true, false]);
+        // a strum's later strings are not another strike
+        let s = snap_to_plucks(&[1.0, 1.3], &[Truth::Right, Truth::None], &[1.02, 1.05, 1.08]);
+        assert!(s.found[0] && !s.struck_anyway[1], "{:?}", s.struck_anyway);
     }
 
     #[test]
