@@ -327,6 +327,30 @@ pub fn exercises() -> Vec<Exercise> {
         events: ev,
     });
 
+    // 5b. the same low note struck again fast, as in the song's chromatic low-E run (B2 A2 B2 Bb2 B2 B2)
+    let mut ev = Vec::new();
+    for (i, (string, fret, name)) in [(0, 7, "B2"), (0, 5, "A2"), (0, 6, "Bb2"), (1, 2, "B2")].iter().enumerate() {
+        for k in 0..3 {
+            let label = format!("{name} (string {}, fret {fret})", if *string == 0 { "low E" } else { "A" });
+            ev.push(right(4.0 + i as f64 * 4.0 + k as f64 * 0.25, &label, &[(*string, *fret)], if k == 0 { "single" } else { "single-repeat" }));
+        }
+    }
+    let run = [(0, 7, "B2", 0.0), (0, 5, "A2", 0.25), (0, 7, "B2", 0.75), (0, 6, "Bb2", 1.0), (0, 7, "B2", 1.5), (0, 7, "B2", 1.75)];
+    for r in 0..3 {
+        for (string, fret, name, off) in run {
+            let label = format!("{name} (low E, fret {fret})");
+            let tag = if off == 1.75 || off == 0.25 || off == 1.0 { "single-repeat" } else { "single" };
+            ev.push(right(20.0 + r as f64 * 4.0 + off, &label, &[(string, fret)], tag));
+        }
+    }
+    v.push(Exercise {
+        name: "single-repeat",
+        sub: 4,
+        bpm: 95.0,
+        about: "Single low notes struck again fast: the same note three times, then the song's run B A B Bb B B on the low E string (frets 7 5 7 6 7 7).",
+        events: ev,
+    });
+
     // 6. single notes on the middle and high strings
     let mut ev = Vec::new();
     let mut beat = 4.0;
