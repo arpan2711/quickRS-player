@@ -510,28 +510,81 @@ fn script(exs: &[Exercise]) -> String {
          G5 = low E 3, A 5, D 5. C5 = A string 3, D 5, G 5. Power chords: strike only those three strings.\n\n",
     );
     for (i, ex) in exs.iter().enumerate() {
-        s.push_str(&format!("## {}. `{}` ({} bpm)\n\n{}\n\n", i + 1, ex.name, ex.bpm, ex.about));
-        let mut bar = -1.0;
-        let mut line = String::new();
-        let mut first = true;
-        s.push_str("(Bar 1 starts right after the four count-in beats. The numbers in [ ] say WHERE in the bar to strike: [1] on the click's first beat, [2] on the second beat, and so on. [1e] [1&] [1a] are NOT later beats: they are the quick ticks between beat 1 and beat 2, so [1] [1e] [1&] is three fast strikes inside ONE beat, all before beat 2. Count them aloud: 1 e & a, 2 e & a ... So '1 e &' is strike, strike, strike, then stay quiet on 'a'.)
+        let bars = ex.events.last().map(|e| (e.beat / 4.0).floor() as i32).unwrap_or(1);
+        let sub = ex.sub.max(1) as usize;
+        s.push_str(&format!(
+            "## {}. `{}` ({} bpm; {} bars of 4 beats, about {:.0} seconds after the count-in)
+
+{}
+
+",
+            i + 1,
+            ex.name,
+            ex.bpm,
+            bars,
+            bars as f64 * 4.0 * 60.0 / ex.bpm,
+            ex.about
+        ));
+        let names = ["1", "e", "&", "a"];
+        let slot_names: Vec<&str> = match sub {
+            4 => names.to_vec(),
+            2 => vec!["1", "&"],
+            _ => vec!["1"],
+        };
+        let mut head = format!("{:<14}", "beat");
+        for beat in 0..4 {
+            for (k, n) in slot_names.iter().enumerate() {
+                let n = if k == 0 { (beat + 1).to_string() } else { n.to_string() };
+                head.push_str(&format!("{n} "));
+            }
+            head.push_str("| ");
+        }
+        s.push_str("```
+");
+        s.push_str(head.trim_end());
+        s.push('\n');
+        for bar in 1..=bars {
+            let mut line = format!("{:<14}", format!("bar {bar}"));
+            for beat in 0..4 {
+                for k in 0..sub {
+                    let at = bar as f64 * 4.0 + beat as f64 + k as f64 / sub as f64;
+                    let c = match ex.events.iter().find(|e| (e.beat - at).abs() < 1e-6) {
+                        Some(e) if e.truth == Truth::Right => 'X',
+                        Some(e) if e.truth == Truth::Wrong => 'W',
+                        Some(_) => 'o',
+                        None => '.',
+                    };
+                    line.push(c);
+                    line.push(' ');
+                }
+                line.push_str("| ");
+            }
+            s.push_str(line.trim_end());
+            s.push('\n');
+        }
+        s.push_str("```
 
 ");
-        for e in &ex.events {
-            let b = (e.beat / 4.0).floor();
-            if b != bar {
-                if !first {
-                    s.push_str(&line);
-                    s.push('\n');
+        s.push_str("X = strike, o = do NOT strike (let the last chord ring), W = strike the deliberately wrong thing, . = silent. ");
+        s.push_str("Every slot is one tick of the click, and a bar is always four beats: **wait through the silent slots, they are part of the bar.**
+
+");
+        // what to play in each bar
+        for bar in 1..=bars {
+            let evs: Vec<&Ev> = ex.events.iter().filter(|e| (e.beat / 4.0).floor() as i32 == bar).collect();
+            let mut parts: Vec<(Vec<String>, String)> = Vec::new();
+            for e in evs {
+                let pos = beat_name(e.beat);
+                match parts.last_mut() {
+                    Some((p, say)) if *say == e.say => p.push(pos),
+                    _ => parts.push((vec![pos], e.say.clone())),
                 }
-                first = false;
-                bar = b;
-                line = format!("- bar {}:", b as i32);
             }
-            line.push_str(&format!("  [{}] {}", beat_name(e.beat), e.say));
+            let text: Vec<String> = parts.iter().map(|(p, say)| format!("[{}] {}", p.join(" "), say)).collect();
+            s.push_str(&format!("- bar {bar}: {}
+", text.join("; ")));
         }
-        s.push_str(&line);
-        s.push_str("\n\n");
+        s.push('\n');
     }
     s
 }
