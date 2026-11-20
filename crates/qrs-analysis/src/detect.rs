@@ -389,7 +389,7 @@ impl Level {
     }
 }
 
-/// Share of the strong peaks the expected notes may fail to explain. 0.25 (was 0.2): the owner's song takes had right
+/// Share of the strong peaks the expected notes may fail to explain. 0.25 (was 0.2): a player's song takes had right
 /// chords at 0.2-0.25 (+6 of 326 live); "shape a string over" false accepts 11% -> 16% on the bench. 0.3 and up let
 /// clearly different chords through.
 pub const FOREIGN_MAX: f64 = 0.25;
@@ -616,7 +616,7 @@ fn group_present_as(
 
 /// Whether `present` (of `group_present_in`) is enough of the group: `need` of its pitches, and for a chord of
 /// two or more pitch classes, two of them (a power chord's root and its octave alone are one note, not the chord),
-/// unless it's the same chord struck again (every pitch a repeat): then its root and octave are enough. On the owner's
+/// unless it's the same chord struck again (every pitch a repeat): then its root and octave are enough. On a player's
 /// song takes the repeats' fifth often showed no peak of its own (+9 of 326 chords live); on the synthetic bench only
 /// "shape a string over" accepts more (16% -> 19%).
 pub fn enough(g: &NoteGroup, present: &[i32]) -> bool {
@@ -817,10 +817,124 @@ pub struct Scorer {
     octave_down: bool,
     /// Plucks made up for the notes of a rake (capture index -> the group it's for): see `RAKE`.
     raked: HashMap<u64, usize>,
+    /// The pluck each group was heard at (group -> capture index), for `between_hits`.
+    plucked: HashMap<usize, u64>,
 }
 
 /// Seconds after a chord's pluck that further plucks are taken as the same strum.
 pub const STRUM: f64 = 0.07;
+
+/// Seconds between strikes of the same shape under which one between two heard strikes counts without a pluck of
+/// its own (`Scorer::between_hits`).
+pub const QUICK: f64 = 0.25;
+
+/// dB the treble must rise by for a strike between two heard ones to count (`treble_rise`). A player's real
+/// upstrokes (Back in Black, Boston) rose 0.9-9.5 dB, the corpus's hold-skip slots (the chord let ring, the hand
+/// still moving) 1.3-2.6: at 2.7, +8 of 379 chords on a player's Back in Black takes and +1 of 89 on Boston, no
+/// skipped slot credited; without the test +13 and +3, but 3 of hold-skip's 9 skipped slots credited.
+pub const UPSTROKE_RISE: f64 = 2.7;
+
+/// dB the chord's top strings must rise by over its lowest one for a strike between two heard ones to count, when
+/// the treble didn't (`string_rise`). With it, 17 of a player's 18 real upstrokes count (the treble alone: 10);
+/// the synthetic bench's left-out repeats (let ring, silent) count 16 of 88 times, against 88 with no test.
+pub const RESTRUCK_RISE: f64 = 2.0;
+
+/// The largest rise (dB) of the treble's energy within `span` samples either side of `at`: 10 ms after a point over
+/// the 10 ms before it. The treble is the signal's second difference (pick noise and the thin strings' upper
+/// partials; the low strings' fundamentals barely count), so an upstroke on a chord still ringing shows where the
+/// level doesn't. None if those samples aren't recorded yet (or are gone).
+/// The largest rise (dB) of the chord's top two notes over its lowest note's own partials within `span` samples
+/// either side of `at`: 43 ms after a point over the 43 ms before it, each the energy at those notes' partials
+/// (below 2.5 kHz; the lowest note's only where no top note's partial is). An upstroke strikes the top strings
+/// first (often only those): their partials jump back up while the low string's keep fading; a chord let ring
+/// fades all over. None for a single note or if those samples aren't recorded yet (or are gone).
+fn string_rise(src: &dyn SampleSource, at: u64, span: u64, midis: &[i32]) -> Option<f64> {
+    let rate = src.rate();
+    let n = ((0.043 * rate as f64) as usize).next_power_of_two();
+    let hop = ((0.005 * rate as f64) as usize).max(1);
+    let start = at.checked_sub(span + n as u64)?;
+    let mut x = vec![0.0f32; 2 * span as usize + 2 * n];
+    if !src.read(start, &mut x) {
+        return None;
+    }
+    let mut m: Vec<i32> = midis.to_vec();
+    m.sort();
+    m.dedup();
+    if m.len() < 2 {
+        return None;
+    }
+    let low = m[0];
+    let top: Vec<f64> = m[m.len().saturating_sub(2).max(1)..]
+        .iter()
+        .map(|&v| midi_to_hz(v as f64))
+        .collect();
+    let mut tops = Vec::new();
+    for &f in &top {
+        let mut h = 1.0;
+        while h * f < 2500.0 {
+            tops.push(h * f);
+            h += 1.0;
+        }
+    }
+    let f0 = midi_to_hz(low as f64);
+    let roots: Vec<f64> = (1..)
+        .map(|h| h as f64 * f0)
+        .take_while(|&f| f < 2500.0)
+        .filter(|&f| !tops.iter().any(|&t| (t - f).abs() < 0.03 * f))
+        .collect();
+    let mut sp = Spectra::default();
+    let mut frames = Vec::new();
+    let mut i = 0;
+    while i + n <= x.len() {
+        let (mag, binhz) = sp.spectrum(&x[i..i + n], rate);
+        let e = |fs: &[f64]| -> f64 {
+            fs.iter()
+                .map(|&f| {
+                    let k = (f / binhz).round() as usize;
+                    let lo = k.saturating_sub((0.02 * f / binhz).ceil() as usize + 1);
+                    let hi = (k + (0.02 * f / binhz).ceil() as usize + 1).min(mag.len() - 1);
+                    mag[lo..=hi].iter().copied().fold(0.0, f64::max).powi(2)
+                })
+                .sum::<f64>()
+                + 1e-12
+        };
+        frames.push((e(&tops), e(&roots)));
+        i += hop;
+    }
+    let d = n / hop;
+    (d..frames.len())
+        .map(|k| {
+            let t = 10.0 * (frames[k].0 / frames[k - d].0).log10();
+            let r = if roots.is_empty() {
+                0.0
+            } else {
+                10.0 * (frames[k].1 / frames[k - d].1).log10()
+            };
+            t - r
+        })
+        .reduce(f64::max)
+}
+
+fn treble_rise(src: &dyn SampleSource, at: u64, span: u64) -> Option<f64> {
+    let blk = ((0.005 * src.rate() as f64) as usize).max(8);
+    let start = at.checked_sub(span + 2 * blk as u64)?;
+    let mut x = vec![0.0f32; 2 * span as usize + 4 * blk];
+    if !src.read(start, &mut x) {
+        return None;
+    }
+    let e: Vec<f64> = x
+        .chunks(blk)
+        .map(|c| {
+            c.windows(3)
+                .map(|w| ((w[2] - 2.0 * w[1] + w[0]) as f64).powi(2))
+                .sum::<f64>()
+                + 1e-12
+        })
+        .collect();
+    (2..e.len().saturating_sub(1))
+        .map(|k| 10.0 * ((e[k] + e[k + 1]) / (e[k - 2] + e[k - 1])).log10())
+        .reduce(f64::max)
+}
 
 /// Single notes on other strings that follow a played note closer than this (s) are a rake or a quick arpeggio:
 /// the pluck detector makes one pluck at most every 50 ms, so each of them is tried with the played note's pluck
@@ -872,6 +986,7 @@ impl Scorer {
             part_is_bass: arr.is_bass,
             octave_down: false,
             raked: HashMap::new(),
+            plucked: HashMap::new(),
         }
     }
 
@@ -1057,6 +1172,7 @@ impl Scorer {
         self.used.clear();
         self.pending.clear();
         self.raked.clear();
+        self.plucked.clear();
     }
 
     fn judge(&mut self, gi: usize, dt: f64, now_wall: f64) {
@@ -1143,6 +1259,9 @@ impl Scorer {
             }
             self.legato(now, live, now_wall);
         }
+        if let Some(live) = live {
+            self.between_hits(now, live.source, now_wall);
+        }
         let mut i = self.ptr;
         while i < self.groups.len() && self.groups[i].t + LATE < now {
             if self.groups[i].state.is_none() {
@@ -1156,6 +1275,41 @@ impl Scorer {
         self.popups.retain(|p| now_wall - p.created < 0.8);
         if self.used.len() > 4096 {
             self.used.clear();
+        }
+    }
+
+    /// A quick repeat strike that no pluck was found for, between two strikes of the same shape that were heard at
+    /// plucks (each within `QUICK`), is taken as played if the treble rises there (`UPSTROKE_RISE`). The middle of
+    /// a down-up-down stab is an upstroke on a chord still ringing from the downstroke: it barely changes the sound
+    /// (a player's Back in Black takes: a 4-7 dB rise above 4 kHz, no louder overall), and neither pluck detector
+    /// finds it. The last strike of a run still needs a pluck of its own.
+    fn between_hits(&mut self, now: f64, src: &dyn SampleSource, now_wall: f64) {
+        let heard =
+            |g: &NoteGroup| matches!(g.state, Some(Judgement::Hit | Judgement::Late | Judgement::Early));
+        let shape = |g: &NoteGroup| g.midis.iter().copied().collect::<BTreeSet<i32>>();
+        let mut i = self.ptr.max(1);
+        while i + 1 < self.groups.len() && self.groups[i].t <= now {
+            let (p, g, n) = (&self.groups[i - 1], &self.groups[i], &self.groups[i + 1]);
+            let between = g.state.is_none()
+                && !g.legato
+                && heard(p)
+                && heard(n)
+                && g.t - p.t <= QUICK
+                && n.t - g.t <= QUICK
+                && shape(p) == shape(g)
+                && shape(g) == shape(n);
+            if between && let (Some(&a), Some(&b)) = (self.plucked.get(&(i - 1)), self.plucked.get(&(i + 1)))
+            {
+                let at = a + ((g.t - p.t) / (n.t - p.t) * (b - a) as f64) as u64;
+                let span = ((0.4 * (b - a) as f64) as u64).min((0.06 * src.rate() as f64) as u64);
+                let midis: Vec<i32> = g.midis.iter().map(|m| m + self.shift).collect();
+                let struck = treble_rise(src, at, span).is_some_and(|r| r >= UPSTROKE_RISE)
+                    || string_rise(src, at, span, &midis).is_some_and(|r| r >= RESTRUCK_RISE);
+                if struck {
+                    self.judge(i, 0.0, now_wall);
+                }
+            }
+            i += 1;
         }
     }
 
@@ -1253,7 +1407,10 @@ impl Scorer {
             if self.groups[gi].state.is_none() {
                 match self.check(gi, p.index, src) {
                     Check::Wait => return Place::Wait,
-                    Check::Yes => self.judge(gi, p.song_time - self.groups[gi].t, now_wall),
+                    Check::Yes => {
+                        self.judge(gi, p.song_time - self.groups[gi].t, now_wall);
+                        self.plucked.insert(gi, p.index);
+                    }
                     _ => {}
                 }
             }
@@ -1271,6 +1428,7 @@ impl Scorer {
                 Check::Yes => {
                     self.used.insert(p.index);
                     self.judge(gi, p.song_time - self.groups[gi].t, now_wall);
+                    self.plucked.insert(gi, p.index);
                     return Place::Judged;
                 }
                 Check::Wait => return Place::Wait,
@@ -1290,6 +1448,7 @@ impl Scorer {
                     }
                     let dt = p.song_time - self.groups[gi].t;
                     self.judge(gi, dt, now_wall);
+                    self.plucked.insert(gi, p.index);
                     self.rake_on(gi, p, src.rate());
                     return Place::Judged;
                 }
@@ -1779,6 +1938,28 @@ mod tests {
             add_note(&mut x, rate, t, m, 0.15);
         }
         assert_eq!(score_strums(&a, x, &[1.0]), vec![hit, hit, Some(Judgement::Miss)]);
+    }
+
+    /// A down-up-down stab: the upstroke between two heard downstrokes counts though no pluck was found for it; a
+    /// stab whose last strike has no pluck still misses it.
+    #[test]
+    fn an_upstroke_between_two_heard_strikes_counts() {
+        let rate = 48000;
+        let a = chords(&[(1.0, &A5), (1.16, &A5), (1.32, &A5)]);
+        let mut x = vec![0.0f32; rate as usize * 3];
+        for t in [1.0, 1.16, 1.32] {
+            add_strum(&mut x, rate, t, &A5, 0.01);
+        }
+        let hit = Some(Judgement::Hit);
+        assert_eq!(score_strums(&a, x.clone(), &[1.0, 1.32]), vec![hit; 3]);
+        let miss = Some(Judgement::Miss);
+        assert_eq!(score_strums(&a, x, &[1.0, 1.16]), vec![hit, hit, miss]);
+        // the chord let ring where the middle strike is: nothing there rises
+        let mut x = vec![0.0f32; rate as usize * 3];
+        for t in [1.0, 1.32] {
+            add_strum(&mut x, rate, t, &A5, 0.01);
+        }
+        assert_eq!(score_strums(&a, x, &[1.0, 1.32]), vec![hit, miss, hit]);
     }
 
     /// A note a slide (or a held bend) links on to isn't picked: it's heard from the live signal like a hammer-on.
