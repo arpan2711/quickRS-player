@@ -20,7 +20,7 @@
 //! A guitar on a bass part needs nothing new: its note an octave up is the bass note's 2nd harmonic, which
 //! `notes_present` already takes. With a guitar (the default) nothing here differs from before.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use qrs_formats::model::{Arrangement, Note, Techs};
 
@@ -86,6 +86,14 @@ pub struct NoteGroup {
     pub repeats: HashSet<i32>,
     /// Pitches of the previous two groups (may still be sounding).
     pub ringing: Vec<i32>,
+    /// Each pitch's bend (semitones, rounded; 0 unbent), beside `midis`: the note may be heard anywhere on its way.
+    pub bends: Vec<i32>,
+}
+
+/// A note's bend in semitones (rounded), its pre-bend included.
+fn bend_steps(n: &Note) -> i32 {
+    let pre = n.bend_curve.iter().map(|&(_, s)| s).fold(0.0, f64::max);
+    n.bend.max(pre).round().max(0.0) as i32
 }
 
 /// The pitch a chart note sounds (MIDI; a natural harmonic sounds above its fret).
@@ -117,6 +125,9 @@ pub fn build_groups(arr: &Arrangement) -> Vec<NoteGroup> {
     }
     events.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut groups: Vec<NoteGroup> = Vec::new();
+    // each string's last note: its time, and whether it links on to the next (a slide's or a bend's held note: the
+    // next one on the string isn't picked)
+    let mut last: HashMap<i32, (f64, bool)> = HashMap::new();
     for (t, notes, techs) in events {
         let notes: Vec<&Note> = notes.into_iter().filter(|n| !n.has(Techs::IGNORE)).collect();
         if notes.is_empty() || techs.has(Techs::IGNORE) {
@@ -138,6 +149,7 @@ pub fn build_groups(arr: &Arrangement) -> Vec<NoteGroup> {
                 last_check: -1.0,
                 repeats: HashSet::new(),
                 ringing: vec![],
+                bends: vec![],
             });
         }
         let g = groups.last_mut().unwrap();
@@ -146,8 +158,17 @@ pub fn build_groups(arr: &Arrangement) -> Vec<NoteGroup> {
             if !tech.has(Techs::FRET_HAND_MUTE) {
                 g.muted = false;
                 g.midis.push(midi(n));
+                g.bends.push(if tech.has(Techs::BEND) || n.bend > 0.0 {
+                    bend_steps(n)
+                } else {
+                    0
+                });
             }
-            if !(tech & LEGATO).is_empty() {
+            let linked = last
+                .get(&n.string)
+                .is_some_and(|&(t0, link)| link && n.time - t0 < 2.0 && n.time > t0);
+            last.insert(n.string, (n.time, tech.has(Techs::LINK_NEXT)));
+            if !(tech & LEGATO).is_empty() || linked {
                 g.legato = true;
             }
             g.strings.push(n.string);
@@ -166,7 +187,24 @@ pub fn build_groups(arr: &Arrangement) -> Vec<NoteGroup> {
             own.iter().filter(|m| recent.contains(m)).copied().collect()
         };
     }
+    // a rake's notes after a note sound in its window too (see `RAKE`): they aren't foreign to it
+    for i in 0..groups.len() {
+        let mut j = i + 1;
+        while j < groups.len() && raked(&groups[j - 1], &groups[j]) && groups[j].t - groups[i].t < 0.1 {
+            let next = groups[j].midis.clone();
+            groups[i].ringing.extend(next);
+            j += 1;
+        }
+    }
     groups
+}
+
+/// Whether `b` follows `a` as the next note of a rake (see `RAKE`).
+fn raked(a: &NoteGroup, b: &NoteGroup) -> bool {
+    b.t - a.t < RAKE
+        && a.midis.len() == 1
+        && b.midis.len() == 1
+        && !b.strings.iter().any(|s| a.strings.contains(s))
 }
 
 fn peak(mag: &[f64], binhz: f64, f: f64, tol: f64) -> f64 {
@@ -475,6 +513,46 @@ pub fn group_matches_in(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f
     explain(mag, binhz, g, prev).ok
 }
 
+/// The live test of a guitar's group: `group_matches_in`, else for a single note (with the sound before) the note
+/// there and the foreign peaks judged on what got louder at the pluck (a note let ring from before isn't foreign:
+/// the take report's test; on chords it let more wrong shapes through on the bench), else a bent note anywhere on
+/// its way up (pre-bends too). On a perfect synth take of a lead part with bends, rakes and let-ring (Boston's
+/// Feelin' Satisfied) single notes went 283 -> 312 of 318 with these, the rakes (`RAKE`) and linked notes.
+pub fn live_matches_in(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>) -> bool {
+    if heard_in(mag, binhz, g, prev) {
+        return true;
+    }
+    let top = g.bends.iter().copied().max().unwrap_or(0);
+    if top == 0 {
+        return false;
+    }
+    (1..=top).any(|k| {
+        let mut b = g.clone();
+        for (i, &m) in g.midis.iter().enumerate() {
+            let bend = g.bends.get(i).copied().unwrap_or(0);
+            b.midis[i] = m + k.min(bend);
+            // the bend's other steps are its own smear, not foreign
+            b.ringing
+                .extend((0..=bend).map(|j| m + j).filter(|&p| p != b.midis[i]));
+        }
+        heard_in(mag, binhz, &b, prev)
+    })
+}
+
+fn heard_in(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>) -> bool {
+    if group_matches_in(mag, binhz, g, prev) {
+        return true;
+    }
+    let Some(prev) = prev.filter(|_| g.midis.len() == 1) else {
+        return false;
+    };
+    if !enough(g, &group_present_in(mag, binhz, g, Some(prev))) {
+        return false;
+    }
+    let grown: Vec<f64> = mag.iter().zip(prev).map(|(a, b)| (a - b).max(0.0)).collect();
+    foreign_share_in(&grown, binhz, &g.midis, &g.ringing) <= FOREIGN_MAX
+}
+
 /// What `group_matches_in` saw (and the chord bench prints: `quickrs-cli chords --why`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Verdict {
@@ -626,7 +704,7 @@ fn sounding(mag: &[f64], binhz: f64, m: i32) -> bool {
 }
 
 fn explain_as(mag: &[f64], binhz: f64, g: &NoteGroup, prev: Option<&[f64]>, strict: bool) -> Verdict {
-    let present = group_present_as(mag, binhz, g, prev, strict || g.midis.len() >= 2, strict);
+    let present = group_present_as(mag, binhz, g, prev, strict || g.midis.len() >= 2, true);
     let foreign = if strict || g.midis.len() >= 2 {
         foreign_impl(mag, binhz, &g.midis, &g.ringing, prev)
     } else {
@@ -737,10 +815,17 @@ pub struct Scorer {
     inst: Instrument,
     part_is_bass: bool,
     octave_down: bool,
+    /// Plucks made up for the notes of a rake (capture index -> the group it's for): see `RAKE`.
+    raked: HashMap<u64, usize>,
 }
 
 /// Seconds after a chord's pluck that further plucks are taken as the same strum.
 pub const STRUM: f64 = 0.07;
+
+/// Single notes on other strings that follow a played note closer than this (s) are a rake or a quick arpeggio:
+/// the pluck detector makes one pluck at most every 50 ms, so each of them is tried with the played note's pluck
+/// moved on to its own time.
+pub const RAKE: f64 = 0.06;
 
 /// What became of the note the song is held at (note by note).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -786,6 +871,7 @@ impl Scorer {
             inst: Instrument::Guitar,
             part_is_bass: arr.is_bass,
             octave_down: false,
+            raked: HashMap::new(),
         }
     }
 
@@ -839,7 +925,11 @@ impl Scorer {
     /// Whether `x` (with `before`) plays group `g`; a bass on a guitar part may play it an octave down.
     fn matches(&mut self, x: &[f32], rate: u32, g: &NoteGroup, before: Option<&[f32]>) -> bool {
         if !self.inst.is_bass() {
-            return group_matches(&mut self.sp, x, rate, g, before);
+            let (mag, binhz) = self.sp.spectrum(x, rate);
+            let prev = before
+                .filter(|b| b.len() == x.len())
+                .map(|b| self.sp.spectrum(b, rate).0);
+            return live_matches_in(&mag, binhz, g, prev.as_deref());
         }
         let (mag, binhz) = self.sp.spectrum(x, rate);
         let prev = before
@@ -966,6 +1056,7 @@ impl Scorer {
         self.streak = 0;
         self.used.clear();
         self.pending.clear();
+        self.raked.clear();
     }
 
     fn judge(&mut self, gi: usize, dt: f64, now_wall: f64) {
@@ -1024,22 +1115,32 @@ impl Scorer {
     /// marked missed as they pass (so the song can be played along without scoring the input).
     pub fn update(&mut self, now: f64, live: Option<&Live>, now_wall: f64) {
         if let Some(live) = live {
-            let pending = std::mem::take(&mut self.pending);
-            let mut keep = Vec::new();
-            let mut waiting = false;
-            for p in pending {
-                if waiting || self.used.contains(&p.index) {
-                    if waiting {
+            let mut pending = std::mem::take(&mut self.pending);
+            loop {
+                let mut keep = Vec::new();
+                let mut waiting = false;
+                for p in pending {
+                    if waiting || self.used.contains(&p.index) {
+                        if waiting {
+                            keep.push(p);
+                        }
+                        continue;
+                    }
+                    if self.place(p, live.source, now_wall) == Place::Wait {
+                        waiting = true;
                         keep.push(p);
                     }
-                    continue;
                 }
-                if self.place(p, live.source, now_wall) == Place::Wait {
-                    waiting = true;
-                    keep.push(p);
+                if self.pending.is_empty() {
+                    self.pending = keep;
+                    break;
                 }
+                // a rake's notes were given plucks meanwhile (`rake_on`): those too, in order (each pass needs a
+                // new judgement to give more, so this ends)
+                keep.append(&mut self.pending);
+                keep.sort_by_key(|p| p.index);
+                pending = keep;
             }
-            self.pending = keep;
             self.legato(now, live, now_wall);
         }
         let mut i = self.ptr;
@@ -1092,15 +1193,74 @@ impl Scorer {
         self.before.resize(n, 0.0);
         let have_before = index >= n as u64 && src.read(index - n as u64, &mut self.before);
         let g = self.groups[gi].clone();
-        let x = std::mem::take(&mut self.buf);
+        let mut x = std::mem::take(&mut self.buf);
         let before = std::mem::take(&mut self.before);
-        let ok = self.matches(&x, rate, &g, have_before.then_some(&before[..]));
+        let mut out = if self.matches(&x, rate, &g, have_before.then_some(&before[..])) {
+            Check::Yes
+        } else {
+            Check::No
+        };
+        // a slow strum: its last strings may come up to 60 ms after the pluck (the take report's test too)
+        if out == Check::No && g.midis.len() >= 2 && !self.inst.is_bass() {
+            for later in [0.03, 0.06] {
+                let at = index + skip + (later * rate as f64) as u64;
+                if !src.read(at, &mut x) {
+                    if at + n as u64 > src.written() {
+                        out = Check::Wait;
+                    }
+                    break;
+                }
+                if self.matches(&x, rate, &g, have_before.then_some(&before[..])) {
+                    out = Check::Yes;
+                    break;
+                }
+            }
+        }
         self.buf = x;
         self.before = before;
-        if ok { Check::Yes } else { Check::No }
+        out
+    }
+
+    /// After group `gi` was played by pluck `p`: the single notes that follow it on other strings closer than `RAKE`
+    /// each get `p` moved on to its own time (they can't have a pluck of their own).
+    fn rake_on(&mut self, gi: usize, p: Pluck, rate: u32) {
+        if self.groups[gi].midis.len() != 1 {
+            return;
+        }
+        let mut j = gi + 1;
+        while j < self.groups.len() {
+            let (a, b) = (&self.groups[j - 1], &self.groups[j]);
+            if !raked(a, b) {
+                break;
+            }
+            if b.state.is_none() {
+                let d = b.t - self.groups[gi].t;
+                let q = Pluck {
+                    index: p.index + (d * rate as f64).round() as u64,
+                    song_time: p.song_time + d,
+                };
+                self.raked.insert(q.index, j);
+                self.pending.push(q);
+            }
+            j += 1;
+        }
+        self.pending.sort_by_key(|p| p.index);
     }
 
     fn place(&mut self, p: Pluck, src: &dyn SampleSource, now_wall: f64) -> Place {
+        if let Some(&gi) = self.raked.get(&p.index) {
+            // a rake's note: only its own
+            if self.groups[gi].state.is_none() {
+                match self.check(gi, p.index, src) {
+                    Check::Wait => return Place::Wait,
+                    Check::Yes => self.judge(gi, p.song_time - self.groups[gi].t, now_wall),
+                    _ => {}
+                }
+            }
+            self.raked.remove(&p.index);
+            self.used.insert(p.index);
+            return Place::None;
+        }
         if p.index < self.strum_end {
             self.used.insert(p.index); // the rest of a strum already judged
             return Place::None;
@@ -1130,6 +1290,7 @@ impl Scorer {
                     }
                     let dt = p.song_time - self.groups[gi].t;
                     self.judge(gi, dt, now_wall);
+                    self.rake_on(gi, p, src.rate());
                     return Place::Judged;
                 }
                 Check::Wait => return Place::Wait, // not recorded yet; try again next frame
@@ -1178,8 +1339,16 @@ impl Scorer {
             if self.used.contains(&p.index) {
                 continue;
             }
+            // a pluck made up for a rake's note is only for that note, and never a wrong one
+            let raked = self.raked.get(&p.index).copied();
+            if raked.is_some_and(|j| j != gi) {
+                self.raked.remove(&p.index);
+                self.used.insert(p.index);
+                continue;
+            }
             match self.check(gi, p.index, live.source) {
                 Check::Yes => {
+                    self.raked.remove(&p.index);
                     self.used.insert(p.index);
                     self.judge(gi, 0.0, now_wall);
                     out = Held::Played;
@@ -1190,11 +1359,13 @@ impl Scorer {
                     break;
                 }
                 Check::Gone => {
+                    self.raked.remove(&p.index);
                     self.used.insert(p.index);
                 }
                 Check::No => {
+                    self.raked.remove(&p.index);
                     self.used.insert(p.index);
-                    if p.index >= since {
+                    if p.index >= since && raked.is_none() {
                         out = Held::Wrong;
                     }
                 }
@@ -1273,7 +1444,10 @@ mod tests {
     fn a_quiet_low_string_is_a_peak_of_its_own_only_if_it_is_one() {
         // D5: D3 (147 Hz) a twentieth of the chord's strongest partial, A3 and D4 the strong ones
         let quiet = spectrum_of(&[(147, 5.0), (220, 60.0), (294, 100.0)]);
-        assert!(!fundamental_present_in(&quiet, 1.0, 50, None, true), "present's 12% gate says no");
+        assert!(
+            !fundamental_present_in(&quiet, 1.0, 50, None, true),
+            "present's 12% gate says no"
+        );
         assert!(fundamental_ringing_in(&quiet, 1.0, 50));
         // nothing at D3 at all
         let none = spectrum_of(&[(220, 60.0), (294, 100.0)]);
@@ -1574,6 +1748,52 @@ mod tests {
         assert_eq!(s.wait_on(1, 0, &live, 1.4), Held::Waiting);
     }
 
+    /// A bent note is heard anywhere on its way up (here held at the top, a pre-bend); unbent, that pitch is wrong.
+    #[test]
+    fn a_bent_note_is_heard_on_its_way_up() {
+        let rate = 48000;
+        let mut x = vec![0.0f32; rate as usize * 3];
+        add_note(&mut x, rate, 1.0, 52, 0.2); // A string fret 5 (D3) bent a tone
+        let mut a = arr(&[(1.0, 1, 5)]);
+        a.notes[0].techniques = Techs::BEND;
+        a.notes[0].bend = 2.0;
+        assert_eq!(score_strums(&a, x.clone(), &[1.0]), vec![Some(Judgement::Hit)]);
+        let a = arr(&[(1.0, 1, 5)]);
+        assert_eq!(score_strums(&a, x, &[1.0]), vec![Some(Judgement::Miss)]);
+    }
+
+    /// A rake: notes on the next strings 30 ms apart get one pluck from the detector, and each is heard by it; one
+    /// that wasn't played still misses.
+    #[test]
+    fn a_rake_is_heard_from_one_pluck() {
+        let rate = 48000;
+        let a = arr(&[(1.0, 2, 2), (1.03, 3, 2), (1.06, 4, 2)]);
+        let mut x = vec![0.0f32; rate as usize * 3];
+        for (t, m) in [(1.0, 52), (1.03, 57), (1.06, 61)] {
+            add_note(&mut x, rate, t, m, 0.15);
+        }
+        let hit = Some(Judgement::Hit);
+        assert_eq!(score_strums(&a, x, &[1.0]), vec![hit; 3]);
+        let mut x = vec![0.0f32; rate as usize * 3];
+        for (t, m) in [(1.0, 52), (1.03, 57)] {
+            add_note(&mut x, rate, t, m, 0.15);
+        }
+        assert_eq!(score_strums(&a, x, &[1.0]), vec![hit, hit, Some(Judgement::Miss)]);
+    }
+
+    /// A note a slide (or a held bend) links on to isn't picked: it's heard from the live signal like a hammer-on.
+    #[test]
+    fn a_linked_note_needs_no_pluck() {
+        let mut a = arr(&[(1.0, 4, 7), (1.2, 4, 9), (1.4, 4, 7)]);
+        a.notes[0].techniques = Techs::SLIDE | Techs::LINK_NEXT;
+        a.notes[0].slide_to = 9;
+        let g = build_groups(&a);
+        assert_eq!(
+            g.iter().map(|g| g.legato).collect::<Vec<_>>(),
+            [false, true, false]
+        );
+    }
+
     /// A chord chart: each (time, [(string, fret)]).
     fn chords(list: &[(f64, &[(i32, i32)])]) -> Arrangement {
         let mut a = arr(&[]);
@@ -1847,6 +2067,7 @@ mod tests {
                 last_check: -1.0,
                 repeats: HashSet::new(),
                 ringing: vec![],
+                bends: vec![0],
             };
             assert!(explain_bass(&mag, binhz, &g(m), None).ok, "{m}");
             assert!(!explain_bass(&mag, binhz, &g(m + 1), None).ok, "{m} + 1");
