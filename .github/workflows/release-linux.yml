@@ -1,0 +1,101 @@
+# The Linux build: like release-mac.yml, started by hand in the PUBLIC repo. Tests and builds in an Ubuntu 22.04
+# container (the programs need the glibc they were built against or newer, so 22.04's 2.35 makes them run on Ubuntu
+# 22.04+, Debian 12, Fedora 36+, Mint 21+ and current Arch), packs the AppImage and the .tar.gz with
+# tools/linux/bundle.sh, keeps them as a workflow artifact and, for a tag, attaches them to that tag's release and adds
+# their lines to the release's SHA256SUMS.txt. A container rather than the ubuntu-22.04 runner: GitHub retires runner
+# images before the distro's own support ends.
+name: release-linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the Linux build to (e.g. v0.5.6); empty = build only"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'arpan2711/quickRS-player'
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      DEBIAN_FRONTEND: noninteractive
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Build tools (bundle.sh's list, and git for the checkout)
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends build-essential pkg-config libasound2-dev clang libclang-dev \
+            curl ca-certificates file git desktop-file-utils python3 zstd
+
+      - uses: actions/checkout@v4
+
+      - name: Rust (the repo's toolchain)
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" show active-toolchain || "$HOME/.cargo/bin/rustup" toolchain install
+          "$HOME/.cargo/bin/rustc" --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --workspace --no-fail-fast
+
+      - name: Build and bundle
+        run: bash tools/linux/bundle.sh
+
+      - name: Version
+        id: ver
+        run: echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quickRS-${{ steps.ver.outputs.version }}-linux-x86_64
+          path: |
+            dist/linux/*.AppImage
+            dist/linux/*.tar.gz
+            dist/linux/SHA256SUMS.txt
+          if-no-files-found: error
+
+  # (on the runner itself, which has gh)
+  attach:
+    needs: build
+    if: github.event.inputs.tag != ''
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.event.inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: quickRS-${{ needs.build.outputs.version }}-linux-x86_64
+          path: dist/linux
+
+      - name: Attach to the release
+        run: |
+          v="${{ needs.build.outputs.version }}"
+          if [ "$TAG" != "v$v" ]; then echo "::warning::tag $TAG but Cargo.toml says $v: the files are named for $v"; fi
+          cd dist/linux
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --draft --title "quickRS ${TAG#v}" --notes "Linux build. Windows and Mac builds to follow."
+          # SHA256SUMS.txt: the release's other lines (Windows, Mac) kept, the Linux lines replaced
+          rm -f old-sums.txt
+          gh release download "$TAG" --pattern SHA256SUMS.txt --output old-sums.txt 2>/dev/null || touch old-sums.txt
+          mine=$(awk '{print $2}' SHA256SUMS.txt | sed 's/^\*//')
+          { grep -v -F -f <(printf '%s\n' $mine) old-sums.txt || true; cat SHA256SUMS.txt; } > merged-sums.txt
+          mv merged-sums.txt SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$TAG" ./*.AppImage ./*.tar.gz SHA256SUMS.txt --clobber

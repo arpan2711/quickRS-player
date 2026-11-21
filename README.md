@@ -47,6 +47,10 @@ AI model, no upload, and the same take always gets the same answer. See
   isn't notarised by Apple, so the first start takes an extra step. See
   [docs/INSTALL.md](docs/INSTALL.md#macos). On a Mac, the app's key hints show
   ⌘, and the keys written Ctrl in these docs are Cmd (a take is `Cmd+R`).
+* **Linux, 64-bit (test build):** `quickRS-0.5.6-linux-x86_64.AppImage` (or
+  the `.tar.gz`) from the same release. Make it executable and run it. Ubuntu
+  22.04 or later, Debian 12, Fedora 36+, current Arch and their relatives, with
+  PipeWire or PulseAudio. See [docs/INSTALL.md](docs/INSTALL.md#linux).
 
 No songs and no Rocksmith keys are included.
 
@@ -59,7 +63,7 @@ carry over. From 0.3.0 on, quickRS updates itself. See
 ### Documentation
 
 * [Installing](docs/INSTALL.md), including the Windows SmartScreen and macOS
-  Gatekeeper warnings, and where your data is kept.
+  Gatekeeper warnings, the Linux AppImage, and where your data is kept.
 * [Getting your songs in](docs/GETTING-SONGS.md): song folders, feedpaks,
   psarcs and the keys, the converter.
 * [Audio setup](docs/AUDIO-SETUP.md): the guided guitar setup, Real Tone
