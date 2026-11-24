@@ -174,11 +174,11 @@ impl Offer {
     }
 }
 
-/// Cents off (the median of what's played) that the out-of-tune warning is given at: 20 cents already sounds out of
-/// tune. (Detection itself holds further: on the synth playing the Boston lead with the whole guitar detuned, up to
-/// 30 cents costs about 3% of single notes, 35 sharp 12%, 40 over half. Picked notes also read sharper than the
-/// guitar is tuned, from the attack and most on low strings: one player's takes read +15 to +29.)
-pub const DRIFT_WARN: f64 = 20.0;
+/// Cents off (the median of what's played) that the out-of-tune warning is given at. Picked notes read sharper than
+/// the guitar is tuned, from the attack and most on low strings: one player's in-tune takes read up to +29, and a
+/// warning at 20 would have come on 7 of 11 of them. On the synth playing the Boston lead with the whole guitar
+/// detuned, up to 30 cents costs about 3% of single notes, 35 sharp 12%, 40 over half.
+pub const DRIFT_WARN: f64 = 30.0;
 /// A reading this far (semitones) from the nearest note charted around now is a wrong note, not the guitar's
 /// tuning. Wider than half a semitone: a guitar 35 cents sharp reads 50-70 sharp on picked notes.
 pub const DRIFT_MATCH: f64 = 0.8;
@@ -250,20 +250,20 @@ mod tests {
 
     #[test]
     fn a_guitar_far_out_of_tune_is_warned_and_one_near_in_tune_is_not() {
-        // eight notes each heard 25 cents sharp, a wrong note and a slip among them
+        // eight notes each heard 35 cents sharp, a wrong note and a slip among them
         let mut d = Drift::default();
         for i in 0..7 {
-            d.hear(50.0 + i as f64 + 0.25, &[(i, 50 + i as i32)]);
+            d.hear(50.0 + i as f64 + 0.35, &[(i, 50 + i as i32)]);
         }
         assert_eq!(d.offset(), None, "seven notes aren't enough");
         d.hear(59.0, &[(7, 57)]); // a wrong note: not near the chart's, not kept
         assert_eq!(d.offset(), None);
-        d.hear(57.26, &[(7, 57)]);
+        d.hear(57.36, &[(7, 57)]);
         d.hear(57.02, &[(7, 57)]); // a slip
         let c = d.offset().unwrap();
-        assert!((c - 25.0).abs() < 1.5, "{c}");
+        assert!((c - 35.0).abs() < 1.5, "{c}");
         let (text, tail) = d.warning().unwrap();
-        assert_eq!(text, "Your guitar sounds 25\u{a2} sharp");
+        assert_eq!(text, "Your guitar sounds 35\u{a2} sharp");
         assert!(tail.contains("tune down"), "{tail}");
         // a guitar 35 cents sharp whose picked notes read 55-70 sharp: still measured, not taken for wrong notes
         let mut d = Drift::default();
@@ -271,10 +271,11 @@ mod tests {
             d.hear(45.0 + i as f64 + 0.55 + 0.015 * i as f64, &[(i, 45 + i as i32)]);
         }
         assert!(d.offset().is_some_and(|c| c > 55.0));
-        // 15 cents sharp: no warning (a chord's notes are all candidates)
+        // 25 cents sharp (what hard-picked notes read on a guitar in tune): no warning (a chord's notes are all
+        // candidates)
         let mut d = Drift::default();
         for i in 0..10 {
-            d.hear(45.0 + i as f64 + 0.15, &[(i, 40), (i, 45 + i as i32)]);
+            d.hear(45.0 + i as f64 + 0.25, &[(i, 40), (i, 45 + i as i32)]);
         }
         assert!(d.offset().is_some());
         assert_eq!(d.warning(), None);
@@ -289,12 +290,12 @@ mod tests {
         // just past the line, flat: the whole toast
         let mut d = Drift::default();
         for i in 0..10 {
-            d.hear(45.0 + i as f64 - 0.22, &[(i, 45 + i as i32)]);
+            d.hear(45.0 + i as f64 - 0.32, &[(i, 45 + i as i32)]);
         }
         let (text, tail) = d.warning().unwrap();
         assert_eq!(
             format!("{text}{tail}"),
-            "Your guitar sounds 22\u{a2} flat  \u{b7}  tune up a little (the Tuner tile)"
+            "Your guitar sounds 32\u{a2} flat  \u{b7}  tune up a little (the Tuner tile)"
         );
     }
 
