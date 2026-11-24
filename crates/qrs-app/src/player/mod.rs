@@ -2862,8 +2862,8 @@ impl PlayerView {
         };
     }
 
-    /// A guitar far enough out of tune to cost notes is told so, once a song (the tuner's reading against the plain
-    /// single notes the chart has around now: a second back, for the input's lag, and a little ahead).
+    /// A guitar out of tune is told so, once a song (the tuner's reading against the notes the chart has around now:
+    /// a second back, for the input's lag, and a little ahead; not while a bend, slide or muted strum is near).
     fn watch_tuning(&mut self, midi: f64) {
         if self.drift_said || !self.transport.playing() {
             return;
@@ -2873,9 +2873,8 @@ impl PlayerView {
         let a = groups.partition_point(|g| g.t < now - 1.0);
         let b = groups.partition_point(|g| g.t <= now + 0.2);
         let near = &groups[a..b];
-        let plain = |g: &qrs_analysis::detect::NoteGroup| {
-            g.midis.len() == 1 && !g.muted && !g.legato && g.bends.iter().all(|&s| s == 0)
-        };
+        let plain =
+            |g: &qrs_analysis::detect::NoteGroup| !g.muted && !g.legato && g.bends.iter().all(|&s| s == 0);
         if near.is_empty() || !near.iter().all(plain) {
             return;
         }
@@ -2883,7 +2882,7 @@ impl PlayerView {
         let expected: Vec<(usize, i32)> = near
             .iter()
             .enumerate()
-            .map(|(k, g)| (a + k, g.midis[0] + shift))
+            .flat_map(|(k, g)| g.midis.iter().map(move |m| (a + k, m + shift)))
             .collect();
         self.drift.hear(midi, &expected);
         if let Some((text, tail)) = self.drift.warning() {

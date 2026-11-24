@@ -14,7 +14,7 @@ Branch `chord-detection-repeats`. Every change below but the last is to the **li
 - A single note isn't failed by the note still ringing before it.
 - A note one fret from the previous one on the same string no longer looks "already sounding".
 - A looser wrong-peak limit, and a repeated power chord counts by its root and octave.
-- **A guitar far out of tune is warned about once per song**, instead of quietly failing notes.
+- **A guitar 20 cents or more out of tune is warned about once per song**, instead of quietly failing notes.
 
 | Measured on | Before | After |
 |---|---|---|
@@ -45,7 +45,7 @@ Branch `chord-detection-repeats`. Every change below but the last is to the **li
 
 **Wrong-peak limit and repeated power chords.** `FOREIGN_MAX` went from 0.20 to 0.25: right chords on the real takes had 0.20–0.25 of their strong peaks unexplained. A chord struck again in a quick repeat counts with just its root and octave, since a fast repeat's fifth often has no peak of its own. A first strike still needs two pitch classes. Together these gave +15 chords on the real takes.
 
-**Out-of-tune warning (`player/tuning.rs` `Drift`).** The synth playing the Boston lead with the whole guitar detuned shows where tuning starts to cost notes. Up to ±30 cents, it costs about 3% of single notes. At 35 cents single notes fall to 86–92%, and at 40 cents to about 50%. Chords hold to ±35 cents. While a song plays, the tuner's readings are matched against the plain single notes charted around now; chords, bends, slides and hammer-ons are skipped. After 8 different notes, a median 35 cents or more off gives a toast once per song: *"Your guitar sounds 40¢ sharp · notes may be missed: tune down a little"*. It isn't set lower because real picked notes read sharp at the attack: Sam's takes read +15 to +33 cents, and the take that read +33 still scored every single note.
+**Out-of-tune warning (`player/tuning.rs` `Drift`).** The synth playing the Boston lead with the whole guitar detuned shows where tuning starts to cost notes. Up to ±30 cents, it costs about 3% of single notes. At 35 cents single notes fall to 86–92%, and at 40 cents to about 50%. Chords hold to ±35 cents. While a song plays, the tuner's readings are matched against the notes charted around now, and skipped while a bend, slide or muted strum is near. A reading counts if it's within 80 cents of a charted note: a guitar 35 cents sharp reads 50–70 sharp on picked notes, so half a semitone was too tight. After 8 different notes, a median 20 cents or more off gives a toast once per song: *"Your guitar sounds 25¢ sharp · tune down a little (the Tuner tile)"*, or flat and "tune up". The warning is set at 20 because that already sounds out of tune, though detection holds further. Picked notes read somewhat sharp at the attack, most on low strings. On Sam's earlier takes the toast would have shown on 6 of 9 Back in Black takes (+20 to +29) and 1 of 2 Boston takes (+20).
 
 ## Not done, and why
 
