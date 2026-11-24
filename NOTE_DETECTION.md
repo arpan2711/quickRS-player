@@ -1,6 +1,6 @@
 # Live note detection: what changed
 
-Branch `chord-detection-repeats`. Every change is to the **live scorer** (`qrs-analysis/src/detect.rs`), which judges notes on the highway while you play. The take report is unchanged.
+Branch `chord-detection-repeats`. Every change below is to the **live scorer** (`qrs-analysis/src/detect.rs`), which judges notes on the highway while you play. The branch's two earlier take-report fixes (a quiet low string in a repeated chord, a low note struck again) are in the PR description.
 
 ## Summary
 
