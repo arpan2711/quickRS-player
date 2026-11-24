@@ -2879,10 +2879,14 @@ impl PlayerView {
             return;
         }
         let shift = self.scorer.shift();
-        let expected: Vec<(usize, i32)> = near
+        let opens = &self.chart.opens; // (what the scorer's groups were built from)
+        let open = |g: &qrs_analysis::detect::NoteGroup, m: i32| {
+            g.strings.iter().any(|&s| opens.get(s.max(0) as usize) == Some(&m))
+        };
+        let expected: Vec<(usize, i32, bool)> = near
             .iter()
             .enumerate()
-            .flat_map(|(k, g)| g.midis.iter().map(move |m| (a + k, m + shift)))
+            .flat_map(|(k, g)| g.midis.iter().map(move |&m| (a + k, m + shift, open(g, m))))
             .collect();
         self.drift.hear(midi, &expected);
         if let Some((text, tail)) = self.drift.warning() {
