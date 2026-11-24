@@ -174,9 +174,110 @@ impl Offer {
     }
 }
 
+/// Cents off (the median of what's played) that the out-of-tune warning is given at. Measured on the synth playing
+/// the Boston lead with the whole guitar detuned: up to 30 cents costs about 3% of single notes, 35 sharp 12%, 40
+/// over half. Real picked notes read sharper than the guitar is tuned (the attack, hardest on low strings): one
+/// player's takes read +15 to +33 with every single note still scored, so the warning waits for 35.
+pub const DRIFT_WARN: f64 = 35.0;
+/// Different chart notes the playing must have been heard on before the warning can be given.
+pub const DRIFT_NOTES: usize = 8;
+
+/// How far out of tune the guitar sounds, from the plain single notes heard while a song plays (a tuner reading
+/// near a note the chart has just then). The median, so a wrong note or a slip doesn't move it.
+#[derive(Clone, Debug, Default)]
+pub struct Drift {
+    /// The latest readings' cents from the note they matched.
+    cents: std::collections::VecDeque<f64>,
+    /// The chart notes they matched (group indices), for "heard on enough different notes".
+    notes: std::collections::VecDeque<usize>,
+}
+
+impl Drift {
+    const KEEP: usize = 60;
+
+    /// A tuner reading `midi` (fractional) while `expected` (group index, the pitch it sounds) are the notes near
+    /// now: kept when it's within half a semitone of one of them.
+    pub fn hear(&mut self, midi: f64, expected: &[(usize, i32)]) {
+        let Some(&(gi, m)) = expected
+            .iter()
+            .min_by(|a, b| (midi - a.1 as f64).abs().total_cmp(&(midi - b.1 as f64).abs()))
+        else {
+            return;
+        };
+        let d = midi - m as f64;
+        if d.abs() >= 0.5 {
+            return;
+        }
+        self.cents.push_back(d * 100.0);
+        self.notes.push_back(gi);
+        if self.cents.len() > Self::KEEP {
+            self.cents.pop_front();
+            self.notes.pop_front();
+        }
+    }
+
+    /// The guitar's cents off (+ sharp), once it's been heard on `DRIFT_NOTES` different notes.
+    pub fn offset(&self) -> Option<f64> {
+        let distinct: std::collections::BTreeSet<usize> = self.notes.iter().copied().collect();
+        if distinct.len() < DRIFT_NOTES {
+            return None;
+        }
+        let mut v: Vec<f64> = self.cents.iter().copied().collect();
+        v.sort_by(|a, b| a.total_cmp(b));
+        Some(v[v.len() / 2])
+    }
+
+    /// The warning's words, when the guitar is far enough out to cost notes.
+    pub fn warning(&self) -> Option<(String, String)> {
+        let c = self.offset()?;
+        if c.abs() < DRIFT_WARN {
+            return None;
+        }
+        let (side, then) = if c > 0.0 { ("sharp", "tune down") } else { ("flat", "tune up") };
+        Some((
+            format!("Your guitar sounds {:.0}\u{a2} {side}", c.abs()),
+            format!("  \u{b7}  notes may be missed: {then} a little (the Tuner tile)"),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_guitar_far_out_of_tune_is_warned_and_one_near_in_tune_is_not() {
+        // eight plain notes each heard 40 cents sharp, a wrong note and a slip among them
+        let mut d = Drift::default();
+        for i in 0..7 {
+            d.hear(50.0 + i as f64 + 0.40, &[(i, 50 + i as i32)]);
+        }
+        assert_eq!(d.offset(), None, "seven notes aren't enough");
+        d.hear(61.0, &[(7, 57)]); // a wrong note: not near the chart's, not kept
+        assert_eq!(d.offset(), None);
+        d.hear(57.41, &[(7, 57)]);
+        d.hear(57.02, &[(7, 57)]); // a slip
+        let c = d.offset().unwrap();
+        assert!((c - 40.0).abs() < 1.5, "{c}");
+        let (text, tail) = d.warning().unwrap();
+        assert_eq!(text, "Your guitar sounds 40\u{a2} sharp");
+        assert!(tail.contains("tune down"), "{tail}");
+        // 30 cents sharp (what hard-picked notes can read on a guitar in tune): no warning
+        let mut d = Drift::default();
+        for i in 0..10 {
+            d.hear(45.0 + i as f64 + 0.30, &[(i, 40), (i, 45 + i as i32)]);
+        }
+        assert!(d.offset().is_some());
+        assert_eq!(d.warning(), None);
+        // flat
+        let mut d = Drift::default();
+        for i in 0..10 {
+            d.hear(45.0 + i as f64 - 0.38, &[(i, 45 + i as i32)]);
+        }
+        let (text, tail) = d.warning().unwrap();
+        assert_eq!(text, "Your guitar sounds 38\u{a2} flat");
+        assert!(tail.contains("tune up"), "{tail}");
+    }
 
     // E standard's open strings, and Eb standard's
     const E: [i32; 6] = [40, 45, 50, 55, 59, 64];

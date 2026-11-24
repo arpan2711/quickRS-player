@@ -48,5 +48,5 @@ Branch `chord-detection-repeats`. Every change is to the **live scorer** (`qrs-a
 
 - **Rewriting how plucks are paired with notes.** An ideal pairing scored the same as the live one on calibrated takes.
 - **Using the take report's offline pluck detector live.** +5 chords and −3 notes on the real takes.
-- **Following the player's tuning offset.** +2 notes in total.
+- **Following the player's tuning offset.** +2 notes in total. Instead, the game now warns once a song ("Your guitar sounds 40¢ sharp") when the plain single notes played sound 35 cents or more off. On the synth, detection holds to ±30 cents, then single notes fall to 86% at 35 and 46% at 40. Real picked notes read up to +33 on a guitar that scored every note, hence 35 (`player/tuning.rs` `Drift`).
 - StringTheory's detector (GPLv3, so ideas only) was reviewed. It accepts chords with no wrong-note check at all. quickRS keeps that check.

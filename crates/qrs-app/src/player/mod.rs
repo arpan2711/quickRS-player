@@ -677,6 +677,9 @@ pub struct PlayerView {
     pub tuner_text: String,
     /// The tuner's tuning card (D136) hidden for this song (its ×).
     retune_hidden: bool,
+    /// How far out of tune the guitar sounds while a song plays, and whether that's been said for this song.
+    drift: tuning::Drift,
+    drift_said: bool,
     tuner_at: Instant,
     zoom_at: Option<Instant>,
     /// Which of the tab's sizes the HUD shows (the zoom, the bars' width or the strings' spacing).
@@ -931,6 +934,8 @@ impl PlayerView {
             inst_hinted: false,
             tuner_text: String::new(),
             retune_hidden: false,
+            drift: Default::default(),
+            drift_said: false,
             tuner_at: Instant::now(),
             zoom_at: None,
             zoom_what: ZoomWhat::Zoom,
@@ -2831,7 +2836,9 @@ impl PlayerView {
             let (hz, clarity) =
                 qrs_analysis::instrument::pitch_for(self.tuner_inst(), &mut self.sp, &self.pitch_buf, rate);
             if hz > 0.0 && clarity > 0.85 {
-                self.tuner_hist.push_back(69.0 + 12.0 * (hz / 440.0).log2());
+                let midi = 69.0 + 12.0 * (hz / 440.0).log2();
+                self.watch_tuning(midi);
+                self.tuner_hist.push_back(midi);
                 while self.tuner_hist.len() > 5 {
                     self.tuner_hist.pop_front();
                 }
@@ -2853,6 +2860,36 @@ impl PlayerView {
             ),
             None => String::new(),
         };
+    }
+
+    /// A guitar far enough out of tune to cost notes is told so, once a song (the tuner's reading against the plain
+    /// single notes the chart has around now: a second back, for the input's lag, and a little ahead).
+    fn watch_tuning(&mut self, midi: f64) {
+        if self.drift_said || !self.transport.playing() {
+            return;
+        }
+        let now = self.now();
+        let groups = &self.scorer.groups;
+        let a = groups.partition_point(|g| g.t < now - 1.0);
+        let b = groups.partition_point(|g| g.t <= now + 0.2);
+        let near = &groups[a..b];
+        let plain = |g: &qrs_analysis::detect::NoteGroup| {
+            g.midis.len() == 1 && !g.muted && !g.legato && g.bends.iter().all(|&s| s == 0)
+        };
+        if near.is_empty() || !near.iter().all(plain) {
+            return;
+        }
+        let shift = self.scorer.shift();
+        let expected: Vec<(usize, i32)> = near
+            .iter()
+            .enumerate()
+            .map(|(k, g)| (a + k, g.midis[0] + shift))
+            .collect();
+        self.drift.hear(midi, &expected);
+        if let Some((text, tail)) = self.drift.warning() {
+            self.drift_said = true;
+            self.say_for(text, tail, 8.0);
+        }
     }
 
     /// Riff Repeater-style: after a loop pass at 90%+ accuracy, add notes (raise difficulty 10%). In a lesson, the
