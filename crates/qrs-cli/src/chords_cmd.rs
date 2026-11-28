@@ -52,13 +52,13 @@ pub struct Args {
     pub start: Option<f64>,
 }
 
-const RATE: u32 = 48000;
+pub(crate) const RATE: u32 = 48000;
 const OPENS: [i32; 6] = [40, 45, 50, 55, 59, 64];
 
 /// A chord shape: (string, fret), low string first.
-type Shape = Vec<(i32, i32)>;
+pub(crate) type Shape = Vec<(i32, i32)>;
 
-fn shape(frets: &str) -> Shape {
+pub(crate) fn shape(frets: &str) -> Shape {
     // "x32010": low E first
     frets
         .chars()
@@ -67,7 +67,7 @@ fn shape(frets: &str) -> Shape {
         .collect()
 }
 
-fn shape_wide(frets: &[i32]) -> Shape {
+pub(crate) fn shape_wide(frets: &[i32]) -> Shape {
     frets
         .iter()
         .enumerate()
@@ -149,19 +149,19 @@ pub(crate) fn strummed(
 
 /// How one strum is played.
 #[derive(Clone, Debug)]
-struct Strum {
+pub(crate) struct Strum {
     /// When it starts (seconds in the take).
-    at: f64,
+    pub(crate) at: f64,
     /// (string, fret) struck, in the order struck.
-    notes: Vec<(i32, i32)>,
+    pub(crate) notes: Vec<(i32, i32)>,
     /// Seconds from the first string to the last.
-    spread: f64,
-    palm: bool,
+    pub(crate) spread: f64,
+    pub(crate) palm: bool,
     /// A fret-hand muted "chk": strings damped, no pitch.
-    dead: bool,
+    pub(crate) dead: bool,
 }
 
-struct Rand(Rng);
+pub(crate) struct Rand(pub(crate) Rng);
 impl Rand {
     fn u(&mut self) -> f64 {
         self.0.uniform()
@@ -185,7 +185,7 @@ impl Rand {
 }
 
 /// The take: every strum's strings, each cut by the next strike on its string or damped when the shape lets it go.
-fn render(strums: &[Strum], len: f64, r: &mut Rand, let_ring: bool) -> Vec<f32> {
+pub(crate) fn render(strums: &[Strum], len: f64, r: &mut Rand, let_ring: bool) -> Vec<f32> {
     let n = (len * RATE as f64) as usize;
     let mut x = vec![0.0f32; n];
     struct Ev {
@@ -290,14 +290,14 @@ fn render(strums: &[Strum], len: f64, r: &mut Rand, let_ring: bool) -> Vec<f32> 
 }
 
 /// One chord of a case: what the chart wants, what's played, whether it should count.
-struct Item {
-    t: f64,
-    want: Shape,
+pub(crate) struct Item {
+    pub(crate) t: f64,
+    pub(crate) want: Shape,
     /// The strum (None: nothing played).
-    play: Option<Strum>,
+    pub(crate) play: Option<Strum>,
     /// Counted in the case's numbers (others set the scene).
-    judged: bool,
-    palm: bool,
+    pub(crate) judged: bool,
+    pub(crate) palm: bool,
 }
 
 struct Case {
@@ -792,7 +792,7 @@ fn distinct_neighbours(mut items: Vec<Item>, sets: &Sets, r: &mut Rand) -> Vec<I
 }
 
 /// The chart of a case: each item's chord (palm-muted ones flagged).
-fn chart(items: &[Item]) -> Arrangement {
+pub(crate) fn chart(items: &[Item]) -> Arrangement {
     let mut a = Arrangement::new("Rhythm");
     for it in items {
         let tech = if it.palm { Techs::PALM_MUTE } else { Techs::NONE };
@@ -860,7 +860,7 @@ impl SampleSource for Rec<'_> {
 
 /// Score a take live: the pluck detector in 128-sample blocks, the scorer every 10 ms. Returns each group's
 /// judgement and the plucks found.
-fn score(arr: &Arrangement, x: &[f32], oracle: Option<Vec<u64>>) -> (Vec<Option<Judgement>>, Vec<u64>) {
+pub(crate) fn score(arr: &Arrangement, x: &[f32], oracle: Option<Vec<u64>>) -> (Vec<Option<Judgement>>, Vec<u64>) {
     let mut plucks = Vec::new();
     if let Some(o) = oracle {
         plucks = o;
@@ -900,7 +900,7 @@ fn score(arr: &Arrangement, x: &[f32], oracle: Option<Vec<u64>>) -> (Vec<Option<
 }
 
 /// Why a chord wasn't heard (or was): the scorer's tests at the best pluck in its window.
-fn why(arr: &Arrangement, x: &[f32], plucks: &[u64], gi: usize) -> String {
+pub(crate) fn why(arr: &Arrangement, x: &[f32], plucks: &[u64], gi: usize) -> String {
     let groups = detect::build_groups(arr);
     let g = &groups[gi];
     let mut sp = qrs_analysis::spectrum::Spectra::new();
@@ -1233,6 +1233,40 @@ fn run_take(arr: &Arrangement, path: &std::path::Path, args: &Args) -> anyhow::R
             100.0 * b as f64 / n
         );
     }
+    // repeated strikes (the same shape again within 0.25 s of the group before) against the rest, and for the
+    // misses which stage lost them: no pluck found near the chart time, a pluck whose sound the test refused, or
+    // a pluck whose sound passes the test but the pairing gave elsewhere.
+    {
+        let is_repeat = |i: usize| i > 0 && groups[i].t - groups[i - 1].t <= 0.25;
+        let near60 = |i: usize| {
+            plucks
+                .iter()
+                .any(|&p| (p as f64 / RATE as f64 - groups[i].t).abs() < 0.06)
+        };
+        for (label, rep) in [("first strikes", false), ("repeat strikes", true)] {
+            let ids: Vec<usize> = inside
+                .iter()
+                .copied()
+                .filter(|&i| groups[i].midis.len() >= 2 && is_repeat(i) == rep)
+                .collect();
+            if ids.is_empty() {
+                continue;
+            }
+            let hit = ids.iter().filter(|&&i| counted(&live[i])).count();
+            let lost: Vec<usize> = ids.iter().copied().filter(|&i| !counted(&live[i])).collect();
+            let no_pluck = lost.iter().filter(|&&i| !near60(i)).count();
+            let refused = lost
+                .iter()
+                .filter(|&&i| near60(i) && !counted(&ideal[i]))
+                .count();
+            println!(
+                "chord {label}: {} | live {hit} ({:.0}%) | lost: {no_pluck} no pluck within 60 ms, {refused} sound refused, {} paired elsewhere",
+                ids.len(),
+                100.0 * hit as f64 / ids.len() as f64,
+                lost.len() - no_pluck - refused
+            );
+        }
+    }
     let near = inside
         .iter()
         .filter(|&&i| {
@@ -1274,7 +1308,7 @@ fn run_take(arr: &Arrangement, path: &std::path::Path, args: &Args) -> anyhow::R
 }
 
 /// Linear resampling (enough for the scorer's spectra).
-fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
+pub(crate) fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
     let n = (x.len() as f64 * to as f64 / from as f64) as usize;
     (0..n)
         .map(|i| {

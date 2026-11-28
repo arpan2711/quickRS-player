@@ -716,3 +716,61 @@ fn problems_name_bars_by_the_charts_measures() {
     assert_eq!(j["events"][4]["measure"], 3);
     assert_eq!(j["events"][4]["bar"], 1);
 }
+
+/// The same power chord struck again a sixteenth later, its low string barely sounding (a quick strum's weakest
+/// string): still the chord, as the scorer takes it (`detect::need`: two of three), with the string noted. Its fifth
+/// missing is another sound (root and octave), and stays wrong.
+#[test]
+fn a_chord_struck_again_with_a_quiet_root_is_still_the_chord() {
+    let shape = [(1, 0), (2, 2), (3, 2)];
+    let mut notes = Vec::new();
+    for t in [0.5, 0.66, 1.2] {
+        notes.extend(strum(t, &shape));
+    }
+    // (the chart has the notes at the strum's start)
+    let at = [0.5, 0.66, 1.2];
+    let on_the_beat: Vec<Played> = notes
+        .iter()
+        .map(|n| Played {
+            t: *at.iter().rfind(|&&t| t <= n.t + 1e-6).unwrap(),
+            ..n.clone()
+        })
+        .collect();
+    let a = chart(&on_the_beat, 2.5);
+    let clean = run(&a, render(&notes, 0.0, 2.0, 1.0, 0.0), 0.0, 2.0, 1.0);
+    assert_eq!(clean.count(Status::Hit), 3, "{}", clean.text(100));
+
+    // the second strike's root at a twentieth of the level
+    let quiet: Vec<Played> = notes
+        .iter()
+        .map(|n| Played {
+            amp: if (n.t - 0.66).abs() < 0.001 && n.string == 1 { n.amp * 0.05 } else { n.amp },
+            ..n.clone()
+        })
+        .collect();
+    let r = run(&a, render(&quiet, 0.0, 2.0, 1.0, 0.0), 0.0, 2.0, 1.0);
+    assert_eq!(statuses(&r), vec![Status::Hit; 3], "{}", r.text(100));
+
+    // the fifth never played (root and octave): the first strike is another sound and stays wrong; the same chord
+    // struck again counts by its root and octave, as the scorer takes it (`detect::enough`: a repeat's fifth is often
+    // too weak to show in real playing)
+    let no_fifth: Vec<Played> = notes.iter().filter(|n| n.string != 2).cloned().collect();
+    let r = run(&a, render(&no_fifth, 0.0, 2.0, 1.0, 0.0), 0.0, 2.0, 1.0);
+    let st = statuses(&r);
+    assert_eq!(st[0], Status::Wrong, "{}", r.text(100));
+    assert_eq!(st[1], Status::Hit, "{}", r.text(100));
+}
+
+/// The same low note struck again a sixteenth later (the song's B2 B2): the note before still rings as loud as the
+/// new one, so what "got louder" is only the attack's leftovers. Each is read as the note it is.
+#[test]
+fn a_low_note_struck_again_fast_is_read_as_that_note() {
+    let notes: Vec<Played> = [0.5, 0.66, 0.82, 1.5, 1.66]
+        .iter()
+        .map(|&t| p(t, 0, 7))
+        .collect();
+    let a = chart(&notes, 2.5);
+    let r = run(&a, render(&notes, 0.0, 2.0, 1.0, 0.0), 0.0, 2.0, 1.0);
+    assert_eq!(statuses(&r), vec![Status::Hit; 5], "{}", r.text(100));
+    assert!(r.events.iter().all(|e| e.played.iter().all(|p| p.midi == 47)), "{:?}", r.events);
+}

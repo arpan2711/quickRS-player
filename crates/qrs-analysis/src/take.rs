@@ -807,6 +807,8 @@ struct Ctx<'a> {
     rate: u32,
     sp: Spectra,
     cache: SpecCache,
+    /// The event being heard is a single note repeating a pitch of the groups before it.
+    same_pitch: bool,
 }
 
 impl Ctx<'_> {
@@ -1052,6 +1054,7 @@ pub fn analyse(input: &TakeInput, progress: &dyn Fn(f32), cancel: &AtomicBool) -
             map: HashMap::new(),
             binhz: 1.0,
         },
+        same_pitch: false,
     };
     let mut checked = HashMap::new();
     // pass 1, then centred on the take's own offset
@@ -1186,6 +1189,7 @@ pub fn analyse(input: &TakeInput, progress: &dyn Fn(f32), cancel: &AtomicBool) -
                 // a single note repeating the one before passes the scorer's test on that note still ringing:
                 // listen to what got louder instead
                 let repeat = expected.len() == 1 && e.group.repeats.contains(&expected[0].midi);
+                ctx.same_pitch = repeat;
                 // and a single note confirmed by its own pitch: the scorer's test lets through a neighbouring
                 // semitone that was just played (it counts as "still ringing", and leaks into the expected bin)
                 let confirmed = !ok || expected.len() != 1 || {
@@ -1530,7 +1534,16 @@ fn hear(ctx: &mut Ctx, pluck: usize, at: usize, next: usize, max_n: usize) -> Ve
     } else {
         0.0
     };
+    // (a single note, a pitch the groups before it had, no louder than what rings before it is that pitch struck again: what got louder is then only
+    // the attack's leftovers, a faint pitch of their own that is not the note's (a low B read as E3 or Eb3), so,
+    // when the window's own pitch is reasonably clear, it is read as it is)
+    let mut grew = max_n > 1 || !ctx.same_pitch || level > 1.1 * before;
+    if !grew {
+        let (_, clarity) = mpm_pitch(&mut ctx.sp, &ctx.x[at..at + n], ctx.rate, 60.0, 1400.0, 0.9);
+        grew = clarity < 0.5;
+    }
     if before > 0.3 * level
+        && grew
         && let (Some(mag), Some(prev)) = (ctx.spec(at, n), ctx.spec(pluck - n, n))
     {
         let grown: Vec<f64> = mag
@@ -1559,8 +1572,9 @@ fn hear(ctx: &mut Ctx, pluck: usize, at: usize, next: usize, max_n: usize) -> Ve
 }
 
 /// A chord or double stop that passed the scorer's test (`detect::need` of its notes): which notes didn't sound. A
-/// shape of two or three missing one is wrong (a power chord without its fifth is another sound); four or more stay
-/// right with as many missing as the scorer forgives (half, D46), noted, unless a wrong fret sounded instead.
+/// double stop missing one is wrong; a chord of three or more stays right with as many missing as the scorer
+/// forgives (`detect::enough`: half of them, D46, and two pitch classes, so a power chord without its fifth is
+/// still wrong: another sound), noted, unless a wrong fret sounded instead.
 fn chord_notes(ctx: &mut Ctx, e: &Ev, at: usize, r: &mut EventResult) {
     let n = window_for(&e.group, ctx.rate);
     let skip = (ATTACK_SKIP * ctx.rate as f64) as usize;
@@ -1583,13 +1597,16 @@ fn chord_notes(ctx: &mut Ctx, e: &Ev, at: usize, r: &mut EventResult) {
                 detect::fundamental_present_in
             };
             // (without the louder-than-before test too: a bend's top may still be ringing on that pitch)
+            let repeat = e.group.repeats.contains(&p.midi);
             !test(
                 &mag,
                 binhz,
                 p.midi,
                 prev.as_deref().map(|v| &v[..]),
-                e.group.repeats.contains(&p.midi),
+                repeat,
             ) && !test(&mag, binhz, p.midi, None, true)
+                // (a chord struck again: its quiet low string is still a peak of its own)
+                && !(repeat && !octave_in_chord && detect::fundamental_ringing_in(&mag, binhz, p.midi))
         });
     }
     if missing.is_empty() {
@@ -1617,15 +1634,19 @@ fn chord_notes(ctx: &mut Ctx, e: &Ev, at: usize, r: &mut EventResult) {
             }
         }
     }
-    // four or more: as many as the scorer forgives (D46: half), unless a wrong fret sounded instead
-    let allowed = if r.expected.len() >= 4 && wrong_fret.is_empty() {
-        r.expected.len().saturating_sub(detect::need(&e.group))
-    } else {
-        0
-    };
+    // as many as the scorer forgives (`detect::enough`: D46, half of the notes and two of their pitch classes, so
+    // a three-note power chord without its root, struck again within a quarter second, is still the chord: the
+    // lowest string of a quick strum often barely rings), unless a wrong fret sounded instead
+    let sounded: Vec<i32> = r
+        .expected
+        .iter()
+        .filter(|p| !missing.contains(p))
+        .map(|p| p.midi)
+        .collect();
+    let forgiven = wrong_fret.is_empty() && detect::enough(&e.group, &sounded);
     r.played.extend(wrong_fret);
     r.played.sort_by_key(|p| p.string);
-    if missing.len() > allowed {
+    if !forgiven {
         r.status = Status::Wrong;
     } else {
         r.note = Some(format!(

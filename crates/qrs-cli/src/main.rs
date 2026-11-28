@@ -29,6 +29,7 @@ mod board_cmd;
 mod board_rigs;
 mod chordname_cmd;
 mod chords_cmd;
+mod corpus_cmd;
 mod idle_cmd;
 mod jam_cmd;
 #[cfg(feature = "lessons")]
@@ -156,6 +157,9 @@ enum Cmd {
     Transcribe(take_cmd::TranscribeArgs),
     /// The chord-scoring bench: strummed chords on the synth (sloppy, partial, distorted, wrong) scored live
     Chords(chords_cmd::Args),
+    /// Labelled recordings to measure note and chord detection: `corpus init DIR` writes the exercises and a recording script, `corpus score DIR` scores your recordings
+    #[command(subcommand)]
+    Corpus(corpus_cmd::Cmd),
     /// The note widget's chord names: the synth's strums (clean, sloppy, overdriven) or a take, named live
     Chordname(chordname_cmd::Args),
     /// Scan the library folders like the app (psarc and feedpak), group duplicates, report
@@ -573,6 +577,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             };
             chords_cmd::run_bench(song, &args)
         }
+        Cmd::Corpus(cmd) => corpus_cmd::run(cmd),
         Cmd::Chordname(args) => chordname_cmd::run(&args),
         Cmd::VerifyLibrary(args) => verify::run(&keys, args),
         Cmd::Sums { .. } => Ok(()), // (done before the keys are read: a release machine has none)
