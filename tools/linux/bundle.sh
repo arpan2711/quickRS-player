@@ -9,8 +9,8 @@
 # build-essential, pkg-config, libasound2-dev, clang/libclang-dev, curl and file. The AppImage is made by
 # appimagetool (downloaded once into target/, pinned); with no FUSE it runs extracted (APPIMAGE_EXTRACT_AND_RUN).
 #
-#   tools/linux/bundle.sh                 the public build (no default features: no NUX MG-300, no Lessons, no
-#                                         brand names)
+#   tools/linux/bundle.sh                 the public build (NAM; no NUX MG-300, no Lessons, no brand names)
+#   FEATURES= tools/linux/bundle.sh       without NAM and TONE3000
 #   LABEL=preview1 tools/linux/bundle.sh  the files named quickRS-preview1-linux-x86_64.* (a test build between
 #                                         releases; the app still says its Cargo version)
 set -euo pipefail
@@ -30,10 +30,12 @@ export LIBCLANG_PATH
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 [ -n "$version" ] || { echo "no version in Cargo.toml" >&2; exit 1; }
 glibc=$(ldd --version 2>&1 | sed -n '1s/.* //p')
-echo "quickRS $version for Linux x86_64 (no default features, glibc $glibc)"
+# NAM and TONE3000 are in the shared build (D179), as in tools/mac/bundle.sh; FEATURES= (empty) builds without them
+features="${FEATURES-qrs-app/nam}"
+echo "quickRS $version for Linux x86_64 (features: ${features:-none}, glibc $glibc)"
 
 bins=(quickrs quickrs-cli quickrs-convert)
-cargo build --release --no-default-features -p qrs-app -p qrs-cli -p qrs-convert
+cargo build --release -p qrs-app -p qrs-cli -p qrs-convert --no-default-features ${features:+--features "$features"}
 
 out=dist/linux
 rm -rf "$out"

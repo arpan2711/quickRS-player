@@ -6,6 +6,7 @@ operating systems will warn you the first time. This page says what to click.
 
 * [Windows](#windows)
 * [macOS](#macos)
+* [Linux](#linux)
 * [The first start](#the-first-start)
 * [Where your data lives](#where-your-data-lives)
 * [Uninstalling](#uninstalling)
@@ -94,6 +95,35 @@ The command-line tools are inside the app:
 window is `quickrs-convert` in the same folder.
 
 
+### Linux
+
+The Linux version is a test build for 64-bit PCs. It runs on Ubuntu 22.04 or
+later, Mint 21+, Debian 12+, Fedora 36+, current Arch and their relatives, on a
+normal desktop (GNOME, KDE, Cinnamon, Xfce...) with PipeWire or PulseAudio.
+
+1. Open the [latest release](https://github.com/arpan2711/quickRS-player/releases/latest)
+   and download `quickRS-0.5.6-linux-x86_64.AppImage`.
+2. Make it executable: in your file manager, *Properties* > *Permissions* >
+   *Allow executing as program*, or in a terminal
+   `chmod +x quickRS-*-linux-x86_64.AppImage`.
+3. Double-click it, or run `./quickRS-0.5.6-linux-x86_64.AppImage`.
+
+If it shows a FUSE message and nothing else, run it with
+`--appimage-extract-and-run`, or download the `.tar.gz` instead (the same
+programs in a folder), unpack it and run `./quickrs` in it. If it says
+`libasound.so.2` is missing, install ALSA's library (`libasound2t64` or
+`libasound2` on Ubuntu and Debian, `alsa-lib` on Fedora and Arch).
+
+quickRS takes your guitar from the desktop's sound system: pick your audio
+interface (or Real Tone Cable) as the input in your desktop's Sound settings.
+There is no ASIO; PipeWire has low latency on its own. With Rocksmith
+installed through Steam (Proton), quickRS finds its `dlc` folder by itself.
+
+The command-line tools are in the same file: `<AppImage> cli devices` lists
+the audio devices quickRS sees, and `<AppImage> convert` opens the converter.
+quickRS can't update itself on Linux yet: download the new AppImage by hand.
+
+
 ### The first start
 
 The first time you start quickRS, the first-time setup opens over the app.
@@ -143,6 +173,7 @@ updater) keeps them.
 | --- | --- |
 | Windows | `%APPDATA%\quickRS\data` (paste it into File Explorer's address bar) |
 | macOS | `~/Library/Application Support/quickRS` |
+| Linux | `~/.local/share/quickrs` |
 | Portable | the program's own folder, or a `quickRS Data` folder next to it (on a Mac, next to quickRS.app), if it has a `config.json` or `userdata.json` |
 
 In it: `config.json` (settings and song folders), `userdata.json` (scores,
@@ -159,6 +190,6 @@ changes where recordings and takes go. See
 
 ### Uninstalling
 
-Delete the quickRS folder (Windows) or drag quickRS from Applications to the
-Bin (macOS). To remove your settings and scores too, delete the data folder
+Delete the quickRS folder (Windows), drag quickRS from Applications to the
+Bin (macOS), or delete the AppImage (Linux). To remove your settings and scores too, delete the data folder
 above. quickRS never changes Rocksmith or your song files.
