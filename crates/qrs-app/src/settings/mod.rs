@@ -575,8 +575,9 @@ impl SettingsView {
             }
             "ms" => {
                 if let Some((k, step)) = arg.split_once(':') {
-                    let v = st.config.f64(k, 0.0) + step.parse::<f64>().unwrap_or(0.0) / 1000.0;
-                    st.config.set(k, (v * 1000.0).round() / 1000.0);
+                    let now = (st.config.f64(k, 0.0) * 1000.0).round() as i64;
+                    let to = stepped_ms(now, step.parse::<i64>().unwrap_or(0));
+                    st.config.set(k, to as f64 / 1000.0);
                     self.changed(st, player);
                 }
             }
@@ -1216,7 +1217,9 @@ impl SettingsView {
 
     fn button(&mut self, ui: &Ui, rect: Rect, label: &str, key: &str, action: &str, st: ButtonStyle) {
         if widgets::button(ui, rect, ("set-btn", action), label, key, st).clicked() {
-            self.acts.push(action.to_string());
+            // (a click with Shift held steps 1 ms, as the keys do: "5 ms a step, Shift for 1 ms")
+            let shift = ui.input(|i| i.modifiers.shift);
+            self.acts.push(shifted(action, shift));
         }
     }
 
@@ -1373,6 +1376,12 @@ impl SettingsView {
     ) -> f32 {
         let (h, gap, vw) = (px(46.0), px(10.0), px(96.0));
         let bw = snap((w - vw - 2.0 * gap) / 2.0);
+        // (a narrow button has no room for its key's chip beside the sign: the sign shows, not an ellipsis)
+        let (minus, plus) = if bw >= px(64.0) {
+            (minus, plus)
+        } else {
+            ((minus.0, "", minus.2), (plus.0, "", plus.2))
+        };
         let st = ButtonStyle {
             size: 13.0,
             r: Some(14.0),
@@ -1408,6 +1417,60 @@ impl SettingsView {
             st,
         );
         h
+    }
+}
+
+/// A timing step's action ("ms:display_offset:-5"), made one millisecond in the same direction when Shift is held.
+fn shifted(action: &str, shift: bool) -> String {
+    if shift
+        && let Some(rest) = action.strip_prefix("ms:")
+        && let Some((k, n)) = rest.rsplit_once(':')
+        && let Ok(n) = n.parse::<i64>()
+    {
+        return format!("ms:{k}:{}", n.signum());
+    }
+    action.to_string()
+}
+
+/// A timing value (ms) after a step. A step of the usual 5 ms goes to the next multiple of 5 in its direction, so a
+/// calibrated 46 goes to 45 and then 40 down to 0 (and not 41, 36 ... 1, -4, which never lands on 0); Shift's 1 ms,
+/// and any other step, just add.
+fn stepped_ms(now: i64, step: i64) -> i64 {
+    let grid = i64::from(timing::NUDGE_MS);
+    if step.abs() != grid {
+        now + step
+    } else if step > 0 {
+        now.div_euclid(grid) * grid + grid
+    } else {
+        -((-now).div_euclid(grid) * grid + grid)
+    }
+}
+
+#[cfg(test)]
+mod step_tests {
+    use super::*;
+
+    #[test]
+    fn five_ms_steps_land_on_the_grid_and_shift_steps_one() {
+        // down from a calibrated 46: 45, 40 ... 0, -5; up from -3: 0, 5
+        assert_eq!(stepped_ms(46, -5), 45);
+        assert_eq!(stepped_ms(45, -5), 40);
+        assert_eq!(stepped_ms(5, -5), 0);
+        assert_eq!(stepped_ms(0, -5), -5);
+        assert_eq!(stepped_ms(-3, 5), 0);
+        assert_eq!(stepped_ms(-3, -5), -5);
+        assert_eq!(stepped_ms(46, 5), 50);
+        assert_eq!(stepped_ms(0, 5), 5);
+        // a Shift step, and the keys', just add
+        assert_eq!(stepped_ms(46, -1), 45);
+        assert_eq!(stepped_ms(1, -1), 0);
+        assert_eq!(stepped_ms(0, 1), 1);
+        // a click with Shift held steps 1 ms in the same direction; without, it is as it was
+        assert_eq!(shifted("ms:display_offset:-5", true), "ms:display_offset:-1");
+        assert_eq!(shifted("ms:input_offset:5", true), "ms:input_offset:1");
+        assert_eq!(shifted("ms:display_offset:-5", false), "ms:display_offset:-5");
+        // (not a timing step: left alone)
+        assert_eq!(shifted("vol:-0.1", true), "vol:-0.1");
     }
 }
 

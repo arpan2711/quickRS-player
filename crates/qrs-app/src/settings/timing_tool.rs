@@ -4,10 +4,13 @@
 //! Since P38.4 (D159) the step opens on the play-along (`play_along.rs`: a tiny tune on a tab, which sets the
 //! delay from the notes); what's below is its "Advanced: measure with clicks" (`TimingTool::advanced`).
 //!
-//!     1 YOUR TIMING     strum a muted chord (a bass: pluck the open E) on every click (100 bpm, 4 clicks in, 16
-//!                       that count): Guitar / Bass delay (`input_offset`, shown as the delay: -input_offset, D132)
-//!     2 SCREEN TIMING   no sound: strum as each gem crosses the line: Screen (`display_offset`)
-//!     FINE-TUNE         click and gems together, live; the delay and Screen in 5 ms steps (Shift: 1 ms), the last
+//!     1 YOUR TIMING     strum a muted chord (a bass: pluck the open E) on every click (133 bpm, 4 clicks in, then
+//!                       on until the estimate is precise enough: 16 strums at least, 42 clicks at most; what it says
+//!                       along the way is about how steady the strums are, never early or late, and the strip is
+//!                       centred on your own middle): Guitar / Bass delay (`input_offset`, shown as the delay:
+//!                       -input_offset, D132)
+//!     2 SCREEN TIMING   no sound: strum the moment each dot fills the ring: Screen (`display_offset`)
+//!     FINE-TUNE         click and dots together, live; the delay and Screen in 5 ms steps (Shift: 1 ms), the last
 //!                       strums as they'd score
 //!
 //! The clicks are the jam's (`Engine::jam_play`): they are heard on the jam's clock, which the engine stamps with
@@ -33,7 +36,7 @@ use qrs_ui::widgets::{self, ButtonStyle};
 use super::timing::{delay_label, ms_label};
 use super::{SettingsView, centre_y, line_h, snap};
 use crate::state::AppState;
-use crate::timing_cal::{self as tc, COUNT_IN, Record, SCORED};
+use crate::timing_cal::{self as tc, COUNT_IN, Record};
 use qrs_analysis::instrument::Instrument;
 
 /// What a run is measuring.
@@ -41,7 +44,7 @@ use qrs_analysis::instrument::Instrument;
 pub(super) enum Mode {
     /// Strum on the clicks.
     Guitar,
-    /// No sound: strum as the gems cross the line.
+    /// No sound: strum the moment each dot fills the ring.
     Screen,
     /// Click and gems together, until stopped: the fine-tune.
     Along,
@@ -65,6 +68,11 @@ pub(super) struct Live {
     plucks: Vec<f64>,
     /// The fine-tune's last strums as they'd score (s, + late).
     recent: VecDeque<f64>,
+    /// Where a click-tool run stands as of the last frame: the strums so far, what it says, whether it is done.
+    track: Option<tc::Track>,
+    /// What it is saying and since when: a message of one kind holds for a second before another kind replaces it
+    /// (the counts in "about 6 more" change every strum, and do not wait).
+    said: Option<(tc::Say, Instant)>,
     pub started: Instant,
     /// Screenshots: the beat it's held on.
     staged_beat: Option<f64>,
@@ -113,9 +121,17 @@ impl Live {
             saved: Some(saved),
             plucks: Vec::new(),
             recent: VecDeque::new(),
+            track: None,
+            said: None,
             started: Instant::now(),
             staged_beat: None,
         }
+    }
+
+    /// The strums so far, about how many it will take, and what it says.
+    fn progress(&self) -> Option<(usize, usize, tc::Say)> {
+        let t = self.track?;
+        Some((t.n, t.total, self.said.map_or(t.say, |(s, _)| s)))
     }
 
     /// The beat heard now (negative in the count-in).
@@ -158,8 +174,9 @@ pub(super) struct TimingTool {
     /// The delay (`input_offset`) and Screen as they were before this visit (Undo).
     pub was: Option<(f64, f64)>,
     pub live: Option<Live>,
-    /// The last thing it said (why a run can't be trusted, what was set).
+    /// The last thing it said (why a run can't be trusted, what was set), and whether it is a problem.
     note: Option<String>,
+    note_bad: bool,
     /// The play-along (P38.4, the step's default) and whether the click tool shows instead (Advanced).
     pub play: super::play_along::PlayAlong,
     pub advanced: bool,
@@ -171,16 +188,42 @@ pub(super) struct TimingTool {
     staged_result: bool,
 }
 
-/// What a screen run set, in a line that says why it's what's left (P37.6a, review 3 #4): the gems looked `total`
-/// late, `own` of it the instrument's delay (run 1), so the picture moves by the rest.
-fn screen_note(inst: Instrument, v: f64, was: f64, total: f64, own: f64) -> String {
+/// "27 ms early" / "12 ms late" / "on time" for a pluck's offset (s, + late).
+fn early_late(secs: f64) -> String {
+    let ms = (secs * 1000.0).round();
+    if ms == 0.0 {
+        "on time".into()
+    } else if ms < 0.0 {
+        format!("{:.0} ms early", -ms)
+    } else {
+        format!("{ms:.0} ms late")
+    }
+}
+
+/// What a screen run set, said so that it makes sense: `v` the new Screen setting, `was` the old one, `total` how
+/// far your strums landed from the dots and `own` how far they land from the clicks (both s, + late: `own` is the
+/// run 1 measurement, and is what your playing is like before any screen is in the way). What's left, `total - own`,
+/// is the screen: strumming later on the dots than on the sound means the picture shows each dot late, so Screen
+/// (`display_offset`, + draws the picture further on) draws it that much sooner. The run drew the dots with the old
+/// Screen in place, so what is left is on top of it ("still"). Two lines at most: it shows under the cards, where
+/// the room is short.
+fn screen_note(_inst: Instrument, v: f64, was: f64, total: f64, own: f64) -> String {
+    let rest = total - own;
+    let ms = (rest * 1000.0).round().abs();
+    let still = if was.abs() >= 0.0005 { "still " } else { "" };
+    let verdict = if ms < 3.0 {
+        "so your screen keeps up with the sound and the picture stays as it is.".to_string()
+    } else if rest > 0.0 {
+        format!("so the screen is {still}{ms:.0} ms behind the sound, and quickRS now draws it {ms:.0} ms sooner.")
+    } else {
+        format!("so the screen is {still}{ms:.0} ms ahead of the sound, and quickRS now draws it {ms:.0} ms later.")
+    };
     format!(
-        "Set Screen {} (was {}): the gems were {:.0} ms late, {:.0} of it your {}'s delay; the picture moves the rest.",
+        "Screen set to {} (was {}). To the dots you strummed {}, to the clicks alone {}: {verdict}",
         ms_label(v),
         ms_label(was),
-        total * 1000.0,
-        own * 1000.0,
-        inst.noun()
+        early_late(total),
+        early_late(own),
     )
 }
 
@@ -214,6 +257,8 @@ impl TimingTool {
             },
             doubles: 0,
             strays: 0,
+            // (a few strums round the offset, for the strip of a done run)
+            residuals: (0..n).map(|i| off + 0.004 * ((i % 5) as f64 - 2.0)).collect(),
             problem: None,
         };
         match what {
@@ -234,6 +279,8 @@ impl TimingTool {
                         .map(|(i, o)| clicks[COUNT_IN + i] + o)
                         .collect(),
                     recent: VecDeque::new(),
+                    track: None,
+                    said: None,
                     started: Instant::now(),
                     staged_beat: Some(8.06),
                 });
@@ -261,6 +308,7 @@ impl TimingTool {
         self.play.stop();
     }
 }
+
 
 /// A trusted guitar run (the click tool's or the play-along's): the delay set from it (`input_offset = -median`)
 /// and the run kept in config.json `timing_cal` with the devices it was measured on. Returns the new
@@ -421,16 +469,42 @@ impl SettingsView {
             }
         }
         let beat = live.beat();
-        let timed_out = live.started.elapsed().as_secs_f64() > (COUNT_IN + SCORED) as f64 * period + 6.0;
-        if live.mode == Mode::Along
-            || (beat < SCORED as f64 - 1.0 + tc::window(period) / period + 0.05 && !timed_out)
-        {
+        let timed_out = live.started.elapsed().as_secs_f64() > (COUNT_IN + tc::MAX_SCORED) as f64 * period + 6.0;
+        if live.mode == Mode::Along {
+            return;
+        }
+        // the run so far, every frame (a few dozen strums): what it says, and whether it has enough. It goes on
+        // from 16 strums until the estimate is precise enough (or it is clear it never will be), and no longer.
+        let m = tc::match_plucks(&tc::clicks_to(tc::MAX_SCORED), &live.plucks, COUNT_IN);
+        let over = ((beat - tc::window(period) / period).floor() + 1.0).clamp(0.0, tc::MAX_SCORED as f64) as usize;
+        let tr = tc::track(&m.residuals, &m.hit_clicks, over);
+        let kind = |s: tc::Say| std::mem::discriminant(&s);
+        live.said = match live.said {
+            // (another kind of message waits out the second the last one has; a verdict does not wait)
+            Some((old, since))
+                if kind(old) != kind(tr.say) && since.elapsed().as_secs_f64() < 1.0 && tr.verdict.is_none() =>
+            {
+                Some((old, since))
+            }
+            Some((old, since)) if kind(old) == kind(tr.say) => Some((tr.say, since)),
+            _ => Some((tr.say, Instant::now())),
+        };
+        live.track = Some(tr);
+        if tr.verdict.is_none() && !timed_out {
             return;
         }
         // the clicks are done: what they say
         let mode = live.mode;
-        let run = tc::measure(&tc::clicks(), &live.plucks, COUNT_IN);
+        // (a screen run's offset holds your own timing as well as the screen's: only its screen share is judged)
+        let screen_run = mode == Mode::Screen;
+        let limit = if screen_run { f64::INFINITY } else { tc::offset_limit(&rt) };
+        let mut run = tc::measure_for(&tc::clicks_to(tc::MAX_SCORED), &live.plucks, COUNT_IN, limit);
+        let screen_rest = run.fit.offset - gm.unwrap_or(0.0);
+        if screen_run && run.ok() && screen_rest.abs() > tc::SCREEN_SANE {
+            run.problem = Some(tc::Problem::TooFar);
+        }
         tool.live = None;
+        tool.note_bad = !run.ok();
         if run.ok() {
             match mode {
                 Mode::Guitar => {
@@ -453,8 +527,10 @@ impl SettingsView {
                 }
                 Mode::Along => {}
             }
+        } else if screen_run && run.problem == Some(tc::Problem::TooFar) {
+            tool.note = Some(inst.say(&tc::screen_too_far_words(screen_rest)));
         } else {
-            tool.note = Some(inst.say(&run.words()));
+            tool.note = Some(inst.say(&run.words_for(screen_run)));
         }
         match mode {
             Mode::Guitar => tool.guitar = Some(run),
@@ -503,12 +579,29 @@ impl SettingsView {
         let pad = px(20.0);
         let hh = Self::h_heading(&ctx);
         let cap_h = line_h(&ctx, 12.0) + px(6.0);
-        let fine_h = 2.0 * pad + hh + cap_h + px(46.0) + px(12.0) + 2.0 * line_h(&ctx, 12.0);
+        let fine_base = 2.0 * pad + hh + cap_h + px(46.0);
+        let fine_full = fine_base + px(12.0) + 2.0 * line_h(&ctx, 12.0);
         // (the note line only takes room when there is a note: the fold leaves the cards little, P38.4)
+        let note_w = area.width() - px(160.0);
+        let note_lines: Vec<String> = tool
+            .note
+            .as_ref()
+            .map(|n| text::wrap(&ctx, n, Style::new(13.0, 700, th.hit), note_w))
+            .unwrap_or_default();
         let note_h = if tool.note.is_some() {
-            line_h(&ctx, 13.0) + px(12.0)
+            note_lines.len().clamp(1, 4) as f32 * line_h(&ctx, 13.0) + px(12.0)
         } else {
             0.0
+        };
+        // (a long note takes the room the fine-tune's two lines of explanation had: they go before the card does)
+        let short = area.height() - fine_full - px(16.0) - note_h < px(200.0);
+        let along_now = tool.live.as_ref().is_some_and(|l| l.mode == Mode::Along);
+        let fine_h = if !short {
+            fine_full
+        } else if along_now {
+            fine_base + px(12.0) + px(28.0) // (the strums' strip is kept)
+        } else {
+            fine_base
         };
         let card_h = (area.height() - fine_h - px(16.0) - note_h).clamp(px(200.0), px(380.0));
         let (a, b) = self.two_cards(&p, area, card_h);
@@ -543,9 +636,9 @@ impl SettingsView {
         // 2 SCREEN TIMING
         let have_m = guitar_m(&tool, st).is_some();
         let screen_words = inst.say(if have_m {
-            "Optional. No sound: strum as each gem crosses the line."
+            "Optional. Silent: strum as each dot fills the ring."
         } else {
-            "Optional, after 1. No sound: strum as gems cross the line."
+            "After 1. Silent: strum as each dot fills the ring."
         });
         self.run_card(
             ui,
@@ -566,17 +659,21 @@ impl SettingsView {
         );
         // what it last said
         let ny = a.max.y + px(12.0);
-        if let Some(n) = &tool.note {
-            let said = |r: &tc::Run| !r.ok() && tool.note.as_deref() == Some(inst.say(&r.words()).as_str());
-            let bad = tool.guitar.as_ref().is_some_and(said) || tool.screen.as_ref().is_some_and(said);
-            text::draw(
-                &p,
-                n,
-                pos2(area.min.x + px(4.0), ny),
-                Align2::LEFT_TOP,
-                Style::new(13.0, 700, if bad { th.late } else { th.hit }),
-                Some(area.width() - px(160.0)),
-            );
+        if tool.note.is_some() {
+            let bad = tool.note_bad;
+            let mut ly = ny;
+            for l in note_lines.iter().take(4) {
+                ly = text::draw(
+                    &p,
+                    l,
+                    pos2(area.min.x + px(4.0), ly),
+                    Align2::LEFT_TOP,
+                    Style::new(13.0, 700, if bad { th.late } else { th.hit }),
+                    None,
+                )
+                .max
+                .y;
+            }
             if tool.was.is_some() && !bad {
                 let bw = widgets::button_width(&ctx, "Undo", "", 13.0, false).max(px(110.0));
                 self.button(
@@ -608,7 +705,7 @@ impl SettingsView {
                 x,
                 f.min.y + pad,
                 Some(f.max.x - pad),
-                &inst.say("Play along: click and gems together, strum and watch your dots"),
+                &inst.say("Play along: click and dots together, strum and watch your dots"),
                 "",
             );
             // (four columns: the delay, the screen, the song sync, Play along; P38.4 added the song sync here)
@@ -678,7 +775,7 @@ impl SettingsView {
                     .unwrap_or_default();
                 let strip = Rect::from_min_size(pos2(x, cy), vec2(f.width() - 2.0 * pad, px(28.0)));
                 dot_strip(&p, strip, &recent);
-            } else {
+            } else if !short {
                 super::caption_lines(
                     &p,
                     &format!(
@@ -702,7 +799,7 @@ impl SettingsView {
     }
 
     /// A run's card: its number and name (and the result at the right), what to do, the lane (the clicks' lamp and
-    /// the gems, live), how far it is and the strums so far, Start.
+    /// the dots, live), how far it is and the strums so far, Start.
     #[allow(clippy::too_many_arguments)]
     fn run_card(
         &mut self,
@@ -744,35 +841,32 @@ impl SettingsView {
         let foot = card.max.y - pad - bh;
         let lane = Rect::from_min_max(
             pos2(x, tr.max.y + px(12.0)),
-            pos2(x + w, foot - px(14.0) - px(18.0) - px(10.0)),
+            pos2(x + w, foot - px(14.0) - px(22.0) - px(10.0)),
         );
         let screen = name.starts_with("SCREEN");
         paint::display(&p, lane, Some(16.0), 3.0);
         match live {
             Some(l) => draw_lane(&p, lane, l, disp),
             None => {
-                let (msg, col) = match result {
-                    Some(r) if r.ok() => (inst.say(&r.words()), th.hit),
-                    Some(r) => (inst.say(&r.words()), th.late),
-                    None => (
-                        if screen {
-                            "About 12 seconds. The clicks stay silent: watch the gems.".to_string()
-                        } else {
-                            inst.say("About 12 seconds: 4 clicks to count you in, then 16 to strum on.")
-                        },
-                        th.caption,
-                    ),
+                // (a result is said under the cards, where it has room to wrap: here only the idle hint)
+                let msg = match result {
+                    Some(_) => String::new(),
+                    None if screen => {
+                        "The clicks stay silent: strum as each dot fills the ring, until it says it has enough."
+                            .to_string()
+                    }
+                    None => inst.say("4 clicks to count you in, then strum on each one until it says it has enough."),
                 };
-                let lines = text::wrap(&ctx, &msg, Style::new(13.0, 700, col), lane.width() - px(36.0));
+                let lines = text::wrap(&ctx, &msg, Style::new(13.0, 700, th.caption), lane.width() - px(36.0));
                 let lh = line_h(&ctx, 13.0);
                 let mut ly = lane.center().y - lines.len() as f32 * lh / 2.0;
-                for l in lines.iter().take(4) {
+                for l in lines.iter().take(4).filter(|_| !msg.is_empty()) {
                     ly = text::draw(
                         &p,
                         l,
                         pos2(lane.center().x, ly),
                         Align2::CENTER_TOP,
-                        Style::new(13.0, 700, col),
+                        Style::new(13.0, 700, th.caption),
                         None,
                     )
                     .max
@@ -784,33 +878,50 @@ impl SettingsView {
         let by = lane.max.y + px(10.0);
         let bar = Rect::from_min_size(pos2(x, by), vec2(w, px(14.0)));
         paint::inset(&p, bar, Some(7.0), 2.0, Fill::Base);
-        let (frac, label) = match live {
+        let (frac, label, status) = match live {
             Some(l) => {
                 let b = l.beat();
                 if b < 0.0 {
-                    (0.0, format!("counting in: {}", (-b).ceil() as i64))
+                    (0.0, format!("counting in: {}", (-b).ceil() as i64), "Get ready…".to_string())
+                } else if let Some((n, total, say)) = l.progress() {
+                    // (the bar is how far to a precise enough estimate: the strums so far of the strums it expects)
+                    (
+                        (n as f32 / total.max(1) as f32).min(1.0),
+                        format!("{n} of about {total} strums"),
+                        say.words(screen),
+                    )
                 } else {
-                    let k = (b.floor() as usize + 1).min(SCORED);
-                    (k as f32 / SCORED as f32, format!("click {k} of {SCORED}"))
+                    (0.0, String::new(), String::new())
                 }
             }
             None => match result {
-                Some(r) => (1.0, format!("{} of {SCORED} clicks", r.fit.n)),
-                None => (0.0, String::new()),
+                Some(r) => (1.0, format!("{} strums", r.fit.n), String::new()),
+                None => (0.0, String::new(), String::new()),
             },
         };
         if frac > 0.0 {
             let fill = Rect::from_min_size(bar.min, vec2((bar.width() * frac).max(px(14.0)), bar.height()));
             p.rect_filled(fill.shrink(px(3.0)), px(4.0), th.accent);
         }
-        text::draw(
+        let lr = text::draw(
             &p,
             &label,
-            pos2(x + w, bar.max.y + px(6.0)),
-            Align2::RIGHT_TOP,
+            pos2(x + w, bar.max.y + px(11.0)),
+            Align2::RIGHT_CENTER,
             Style::new(11.0, 600, th.caption),
             None,
         );
+        if !status.is_empty() {
+            // (what the run says while it goes: about how steady the strums are, never about early or late)
+            text::draw(
+                &p,
+                &status,
+                pos2(x, bar.max.y + px(11.0)),
+                Align2::LEFT_CENTER,
+                Style::new(12.0, 700, th.text),
+                Some((w - lr.width() - px(16.0)).max(px(60.0))),
+            );
+        }
         let label_running = live.is_some();
         let bl = if label_running {
             "Stop"
@@ -833,25 +944,40 @@ impl SettingsView {
                 ..Default::default()
             },
         );
-        // the strums so far (or the run's), -60 .. +60 ms
-        let res: Vec<f64> = match live {
-            Some(l) if l.mode != Mode::Along => {
-                tc::match_plucks(&tc::clicks(), &l.plucks, COUNT_IN).residuals
-            }
-            _ => Vec::new(),
-        };
+        // the strums so far, or the finished run's
         let strip = Rect::from_min_size(
             pos2(x + bw + px(16.0), foot + px(8.0)),
             vec2((w - bw - px(16.0)).max(px(40.0)), px(30.0)),
         );
-        if live.is_some() {
-            dot_strip(&p, strip, &res);
+        match (live, result) {
+            (Some(l), _) if l.mode != Mode::Along => {
+                let res = tc::match_plucks(&tc::clicks_to(tc::MAX_SCORED), &l.plucks, COUNT_IN).residuals;
+                run_strip(&p, strip, &res, None);
+            }
+            (Some(_), _) => dot_strip(&p, strip, &[]),
+            (None, Some(r)) => run_strip(&p, strip, &r.residuals, Some(r.fit.offset)),
+            _ => {}
         }
     }
 }
 
-/// The lane: a click lamp (it flashes on each click; dark in Screen timing) and gems coming down to the line, one
-/// a beat, drawn `disp` ahead (the screen's lag) in Screen timing and the fine-tune.
+/// How long a landing's flash lasts (s).
+const FLASH_S: f64 = 0.30;
+
+/// The flash when a dot lands on the target, or a click sounds: the target burns bright for a moment and a thin
+/// ring spreads out from it, fast at first and then slowing, thinning and fading. All circles round the target's own
+/// centre, so it is round whatever the lane's height; `reach` is how far the ring may spread (a little past the
+/// lane, into the card's margins above and below, as it fades). `age`: seconds since it landed.
+fn landing_flash(p: &egui::Painter, c: egui::Pos2, rad: f32, ring_r: f32, reach: f32, age: f64, color: egui::Color32) {
+    let u = (age / FLASH_S).clamp(0.0, 1.0) as f32;
+    let ease = 1.0 - (1.0 - u).powi(3);
+    let fade = (1.0 - u).powf(1.4);
+    p.circle_filled(c, rad, color.gamma_multiply(0.9 * (1.0 - u).powi(2)));
+    p.circle_stroke(c, ring_r + ease * reach, (px(3.0) * (1.0 - u) + px(1.0), color.gamma_multiply(fade)));
+}
+
+/// The lane: a click lamp (it flashes on each click; dark in Screen timing) and dots coming in to a ring, one a
+/// beat, drawn `disp` ahead (the screen's lag) in Screen timing and the fine-tune.
 fn draw_lane(p: &egui::Painter, lane: Rect, l: &Live, disp: f64) {
     let th = t();
     let beat = l.beat();
@@ -861,26 +987,73 @@ fn draw_lane(p: &egui::Painter, lane: Rect, l: &Live, disp: f64) {
     } else {
         beat + disp / period
     };
-    let line_y = snap(lane.min.y + lane.height() * 0.80);
-    let per_beat = lane.height() * 0.32;
-    let lx = (lane.min.x + px(70.0), lane.max.x - px(70.0));
-    // the gems (not in Guitar timing: there you strum on the sound)
+    // the dots (not in Guitar timing: there you strum on the sound): one a beat, coming in from the right along the
+    // lane (a short lane has the width and not the height) to a ring; strum the moment a dot fills it. The ring
+    // lights as each one arrives (the picture's own, so it moves with Screen like the dots do).
+    let cy = lane.center().y;
+    let rad = (lane.height() * 0.5 - px(6.0)).clamp(px(5.0), px(15.0));
+    let ring_x = lane.min.x + px(96.0);
+    let step = px(150.0);
     if l.mode != Mode::Guitar {
-        let clip = p.with_clip_rect(lane.shrink(px(4.0)));
+        let clip = p.with_clip_rect(lane.shrink(px(3.0)));
         let first = draw_beat.floor() as i64 - 1;
-        for k in first..first + 6 {
-            if k < 0 || (l.mode == Mode::Screen && k >= SCORED as i64) {
+        // how long ago the newest dot reached the ring (s), while its flash lasts
+        let mut age: Option<f64> = None;
+        for k in first..first + 8 {
+            if k < 0 || (l.mode == Mode::Screen && k >= tc::MAX_SCORED as i64) {
                 continue;
             }
-            let y = line_y - (k as f64 - draw_beat) as f32 * per_beat;
-            let r = Rect::from_center_size(pos2(lane.center().x, y), vec2(lx.1 - lx.0, px(14.0)));
-            let past = (k as f64) < draw_beat - 0.1;
-            clip.rect_filled(r, px(7.0), if past { th.track } else { th.accent });
+            let d = k as f64 - draw_beat; // beats still to come (- = gone by)
+            let x = ring_x + d as f32 * step;
+            if x > lane.max.x + rad {
+                continue;
+            }
+            if d <= 0.0 && -d * period <= FLASH_S {
+                age = Some(age.map_or(-d * period, |a: f64| a.min(-d * period)));
+            }
+            // (gone by: dim, and fading out; far ahead: fading in)
+            let c = if d < -0.12 {
+                th.track.gamma_multiply((1.0 + d as f32 * 1.5).clamp(0.0, 1.0))
+            } else {
+                th.accent.gamma_multiply((1.0 - (d as f32 - 3.0) * 0.25).clamp(0.2, 1.0))
+            };
+            clip.circle_filled(pos2(x, cy), rad, c);
         }
+        let ring_c = pos2(ring_x, cy);
+        let ring_r = rad + px(3.0);
+        // (the flash as a dot lands)
+        if let Some(a) = age {
+            let reach = (lane.height() * 0.5 + px(9.0) - ring_r).max(px(6.0));
+            landing_flash(p, ring_c, rad, ring_r, reach, a, th.accent);
+        }
+        p.circle_stroke(ring_c, ring_r, (px(2.0), th.text));
+    }
+    // the lamp (a click's, lit for the first part of each beat; dark in Screen timing), or the count-in's number
+    let lamp = pos2(lane.min.x + px(28.0), cy);
+    if l.mode != Mode::Guitar {
+        let lit = if l.mode == Mode::Screen {
+            0.0
+        } else {
+            (1.0 - (beat - beat.floor()) * 5.0).clamp(0.0, 1.0) as f32
+        };
+        if beat < 0.0 {
+            text::draw(
+                p,
+                &format!("{}", (-beat).ceil() as i64),
+                lamp,
+                Align2::CENTER_CENTER,
+                Style::new(18.0, 800, th.accent),
+                None,
+            );
+        } else if lit > 0.05 {
+            paint::led(p, lamp, 14.0, th.accent.gamma_multiply(0.3 + 0.7 * lit));
+        } else {
+            paint::dot(p, lamp, px(6.0), th.unlit);
+        }
+        return;
     }
     let frac = beat - beat.floor();
     if l.mode == Mode::Guitar {
-        let lit = (1.0 - frac * 4.0).clamp(0.0, 1.0) as f32;
         // (a short lane, as under the open fold: the lamp smaller and its count beside it, P38.4)
         let short = lane.height() < px(110.0);
         let rad = if short {
@@ -894,18 +1067,15 @@ fn draw_lane(p: &egui::Painter, lane: Rect, l: &Live, disp: f64) {
             pos2(lane.center().x, lane.min.y + lane.height() * 0.42)
         };
         paint::dot(p, c, rad, th.unlit);
-        if lit > 0.02 {
-            paint::led(
-                p,
-                c,
-                50.0 * rad / px(30.0),
-                th.accent.gamma_multiply(0.25 + 0.75 * lit),
-            );
+        // (the same round flash as the dots' landing, for each click)
+        if (frac as f64) * period <= FLASH_S {
+            let reach = ((c.y - lane.min.y).min(lane.max.y - c.y) + px(9.0) - rad).max(px(6.0));
+            landing_flash(p, c, rad, rad, reach, frac as f64 * period, th.accent);
         }
         let what = if beat < 0.0 {
             format!("{}", (-beat).ceil() as i64)
         } else {
-            format!("click {}", (beat.floor() as i64 + 1).min(SCORED as i64))
+            format!("click {}", (beat.floor() as i64 + 1).min(tc::MAX_SCORED as i64))
         };
         text::draw(
             p,
@@ -921,27 +1091,47 @@ fn draw_lane(p: &egui::Painter, lane: Rect, l: &Live, disp: f64) {
         );
         return;
     }
-    p.hline(lx.0..=lx.1, line_y, (2.0, th.text));
-    // the lamp: lit for the first part of each beat
-    let lit = if l.mode == Mode::Screen {
-        0.0
-    } else {
-        (1.0 - frac * 5.0).clamp(0.0, 1.0) as f32
-    };
-    let c = pos2(lane.min.x + px(34.0), line_y);
-    if lit > 0.05 {
-        paint::led(p, c, 14.0, th.accent.gamma_multiply(0.3 + 0.7 * lit));
-    } else {
-        paint::dot(p, c, px(6.0), th.unlit);
+}
+
+/// A click run's strums as dots, -100 .. +100 ms. While it runs it is centred on the player's own running middle,
+/// so the dots show how steady the strums are and not how far they are from the click: a player shown that starts to
+/// correct it, and the run would measure the correction and not the setup. Once it is done (`done`: the offset it
+/// found) it is centred on the click, with where the middle fell marked, and says early and late.
+fn run_strip(p: &egui::Painter, strip: Rect, res: &[f64], done: Option<f64>) {
+    let th = t();
+    paint::inset(p, strip, Some(strip.height() / 2.0), 2.0, Fill::Base);
+    let centre = if done.is_some() { 0.0 } else { tc::median_of(res) };
+    let cx = strip.center().x;
+    // (the words at the ends take room: the dots stay inside them, and not over them)
+    let half = strip.width() / 2.0 - px(if done.is_some() { 46.0 } else { 58.0 });
+    let at = |s: f64| cx + (((s - centre) * 1000.0 / 100.0).clamp(-1.0, 1.0) as f32) * half;
+    p.vline(cx, strip.min.y + px(4.0)..=strip.max.y - px(4.0), (1.5, th.caption));
+    if let Some(m) = done {
+        let mx = at(m);
+        p.vline(mx, strip.min.y + px(2.0)..=strip.max.y - px(2.0), (px(2.5), th.accent));
     }
-    // the count-in's number
-    if beat < 0.0 {
+    let n = res.len();
+    for (i, r) in res.iter().enumerate() {
+        let a = 0.35 + 0.65 * (i + 1) as f32 / n.max(1) as f32;
+        let near = (r - done.unwrap_or(centre)).abs() <= 0.020;
+        let col = if near { th.hit } else { th.late };
+        paint::dot(p, pos2(at(*r), centre_y(strip)), px(4.0), col.gamma_multiply(a));
+    }
+    let (lo, hi) = if done.is_some() { ("early", "late") } else { ("earlier", "later") };
+    for (w, al) in [(lo, Align2::LEFT_CENTER), (hi, Align2::RIGHT_CENTER)] {
         text::draw(
             p,
-            &format!("{}", (-beat).ceil() as i64),
-            pos2(lane.max.x - px(36.0), lane.min.y + px(30.0)),
-            Align2::CENTER_CENTER,
-            Style::new(30.0, 800, th.accent_ink),
+            w,
+            pos2(
+                if al == Align2::LEFT_CENTER {
+                    strip.min.x + px(10.0)
+                } else {
+                    strip.max.x - px(10.0)
+                },
+                centre_y(strip),
+            ),
+            al,
+            Style::new(10.0, 600, th.caption),
             None,
         );
     }
@@ -1119,5 +1309,32 @@ impl SettingsView {
             13.0,
             2,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_screen_note_makes_sense_of_the_numbers() {
+        let g = Instrument::Guitar;
+        // the owner's run: strums 15 ms early on the dots, 27 ms early on the clicks: the screen runs 12 ms behind
+        let w = screen_note(g, 0.012, 0.0, -0.015, -0.027);
+        assert!(w.starts_with("Screen set to +12 ms (was 0 ms)."), "{w}");
+        assert!(w.contains("15 ms early") && w.contains("27 ms early"), "{w}");
+        assert!(w.contains("12 ms behind the sound") && w.contains("12 ms sooner"), "{w}");
+        assert!(!w.contains("still"), "{w}");
+        // with a Screen already set, the run drew the dots with it: what is left is "still" there
+        let w = screen_note(g, 0.020, 0.008, 0.010, -0.002);
+        assert!(w.contains("still 12 ms behind") && w.contains("+8 ms"), "{w}");
+        // a screen that keeps up
+        let w = screen_note(g, 0.0, 0.0, 0.020, 0.019);
+        assert!(w.contains("keeps up with the sound"), "{w}");
+        // the other way
+        let w = screen_note(g, -0.01, 0.0, 0.010, 0.020);
+        assert!(w.contains("10 ms ahead of the sound") && w.contains("10 ms later"), "{w}");
+        // short enough for two lines under the cards
+        assert!(screen_note(g, -0.011, -0.050, 0.019, -0.020).chars().count() < 230);
     }
 }

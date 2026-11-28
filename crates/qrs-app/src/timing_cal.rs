@@ -29,17 +29,38 @@ pub fn hold_onsets(on: bool) {
 }
 
 /// The click's tempo (bpm), the count-in and the clicks that count.
-pub const BPM: f64 = 100.0;
+pub const BPM: f64 = 133.0;
 pub const COUNT_IN: usize = 4;
+/// The fewest strums a run counts (it goes on from here until the estimate is good enough, up to `MAX_SCORED`).
 pub const SCORED: usize = 16;
+/// The most clicks a run goes on for: at 133 bpm about 19 seconds after the count-in.
+pub const MAX_SCORED: usize = 42;
 /// Clicks that must be hit, of `SCORED`.
 pub const NEED: usize = 12;
-/// The estimate's 95% interval (the median's: 1.96 x 1.253 x spread / √n) must be within this (s): a 12 ms spread over
-/// 16 strums gives ±7.5 ms, a 40 ms one ±25 ms. Ten is a tenth of the scorer's perfect window (D95).
-pub const MAX_CI: f64 = 0.010;
+/// The estimate's 95% interval (the median's: 1.96 x 1.253 x spread / √n) must be within this (s): a 25 ms spread over
+/// 16 strums gives ±15 ms, a 40 ms one ±25 ms. Twenty is a fifth of the scorer's perfect window (D95): it was ten,
+/// which needed a spread under about 16 ms over 15 notes, tighter than players keep in a song (30-45 ms), so
+/// players were turned away again and again, and only a lucky, unusually even run (often one steady habit of
+/// playing ahead of or behind the click) was ever accepted.
+pub const MAX_CI: f64 = 0.020;
+/// A measured offset beyond this (s) is not set by itself: no ordinary device delays a guitar's signal by that much
+/// after the engine has taken off what the driver reports, so it is more likely how the run was played (reading
+/// the tab ahead of the click, say) than the setup, and a song would score it wrongly (a take of 31 s was 150 ms
+/// late after a run of -116 ms set the delay).
+pub const SANE_OFFSET: f64 = 0.060;
+/// A screen run's result beyond this (s: the screen's own share, what is left of the strums' offset on the dots after
+/// the player's own timing on the clicks is taken off) is not set by itself: a screen that lags this much is rare, and
+/// most often the dots were struck to the beat of the song's habit, or the guitar's own timing (run 1) is out.
+pub const SCREEN_SANE: f64 = 0.120;
 /// The offsets' ranges (s).
 pub const GUITAR_RANGE: (f64, f64) = (-0.25, 0.25);
 pub const SCREEN_RANGE: (f64, f64) = (-0.05, 0.25);
+
+/// How far a measured offset may be before it is held back, on this route ("input -> output (mode)"): a slow output
+/// (Bluetooth, a TV: `slow_output`) really does add a delay no driver reports, so it may be as large as the range.
+pub fn offset_limit(route: &str) -> f64 {
+    if slow_output(route) { GUITAR_RANGE.1 } else { SANE_OFFSET }
+}
 
 /// The click period (s).
 pub fn period() -> f64 {
@@ -49,7 +70,12 @@ pub fn period() -> f64 {
 /// The click times (s from the first click of the count-in): `COUNT_IN + SCORED` of them; the first `COUNT_IN`
 /// don't count.
 pub fn clicks() -> Vec<f64> {
-    (0..COUNT_IN + SCORED).map(|k| k as f64 * period()).collect()
+    clicks_to(SCORED)
+}
+
+/// The click times for a run of up to `scored` clicks that count.
+pub fn clicks_to(scored: usize) -> Vec<f64> {
+    (0..COUNT_IN + scored).map(|k| k as f64 * period()).collect()
 }
 
 /// A pluck further than this from its click is a stray, not a late or early hit (s): under half a period, so a
@@ -63,6 +89,8 @@ pub fn window(t: f64) -> f64 {
 pub struct Matched {
     /// The first pluck's residual (pluck - click, s) per click hit.
     pub residuals: Vec<f64>,
+    /// Which scored click (0 = the first after the count-in) each of those residuals is of.
+    pub hit_clicks: Vec<usize>,
     /// Plucks after the first on the same click.
     pub doubles: usize,
     /// Plucks near no click (or in the count-in).
@@ -96,9 +124,15 @@ pub fn match_plucks(clicks: &[f64], plucks: &[f64], skip: usize) -> Matched {
         } else {
             taken[k] = true;
             m.residuals.push(r);
+            m.hit_clicks.push(k - skip);
         }
     }
     m
+}
+
+/// The median of `v` (0 for none).
+pub fn median_of(v: &[f64]) -> f64 {
+    median(v)
 }
 
 fn median(v: &[f64]) -> f64 {
@@ -166,6 +200,19 @@ pub enum Problem {
     Missed,
     /// The strums too far apart to say where they land.
     Scattered,
+    /// Steady, but further off than a setup's delay can be (`SANE_OFFSET`): not set by itself.
+    TooFar,
+}
+
+/// What to say when a steady run is further off than the route's limit (`offset_limit`): `offset` is its median (s, + late).
+pub fn too_far_words(offset: f64) -> String {
+    let ms = (offset * 1000.0).abs().round();
+    let dir = if offset >= 0.0 { "behind" } else { "ahead of" };
+    format!(
+        "You played about {ms:.0} ms {dir} the beat: more than a setup normally delays you, so your delay is left \
+         as it was. Try again, listening to the click and drums; if your setup really is that slow, set the delay \
+         by hand in Fine-tune."
+    )
 }
 
 /// A run's result.
@@ -174,6 +221,8 @@ pub struct Run {
     pub fit: Fit,
     pub doubles: usize,
     pub strays: usize,
+    /// Every strum's offset (s, + late: the first on each click it hit, in order), as measured.
+    pub residuals: Vec<f64>,
     /// None: trusted.
     pub problem: Option<Problem>,
 }
@@ -183,45 +232,199 @@ impl Run {
         self.problem.is_none()
     }
 
-    /// What it says, in a line (the result's words).
+    /// What it says, in a line (the result's words), for the guitar run (strum on the clicks).
     pub fn words(&self) -> String {
+        self.words_for(false)
+    }
+
+    /// `words`, for the run `screen` (strum as each dot fills the ring: silent, so no clicks to say anything about).
+    pub fn words_for(&self, screen: bool) -> String {
         let ms = (self.fit.offset * 1000.0).round();
         let dir = if ms >= 0.0 { "late" } else { "early" };
+        let (things, on) = if screen {
+            ("dots", "as each dot fills the ring")
+        } else {
+            ("clicks", "on every click")
+        };
         match self.problem {
             None => format!(
-                "Your strums landed {:.0} ms {dir} on average ({} of {SCORED} clicks, ±{:.0} ms).",
+                "Your strums landed {:.0} ms {dir} on average (±{:.0} ms; {} strums, {:.0} ms apart).",
                 ms.abs(),
+                (self.fit.ci * 1000.0).max(1.0),
                 self.fit.n,
-                (self.fit.ci * 1000.0).max(1.0)
+                self.fit.spread * 1000.0
             ),
             Some(Problem::Missed) if self.doubles >= 3 => format!(
-                "Only {} of {SCORED} clicks counted, and {} strums counted twice: lower the note sensitivity \
-                 (Settings > Sound), then try again.",
+                "Only {} of {SCORED} {things} counted, and {} strums counted twice: lower the note sensitivity (Settings > Sound), then try again.",
                 self.fit.n, self.doubles
             ),
             Some(Problem::Missed) => format!(
-                "Only {} of {SCORED} clicks heard a strum. Strum a little harder, on every click, or raise the \
-                 note sensitivity (Settings > Sound), then try again.",
+                "Only {} of {SCORED} {things} heard a strum. Strum a little harder, {on}, or raise the note sensitivity (Settings > Sound), then try again.",
                 self.fit.n
             ),
             Some(Problem::Scattered) => format!(
-                "The strums were spread too widely to tell ({:.0} ms apart). Strum short and muted, right on the \
-                 click, and try again.",
-                self.fit.spread * 1000.0
+                "The strums were spread too widely to tell ({:.0} ms apart). Strum short and muted, {}, and try again.",
+                self.fit.spread * 1000.0,
+                if screen { "the moment each dot fills the ring" } else { "right on the click" }
             ),
+            Some(Problem::TooFar) => too_far_words(self.fit.offset),
+        }
+    }
+}
+
+/// What to say when a screen run says the screen lags (+) or runs ahead of (-) the sound by more than `SCREEN_SANE`:
+/// `rest` is the screen's share (s).
+pub fn screen_too_far_words(rest: f64) -> String {
+    let ms = (rest * 1000.0).abs().round();
+    let dir = if rest >= 0.0 { "behind" } else { "ahead of" };
+    format!(
+        "Your screen looks about {ms:.0} ms {dir} the sound: more than a screen usually is, so Screen is left as \
+         it was. Strum the moment each dot fills the ring (the clicks are silent here) and try again; if it is \
+         really that far off, set Screen by hand in Fine-tune."
+    )
+}
+
+// -- a run under way: what it says, and when it has enough ---------------------------------------------------------
+
+/// What a run says while the strums come in. Never about early or late: a player told that starts to correct it,
+/// and the calibration would then measure the correction and not the setup. Only how steady the strums are and how
+/// many more it needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Say {
+    Listening,
+    /// Three clicks in a row with no strum.
+    Missing,
+    /// About this many more strums.
+    Good(usize),
+    LockingIn,
+    Uneven,
+    Drifting,
+    Erratic,
+}
+
+/// How a run ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Enough strums, steady and precise enough: judge it now.
+    Accept,
+    /// Too uneven to ever be precise enough in `MAX_SCORED` clicks: stop and say so (it would only waste time).
+    Erratic,
+    /// The clicks ran out, or too few strums came: judge it as it stands.
+    Out,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Track {
+    pub say: Say,
+    pub verdict: Option<Verdict>,
+    /// Strums counted so far, and about how many it will take (at least `SCORED`, at most `MAX_SCORED`).
+    pub n: usize,
+    pub total: usize,
+    pub spread: f64,
+}
+
+/// A spread (s) this wide after 12 strums ends the run.
+pub const ERRATIC_SPREAD: f64 = 0.080;
+/// Beyond this (s) the strums are called a bit uneven (and the run still goes on).
+pub const UNEVEN_SPREAD: f64 = 0.060;
+
+/// Whether the latest strums sit away from the earlier ones (a tiring or speeding player): the median of the last 6
+/// against the rest, further than 30 ms and further than 3 standard errors.
+fn drifting(res: &[f64], spread: f64) -> bool {
+    let n = res.len();
+    if n < 12 {
+        return false;
+    }
+    let (before, recent) = res.split_at(n - 6);
+    let se = spread * 1.25 * (1.0 / 6.0 + 1.0 / before.len() as f64).sqrt();
+    (median(recent) - median(before)).abs() > (3.0 * se).max(0.030)
+}
+
+/// The run so far: `res` the strums' offsets in order, `hits` the click each is of, `passed` how many scored clicks
+/// are over. What it says, and whether it is done.
+pub fn track(res: &[f64], hits: &[usize], passed: usize) -> Track {
+    let n = res.len();
+    let f = fit(res);
+    let miss_run = match hits.last() {
+        Some(&k) => passed.saturating_sub(k + 1),
+        None => passed,
+    };
+    let need = if n >= 4 {
+        ((1.96 * 1.253 * f.spread / MAX_CI).powi(2)).ceil() as usize
+    } else {
+        SCORED
+    };
+    let total = need.clamp(SCORED, MAX_SCORED).max(n);
+    // (the estimate has stopped moving: without the last 4 strums it is within 10 ms)
+    let settled = n < 5 || (fit(&res[..n - 4]).offset - f.offset).abs() < 0.010;
+    let drift = drifting(res, f.spread);
+    let (say, mut verdict) = if n >= SCORED && f.ci <= MAX_CI && settled && !drift {
+        (Say::LockingIn, Some(Verdict::Accept))
+    } else if (n >= 12 && f.spread > ERRATIC_SPREAD) || (n >= SCORED && need > MAX_SCORED) {
+        (Say::Erratic, Some(Verdict::Erratic))
+    } else if miss_run >= 3 {
+        (Say::Missing, None)
+    } else if n < 6 {
+        (Say::Listening, None)
+    } else if drift {
+        (Say::Drifting, None)
+    } else if f.spread > UNEVEN_SPREAD {
+        (Say::Uneven, None)
+    } else if total > n {
+        (Say::Good(total - n), None)
+    } else {
+        (Say::LockingIn, None)
+    };
+    if verdict.is_none() && (passed >= MAX_SCORED || (passed >= 24 && n < 10)) {
+        verdict = Some(Verdict::Out);
+    }
+    Track {
+        say,
+        verdict,
+        n,
+        total,
+        spread: f.spread,
+    }
+}
+
+impl Say {
+    /// The words (`screen`: the run is silent, the strums are to the dots).
+    pub fn words(self, screen: bool) -> String {
+        match self {
+            Say::Listening => "Listening…".into(),
+            Say::Missing => {
+                if screen {
+                    "Strum with every dot.".into()
+                } else {
+                    "Strum on every click.".into()
+                }
+            }
+            Say::Good(more) if more >= 2 => format!("Good timing! About {more} more."),
+            Say::Good(_) => "Good timing! Almost there.".into(),
+            Say::LockingIn => "Locking in…".into(),
+            Say::Uneven => "A little uneven: short and steady, keep going.".into(),
+            Say::Drifting => "Your timing is drifting…".into(),
+            Say::Erratic => "Timing too erratic to pin down: try again.".into(),
         }
     }
 }
 
 /// Plucks against clicks: the estimate, and whether it's trusted (at least `NEED` clicks hit, its interval within
-/// `MAX_CI`).
+/// `MAX_CI`, its size within `SANE_OFFSET`).
 pub fn measure(clicks: &[f64], plucks: &[f64], skip: usize) -> Run {
+    measure_for(clicks, plucks, skip, SANE_OFFSET)
+}
+
+/// `measure`, with the size limit of the route (`offset_limit`).
+pub fn measure_for(clicks: &[f64], plucks: &[f64], skip: usize, limit: f64) -> Run {
     let m = match_plucks(clicks, plucks, skip);
     let f = fit(&m.residuals);
     let problem = if f.n < NEED {
         Some(Problem::Missed)
     } else if f.ci > MAX_CI {
         Some(Problem::Scattered)
+    } else if f.offset.abs() > limit {
+        Some(Problem::TooFar)
     } else {
         None
     };
@@ -229,6 +432,7 @@ pub fn measure(clicks: &[f64], plucks: &[f64], skip: usize) -> Run {
         fit: f,
         doubles: m.doubles,
         strays: m.strays,
+        residuals: m.residuals,
         problem,
     }
 }
@@ -347,6 +551,15 @@ pub fn offer(hit_dts: &[f64]) -> Option<f64> {
     let m = median(hit_dts);
     let s = spread(hit_dts, m);
     (m.abs() > 0.020 && s < 0.030).then(|| ms_round(-m))
+}
+
+/// After a take (the song's notes, played to what you hear): when the timed notes sit one way, the amount to add to
+/// `input_offset` (s) to centre them. At least 30 timed notes, the
+/// median 15 ms or more off (below that it is the player's feel, and inside the noise), the spread (standard
+/// deviation, as the report gives it) under 70 ms. A take is a better witness than the calibrator: 30-60 notes of
+/// the actual song, played as you play it.
+pub fn take_offer(n: usize, median_ms: f64, spread_ms: f64) -> Option<f64> {
+    (n >= 30 && median_ms.abs() >= 15.0 && spread_ms < 70.0).then(|| ms_round(-median_ms / 1000.0))
 }
 
 // -- the note check's diagnosis (P1.3) ---------------------------------------------------------------------------
@@ -524,6 +737,178 @@ mod tests {
     }
 
     #[test]
+    fn an_ordinary_human_spread_is_accepted() {
+        // 20 ms apart is a steady player (a song's takes run 30-45 ms): it used to be turned away
+        for seed in 1..8 {
+            let run = measure(&clicks(), &plucks(-0.012, 0.020, seed), COUNT_IN);
+            assert!(run.ok(), "seed {seed}: {run:?}");
+            assert!(run.fit.ci <= MAX_CI);
+            // the words say how sure it is
+            assert!(run.words().contains("ms early") && run.words().contains('±'), "{}", run.words());
+        }
+    }
+
+    #[test]
+    fn a_steady_but_enormous_offset_is_held_back_not_set() {
+        // -116 ms from a steady player: not a device delay, so nothing is set
+        let run = measure(&clicks(), &plucks(-0.116, 0.008, 3), COUNT_IN);
+        assert_eq!(run.problem, Some(Problem::TooFar), "{run:?}");
+        assert!(!run.ok());
+        let w = run.words();
+        assert!(w.contains(" ms ahead of the beat") && w.contains("about 11"), "{w}");
+        assert!(w.contains("left as it was"), "{w}");
+        // just inside the limit is set
+        assert!(measure(&clicks(), &plucks(0.055, 0.008, 3), COUNT_IN).ok());
+        assert!(measure(&clicks(), &plucks(-0.055, 0.008, 3), COUNT_IN).ok());
+        // a slow output (Bluetooth) is allowed its real delay
+        let slow = offset_limit("Guitar -> Headphones (WH-1000XM4 Hands-Free AG Audio) (WASAPI shared)");
+        assert!(measure_for(&clicks(), &plucks(0.150, 0.008, 3), COUNT_IN, slow).ok());
+        assert_eq!(offset_limit("Katana -> Speakers (Realtek(R) Audio) (WASAPI exclusive)"), SANE_OFFSET);
+    }
+
+    #[test]
+    fn the_screen_run_never_talks_about_clicks() {
+        // the screen run is silent: its words are about the dots, whatever went wrong
+        for run in [
+            measure(&clicks(), &plucks(0.0, 0.040, 7), COUNT_IN),
+            measure(&clicks(), &plucks(0.012, 0.004, 3)[..10], COUNT_IN),
+        ] {
+            let w = run.words_for(true);
+            assert!(!w.contains("click"), "{w}");
+            assert!(w.contains("dot"), "{w}");
+            // (and the guitar run's own words are as they were)
+            assert!(run.words().contains("click"), "{}", run.words());
+        }
+        let w = screen_too_far_words(0.15);
+        assert!(w.contains("150 ms behind the sound") && w.contains("silent"), "{w}");
+        assert!(!w.contains("listening") && !w.contains("drums"), "{w}");
+        assert!(screen_too_far_words(-0.15).contains("ahead of the sound"));
+    }
+
+    /// A run of `strums` clicks played with `off` + `sd` jitter, `shift` added from strum `shift_at` on: the tracker
+    /// after every click, until it says it is done. (The strums so far, what it said last, its verdict.)
+    fn simulate(off: f64, sd: f64, seed: u64, shift: Option<(usize, f64)>) -> (usize, Say, Option<Verdict>) {
+        let mut r = Rng(seed);
+        let (mut res, mut hits) = (Vec::new(), Vec::new());
+        let mut last = track(&res, &hits, 0);
+        for j in 0..MAX_SCORED {
+            let extra = shift.map_or(0.0, |(at, d)| if j >= at { d } else { 0.0 });
+            res.push(off + extra + r.normal(sd));
+            hits.push(j);
+            last = track(&res, &hits, j + 1);
+            if last.verdict.is_some() {
+                return (j + 1, last.say, last.verdict);
+            }
+        }
+        (MAX_SCORED, last.say, last.verdict)
+    }
+
+    #[test]
+    fn a_run_goes_on_until_it_is_precise_enough_and_no_longer() {
+        // a steady player is done at the minimum
+        for seed in 1..9 {
+            let (n, _, v) = simulate(-0.027, 0.012, seed, None);
+            assert_eq!(v, Some(Verdict::Accept), "seed {seed}");
+            assert!((SCORED..=SCORED + 4).contains(&n), "seed {seed}: {n} strums");
+        }
+        // the owner's 40 ms spread is accepted before the cap: the old fixed 16 turned it away
+        for seed in 1..9 {
+            let (n, _, v) = simulate(-0.015, 0.040, seed, None);
+            assert_eq!(v, Some(Verdict::Accept), "seed {seed}: {n} strums");
+            assert!(n <= MAX_SCORED, "seed {seed}: {n} strums");
+        }
+        // the estimate it ends with is the right one, for everyone it accepts
+        let mut r = Rng(5);
+        let (mut res, mut hits) = (Vec::new(), Vec::new());
+        for j in 0..MAX_SCORED {
+            res.push(0.031 + r.normal(0.035));
+            hits.push(j);
+            if track(&res, &hits, j + 1).verdict == Some(Verdict::Accept) {
+                break;
+            }
+        }
+        assert!((fit(&res).offset - 0.031).abs() < 0.025, "{}", fit(&res).offset);
+    }
+
+    #[test]
+    fn a_hopeless_run_stops_early_and_says_so() {
+        // 100 ms apart: no 42 clicks would make it precise: it ends at 12 strums, not 42
+        for seed in 1..6 {
+            let (n, say, v) = simulate(0.0, 0.100, seed, None);
+            assert_eq!(v, Some(Verdict::Erratic), "seed {seed}");
+            assert_eq!(say, Say::Erratic);
+            assert!(n <= 16, "seed {seed}: {n} strums");
+        }
+        // 60 ms apart would need 55 strums: stopped at 16 instead of making the player strum 42
+        let (n, _, v) = simulate(0.0, 0.065, 3, None);
+        assert_eq!(v, Some(Verdict::Erratic));
+        assert!(n <= 20, "{n}");
+    }
+
+    #[test]
+    fn the_words_follow_the_strums_and_never_name_a_direction() {
+        // the first strums: listening
+        let t = track(&[0.01, -0.02, 0.0], &[0, 1, 2], 3);
+        assert_eq!(t.say, Say::Listening);
+        // nothing for three clicks
+        let t = track(&[0.01, -0.02, 0.0, 0.01, 0.0, 0.02, 0.01], &[0, 1, 2, 3, 4, 5, 6], 11);
+        assert_eq!(t.say, Say::Missing);
+        // a drift: 14 steady strums, then six 60 ms later
+        let mut res: Vec<f64> = (0..14).map(|k| if k % 2 == 0 { 0.008 } else { -0.008 }).collect();
+        res.extend([0.060; 6]);
+        let hits: Vec<usize> = (0..res.len()).collect();
+        assert_eq!(track(&res, &hits, res.len()).say, Say::Drifting);
+        // a first-half-versus-second-half jump in the simulated run shows up too
+        let (_, say, _) = simulate(0.0, 0.010, 4, Some((10, 0.07)));
+        assert!(matches!(say, Say::Drifting | Say::LockingIn | Say::Good(_) | Say::Uneven | Say::Erratic), "{say:?}");
+        // good timing counts down
+        let t = track(&[0.004, -0.006, 0.002, 0.0, -0.003, 0.005, -0.001], &[0, 1, 2, 3, 4, 5, 6], 7);
+        assert!(matches!(t.say, Say::Good(m) if m >= 2), "{t:?}");
+        // no wording says early or late
+        for say in [
+            Say::Listening,
+            Say::Missing,
+            Say::Good(5),
+            Say::Good(1),
+            Say::LockingIn,
+            Say::Uneven,
+            Say::Drifting,
+            Say::Erratic,
+        ] {
+            for screen in [false, true] {
+                let w = say.words(screen).to_lowercase();
+                assert!(!w.contains("early") && !w.contains("late") && !w.contains("ahead"), "{w}");
+            }
+        }
+        // the silent run's words are about dots
+        assert!(Say::Missing.words(true).contains("dot") && Say::Missing.words(false).contains("click"));
+    }
+
+    #[test]
+    fn the_clicks_run_out_or_too_few_strums_end_it_as_it_stands() {
+        // only a third of the clicks hit: out at 24 clicks, not 42
+        let res = vec![0.0, 0.01, -0.01, 0.0, 0.005, 0.0, -0.01, 0.01];
+        let hits: Vec<usize> = (0..8).map(|k| k * 3).collect();
+        let t = track(&res, &hits, 24);
+        assert_eq!(t.verdict, Some(Verdict::Out), "{t:?}");
+        // the cap
+        let t = track(&[0.0, 0.01, -0.01, 0.0, 0.005, 0.03, 0.04, 0.05, 0.06, 0.07, 0.0, 0.0], &(0..12).collect::<Vec<_>>(), MAX_SCORED);
+        assert_eq!(t.verdict, Some(Verdict::Out));
+    }
+
+    #[test]
+    fn a_take_offers_the_delay_that_centres_it() {
+        // 31 s of takes: 56-66 timed notes, 140-190 ms late, as the owner's first take was: 150 ms earlier
+        assert_eq!(take_offer(56, 153.0, 33.5), Some(-0.153));
+        // early plucks: count them later (+)
+        assert_eq!(take_offer(66, -30.0, 43.0), Some(0.030));
+        // already centred (a median of -11 ms is feel, not a setup), too few notes, too scattered: no offer
+        assert_eq!(take_offer(66, -11.2, 43.0), None);
+        assert_eq!(take_offer(20, 80.0, 30.0), None);
+        assert_eq!(take_offer(60, 80.0, 90.0), None);
+    }
+
+    #[test]
     fn misses_doubles_and_strays_leave_the_estimate_alone() {
         let mut p = plucks(0.023, 0.004, 3);
         // 3 missed (scored clicks 5, 9, 13), 2 doubles 40 ms after their first, 1 stray 250 ms off a click
@@ -532,7 +917,7 @@ mod tests {
         }
         p.push(clicks()[COUNT_IN + 2] + 0.063);
         p.push(clicks()[COUNT_IN + 7] + 0.063);
-        p.push(clicks()[COUNT_IN + 10] + 0.29);
+        p.push(clicks()[COUNT_IN + 10] + 0.20);
         let run = measure(&clicks(), &p, COUNT_IN);
         assert!(run.ok(), "{run:?}");
         assert!((run.fit.offset - 0.023).abs() < 0.003);
@@ -556,12 +941,12 @@ mod tests {
 
     #[test]
     fn a_big_offset_does_not_wrap_to_the_next_click() {
-        // 0.28 s late at 0.6 s a click: never read as 0.32 s early
-        let run = measure(&clicks(), &plucks(0.28, 0.0, 1), COUNT_IN);
+        // 0.20 s late at 0.45 s a click: a stray, never read as 0.25 s early on the next click
+        let run = measure(&clicks(), &plucks(0.20, 0.0, 1), COUNT_IN);
         assert!(!run.ok());
         assert_eq!(run.problem, Some(Problem::Missed));
         assert!(run.fit.n == 0);
-        assert!((window(period()) - 0.25).abs() < 1e-12);
+        assert!((window(period()) - (period() / 2.0 - 0.05)).abs() < 1e-12);
     }
 
     #[test]
